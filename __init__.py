@@ -1,3 +1,4 @@
+import base64
 import os
 import sys
 import Queue
@@ -25,7 +26,8 @@ def make_server_manager():
     JobQueueManager.register('get_job_q', callable=lambda: job_q)
     JobQueueManager.register('get_result_q', callable=lambda: result_q)
     
-    auth=os.urandom(8)
+    # A random string to use for authentication:
+    auth = base64.urlsafe_b64encode(os.urandom(30))
     
     manager = JobQueueManager(address=('', 0), authkey=auth)
     manager.start()
