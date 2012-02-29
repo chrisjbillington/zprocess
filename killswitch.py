@@ -5,7 +5,8 @@ parent_pid = int(sys.argv[2])
 
 while True:
     try:
-        os.kill(child_pid ,0) # Doesn't actually kill, just checks if the process ID exists
+        # Doesn't actually kill, just checks if the process ID exists
+        os.kill(child_pid ,0)
     except OSError:
         # The child is dead. Exit.
         break
