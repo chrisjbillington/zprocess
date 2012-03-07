@@ -1,70 +1,65 @@
-import base64
 import os
 import sys
-import Queue
 import subprocess
-from multiprocessing.managers import SyncManager
+import threading
+import zmq
+
+class ReadQueue(object):
+    def __init__(self,sock):
+        self.sock = sock
+        self.lock = threading.Lock()
+    def get(self):
+        with self.lock:
+            obj = self.sock.recv_pyobj()
+        return obj
+        
+class WriteQueue(object):
+    def __init__(self,sock):
+        self.sock = sock
+        self.lock = threading.Lock()
+    def put(self,obj):
+        with self.lock:
+            self.sock.send_pyobj(obj)
 
 def kill_on_exit(process):
     """Make a process quit when the process calling this function does"""
     path = os.path.join(os.path.dirname(__file__),'killswitch.py')
     killswitch = subprocess.Popen(['python',path,str(process.pid), str(os.getpid())])
     
-def make_server_manager():
-    """ Create a manager for the server, listening on the given port.
-        Return a manager object with get_job_q and get_result_q methods.
-    """
-    job_q = Queue.Queue()
-    result_q = Queue.Queue()
-
-    # This is based on the examples in the official docs of multiprocessing.
-    # get_{job|result}_q return synchronized proxies for the actual Queue
-    # objects.
-    class JobQueueManager(SyncManager):
-        pass
-
-    JobQueueManager.register('get_job_q', callable=lambda: job_q)
-    JobQueueManager.register('get_result_q', callable=lambda: result_q)
-    
-    # A random string to use for authentication:
-    auth = base64.urlsafe_b64encode(os.urandom(30))
-    
-    manager = JobQueueManager(address=('', 0), authkey=auth)
-    manager.start()
-    port = manager.address[1]
-    return manager, port, auth
-    
-def make_client_manager(ip, port, auth):
-    """ Create a manager for a client. This manager connects to a server on the
-        given address and exposes the get_job_q and get_result_q methods for
-        accessing the shared queues from the server.
-        Return a manager object.
-    """
-    class ServerQueueManager(SyncManager):
-        pass
-
-    ServerQueueManager.register('get_job_q')
-    ServerQueueManager.register('get_result_q')
-
-    manager = ServerQueueManager(address=(ip, port), authkey=auth)
-    manager.connect()
-
-    return manager
-
 def subprocess_with_queues(path):
-    manager, port, auth = make_server_manager()
-    to_child = manager.get_job_q()
-    from_child = manager.get_result_q()
-    child = subprocess.Popen(['python',path,str(port),auth],stdin=subprocess.PIPE)
+    context = zmq.Context()
+    
+    to_child = context.socket(zmq.PUSH)
+    from_child = context.socket(zmq.PULL)
+    
+    port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
+    
+    child = subprocess.Popen(['python', '-u', path, str(port_from_child)])
+    
+    port_to_child = from_child.recv()
+    to_child.connect('tcp://127.0.0.1:%s'%port_to_child)
+    
+    to_child = WriteQueue(to_child)
+    from_child = ReadQueue(from_child)
+    
     kill_on_exit(child)
-    return to_child, from_child, child, manager
+    
+    return to_child, from_child, child
     
 def setup_connection_with_parent():
-    port = int(sys.argv[1])
-    auth = sys.argv[2]
-    manager = make_client_manager('',port, auth)
+    port_to_parent = int(sys.argv[1])
 
-    from_parent = manager.get_job_q()
-    to_parent = manager.get_result_q()
+    context = zmq.Context()
+    
+    to_parent = context.socket(zmq.PUSH)
+    from_parent = context.socket(zmq.PULL)
+    
+    port_from_parent = from_parent.bind_to_random_port('tcp://127.0.0.1')
+    
+    to_parent.connect("tcp://127.0.0.1:%s"%port_to_parent)
+    to_parent.send(str(port_from_parent))
+    
+    from_parent = ReadQueue(from_parent)
+    to_parent = WriteQueue(to_parent)
     return to_parent, from_parent
     
