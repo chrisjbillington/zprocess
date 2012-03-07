@@ -50,7 +50,6 @@ else:
         
     while True:
         running_procs = procids()
-        print running_procs
         if not child_pid in running_procs:
             # The child is dead. Exit.
             break
