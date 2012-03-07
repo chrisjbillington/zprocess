@@ -3,7 +3,7 @@ from subproc_utils import setup_connection_with_parent
 to_parent, from_parent = setup_connection_with_parent()
 
 item = from_parent.get()
-print 'client: got an item: '+ item
+print 'client: got an item: '+ str(item)
 to_parent.put(item)
 to_parent.put(item)
 to_parent.put(item)
