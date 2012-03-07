@@ -3,8 +3,7 @@ import sys
 import subprocess
 import threading
 import zmq
-
-
+    
 class WriteQueue(object):
     """Provides writing of python objects to the underlying zmq socket,
     with added locking. No reading is supported, once you put an object,
