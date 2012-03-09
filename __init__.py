@@ -4,7 +4,7 @@ import subprocess
 import threading
 import zmq
     
-if os.name == 'nt' and not sys.stdout.isatty():
+if os.name == 'nt':
     python = 'pythonw'
 else:
     python = 'python'
