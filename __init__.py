@@ -4,11 +4,6 @@ import subprocess
 import threading
 import zmq
     
-if os.name == 'nt':
-    python = 'pythonw'
-else:
-    python = 'python'
-    
 class WriteQueue(object):
     """Provides writing of python objects to the underlying zmq socket,
     with added locking. No reading is supported, once you put an object,
@@ -45,7 +40,7 @@ class ReadQueue(object):
 def kill_on_exit(process):
     """Make a process quit when the process calling this function does"""
     path = os.path.join(os.path.dirname(__file__),'killswitch.py')
-    killswitch = subprocess.Popen([python,path,str(process.pid), str(os.getpid())])
+    killswitch = subprocess.Popen([sys.executable,path,str(process.pid), str(os.getpid())])
     
 def subprocess_with_queues(path):
     context = zmq.Context()
@@ -57,7 +52,7 @@ def subprocess_with_queues(path):
     port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
     to_self.connect('tcp://127.0.0.1:%s'%port_from_child)
     
-    child = subprocess.Popen([python, '-u', path, str(port_from_child)])
+    child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child)])
     
     port_to_child = from_child.recv()
     to_child.connect('tcp://127.0.0.1:%s'%port_to_child)
