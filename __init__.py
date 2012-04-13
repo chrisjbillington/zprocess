@@ -28,7 +28,7 @@ class HeartbeatServer(object):
             self.sock.send(msg)
 
 class HeartbeatClient(object):
-    def __init__(self,context, server_port):
+    def __init__(self,context, server_port,lock):
         self.sock = context.socket(zmq.REQ)
         self.poller = zmq.Poller()
         self.poller.register(self.sock,zmq.POLLIN)
@@ -37,6 +37,7 @@ class HeartbeatClient(object):
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
         self.pid = str(os.getpid())
+        self.lock = lock
 
     def mainloop(self):
         while True:
@@ -51,8 +52,11 @@ class HeartbeatClient(object):
                     break
             except Exception as e:
                 break
-        os.kill(os.getpid(), signal.SIGKILL)
-            
+        if self.lock is not None:
+            with self.lock: 
+                os.kill(os.getpid(), signal.SIGTERM)
+        else:
+            os.kill(os.getpid(), signal.SIGTERM)
     
 class WriteQueue(object):
     """Provides writing of python objects to the underlying zmq socket,
@@ -114,7 +118,7 @@ def subprocess_with_queues(path):
     
     return to_child, from_child, child
     
-def setup_connection_with_parent():
+def setup_connection_with_parent(lock=False):
     port_to_parent = int(sys.argv[1])
     port_to_heartbeat_server = int(sys.argv[2])
 
@@ -134,7 +138,11 @@ def setup_connection_with_parent():
     to_parent = WriteQueue(to_parent)
     
     global heartbeat_client
-    heartbeat_cient = HeartbeatClient(context, port_to_heartbeat_server) 
-    return to_parent, from_parent
+    kill_lock = threading.Lock()
+    heartbeat_cient = HeartbeatClient(context, port_to_heartbeat_server,kill_lock) 
+    if lock:
+        return to_parent, from_parent, kill_lock
+    else:
+        return to_parent, from_parent
 
 heartbeat_server = HeartbeatServer()
