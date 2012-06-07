@@ -89,12 +89,6 @@ class ReadQueue(object):
     def put(self, obj):
         with self.to_self_sock_lock:
             self.to_self_sock.send_pyobj(obj)
-        
-        
-def kill_on_exit(process):
-    """Make a process quit when the process calling this function does"""
-    path = os.path.join(os.path.dirname(__file__),'killswitch.py')
-    killswitch = subprocess.Popen([sys.executable,path,str(process.pid), str(os.getpid())])
     
 def subprocess_with_queues(path):
     context = zmq.Context()
