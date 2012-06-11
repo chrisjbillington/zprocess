@@ -89,7 +89,32 @@ class ReadQueue(object):
     def put(self, obj):
         with self.to_self_sock_lock:
             self.to_self_sock.send_pyobj(obj)
+
+class OutputInterceptor(object):
+
+    def __init__(self, queue, streamname='stdout'):
+        self.queue = queue
+        self.streamname = streamname
+        self.real_stream = getattr(sys,streamname)
+        self.fileno = self.real_stream.fileno
+        self.readline = self.real_stream.readline
+        self.flush = self.real_stream.flush
+        
+    def connect(self):
+        setattr(sys,self.streamname,self)
     
+    def disconnect(self):
+        setattr(sys,self.streamname,self.real_stream)
+            
+    def write(self, s):
+        self.queue.put([self.streamname, s])
+        self.real_stream.write(s)
+        
+    def close(self):
+        self.disconnect()
+        sys.stdout.close()
+        
+            
 def subprocess_with_queues(path):
     context = zmq.Context()
 
@@ -112,7 +137,7 @@ def subprocess_with_queues(path):
     
     return to_child, from_child, child
     
-def setup_connection_with_parent(lock=False):
+def setup_connection_with_parent(lock=False,redirect_output=False):
     port_to_parent = int(sys.argv[1])
     port_to_heartbeat_server = int(sys.argv[2])
 
@@ -130,6 +155,12 @@ def setup_connection_with_parent(lock=False):
     
     from_parent = ReadQueue(from_parent, to_self)
     to_parent = WriteQueue(to_parent)
+    
+    if redirect_output:
+        stdout = OutputInterceptor(to_parent)
+        stderr = OutputInterceptor(to_parent,'stderr')
+        stdout.connect()
+        stderr.connect()
     
     global heartbeat_client
     kill_lock = threading.Lock()
