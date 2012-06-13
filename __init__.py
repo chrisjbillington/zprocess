@@ -97,8 +97,6 @@ class OutputInterceptor(object):
         self.streamname = streamname
         self.real_stream = getattr(sys,streamname)
         self.fileno = self.real_stream.fileno
-        self.readline = self.real_stream.readline
-        self.flush = self.real_stream.flush
         
     def connect(self):
         setattr(sys,self.streamname,self)
@@ -108,11 +106,13 @@ class OutputInterceptor(object):
             
     def write(self, s):
         self.queue.put([self.streamname, s])
-        self.real_stream.write(s)
         
     def close(self):
         self.disconnect()
-        sys.stdout.close()
+        self.real_stream.close()
+        
+    def flush(self):
+        pass
         
             
 def subprocess_with_queues(path):
