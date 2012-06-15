@@ -15,7 +15,7 @@ class OutputBox(object):
         self.output_view.modify_text(gtk.STATE_NORMAL, gtk.gdk.color_parse('white'))
         self.output_view.modify_font(pango.FontDescription("monospace 10"))
         self.output_view.set_indent(5)
-        self.output_view.set_wrap_mode(gtk.WRAP_WORD_CHAR)
+        self.output_view.set_wrap_mode(gtk.WRAP_CHAR)
         self.output_view.set_editable(False)
         self.output_view.show()
                 
