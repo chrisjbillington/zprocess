@@ -2,6 +2,8 @@ import sys
 import subprocess
 import threading
     
+import zmq
+
 from heartbeating import HeartbeatServer, HeartbeatClient
 
 class WriteQueue(object):

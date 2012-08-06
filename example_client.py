@@ -1,8 +1,7 @@
 from subproc_utils import setup_connection_with_parent
 import threading
-kill_lock = threading.Lock()
 
-to_parent, from_parent = setup_connection_with_parent(kill_lock)
+to_parent, from_parent = setup_connection_with_parent()
 
 item = from_parent.get()
 print 'client: got an item: '+ str(item)
