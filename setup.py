@@ -11,6 +11,8 @@ import zmq.core
 
 zmq_dir = os.path.abspath(os.path.dirname(zmq.__file__))
 includes = [os.path.join(zmq_dir,sub) for sub in ['utils', 'core','devices','']]
+includes += ['libzmq-dev']
+
 ext_modules = [Extension("heartbeating", ["heartbeating.pyx"], include_dirs = includes)]
 setup(
     name = "heartbeating",
