@@ -4,6 +4,7 @@ import threading
 import signal
 import zmq
 
+from libzmq cimport *
 
 class HeartbeatServer(object):
     """A server which recieves messages from clients and echoes them
