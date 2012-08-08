@@ -23,9 +23,7 @@ class HeartbeatServer(object):
         return self.port
         
     def mainloop(self):
-        while True:
-            msg = self.sock.recv()
-            self.sock.send(msg)
+        zmq.device(zmq.FORWARDER, self.sock, self.sock)
 
 class HeartbeatClient(object):
     def __init__(self,context, server_port,lock):
