@@ -5,14 +5,51 @@ import threading
 import zmq
 import time
 import signal
+from socket import gethostbyname
 
+context = zmq.Context.instance()
+
+class ZMQServer(object):
+    def __init__(self,port):
+        self.sock = context.socket(zmq.REP)
+        self.sock.bind('tcp://127.0.0.1:%s'%str(port))
+        self.mainloop_thread = threading.Thread(target=self.mainloop)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
+        
+    def mainloop(self):
+        while True:
+            request_data = self.sock.recv_pyobj()
+            response_data = self.handler(request_data)
+            self.sock.send_pyobj(response_data)
+            
+    def handler(self, request_data):
+        """To be overridden by subclasses. This is an example
+        implementation"""
+        response = 'This is an example ZMQServer. Your request was %s.'%str(request_data)
+        return response
+        
+def zmq_get(port, host='localhost', data=None, timeout=5):
+    host = gethostbyname(host)
+    sock = context.socket(zmq.REQ)
+    sock.setsockopt(zmq.LINGER, 0)
+    poller = zmq.Poller()
+    poller.register(sock, zmq.POLLIN)
+    sock.connect('tcp://%s:%s'%(host, str(port)))
+    sock.send_pyobj(data, zmq.NOBLOCK)
+    events = poller.poll(timeout*1000) # convert timeout to ms
+    if events:
+        return sock.recv_pyobj()
+    else:
+        raise zmq.ZMQError('No response from server: timed out')
+    
 class HeartbeatServer(object):
     """A server which recieves messages from clients and echoes them
     back. There is only one server for however many clients there are"""
     def __init__(self):
         self.running = False
         
-    def run(self, context):
+    def run(self):
         if not self.running:
             self.running = True
             self.sock = context.socket(zmq.REP)
@@ -26,8 +63,9 @@ class HeartbeatServer(object):
         zmq.device(zmq.FORWARDER, self.sock, self.sock)
 
 class HeartbeatClient(object):
-    def __init__(self,context, server_port,lock):
+    def __init__(self, server_port, lock):
         self.sock = context.socket(zmq.REQ)
+        self.sock.setsockopt(zmq.LINGER, 0)
         self.poller = zmq.Poller()
         self.poller.register(self.sock,zmq.POLLIN)
         self.port = self.sock.connect('tcp://127.0.0.1:%s'%server_port)
@@ -114,7 +152,6 @@ class OutputInterceptor(object):
         
             
 def subprocess_with_queues(path):
-    context = zmq.Context()
 
     to_child = context.socket(zmq.PUSH)
     from_child = context.socket(zmq.PULL)
@@ -123,7 +160,7 @@ def subprocess_with_queues(path):
     port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
     to_self.connect('tcp://127.0.0.1:%s'%port_from_child)
     
-    heartbeat_port = heartbeat_server.run(context)
+    heartbeat_port = heartbeat_server.run()
     
     child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child),str(heartbeat_port)])
     
@@ -139,8 +176,6 @@ def setup_connection_with_parent(lock=False,redirect_output=False):
     port_to_parent = int(sys.argv[1])
     port_to_heartbeat_server = int(sys.argv[2])
 
-    context = zmq.Context()
-    
     to_parent = context.socket(zmq.PUSH)
     from_parent = context.socket(zmq.PULL)
     to_self = context.socket(zmq.PUSH)
@@ -162,7 +197,7 @@ def setup_connection_with_parent(lock=False,redirect_output=False):
     
     global heartbeat_client
     kill_lock = threading.Lock()
-    heartbeat_cient = HeartbeatClient(context, port_to_heartbeat_server,kill_lock) 
+    heartbeat_cient = HeartbeatClient(port_to_heartbeat_server,kill_lock) 
     if lock:
         return to_parent, from_parent, kill_lock
     else:
