@@ -12,7 +12,7 @@ context = zmq.Context.instance()
 class ZMQServer(object):
     def __init__(self,port):
         self.sock = context.socket(zmq.REP)
-        self.sock.bind('tcp://127.0.0.1:%s'%str(port))
+        self.sock.bind('tcp://0.0.0.0:%s'%str(port))
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
