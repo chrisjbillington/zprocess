@@ -9,6 +9,12 @@ from socket import gethostbyname
 
 context = zmq.Context.instance()
 
+def raise_exception_in_thread(exc_info):
+    """Raises an exception in a thread"""
+    def f(exc_info):
+        raise exc_info[0], exc_info[1], exc_info[2]
+    threading.Thread(target=f,args=(exc_info,)).start()
+
 class ZMQServer(object):
     def __init__(self,port):
         self.sock = context.socket(zmq.REP)
@@ -20,14 +26,24 @@ class ZMQServer(object):
     def mainloop(self):
         while True:
             request_data = self.sock.recv_pyobj()
-            response_data = self.handler(request_data)
-            self.sock.send_pyobj(response_data)
+            try:
+                response_data = self.handler(request_data)
+                self.sock.send_pyobj(response_data)
+            except Exception:
+                # Raise the exception in a separate thread so that the
+                # server keeps running:
+                exc_info = sys.exc_info()
+                raise_exception_in_thread(exc_info)
+                response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request.')
+                self.sock.send_pyobj(response_data)
+            
             
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example
         implementation"""
         response = 'This is an example ZMQServer. Your request was %s.'%str(request_data)
         return response
+        
         
 def zmq_get(port, host='localhost', data=None, timeout=5):
     host = gethostbyname(host)
@@ -39,10 +55,15 @@ def zmq_get(port, host='localhost', data=None, timeout=5):
     sock.send_pyobj(data, zmq.NOBLOCK)
     events = poller.poll(timeout*1000) # convert timeout to ms
     if events:
-        return sock.recv_pyobj()
+        response = sock.recv_pyobj()
     else:
         raise zmq.ZMQError('No response from server: timed out')
-    
+    if isinstance(response, Exception):
+        raise response
+    else:
+        return response
+        
+        
 class HeartbeatServer(object):
     """A server which recieves messages from clients and echoes them
     back. There is only one server for however many clients there are"""
