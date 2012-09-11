@@ -28,12 +28,12 @@ class ZMQServer(object):
             request_data = self.sock.recv_pyobj()
             try:
                 response_data = self.handler(request_data)
-            except Exception:
+            except Exception as e:
                 # Raise the exception in a separate thread so that the
                 # server keeps running:
                 exc_info = sys.exc_info()
                 raise_exception_in_thread(exc_info)
-                response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request.')
+                response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request: %s'%str(e))
             self.sock.send_pyobj(response_data)
             
             
