@@ -43,26 +43,46 @@ class ZMQServer(object):
         response = 'This is an example ZMQServer. Your request was %s.'%str(request_data)
         return response
         
+class ZMQGet(object):
+    def __init__(self):
+        self.sock = None
+        self.poller = None
+        self.host = None
+        self.port = None
+        self.lock = threading.Lock()
         
-def zmq_get(port, host='localhost', data=None, timeout=5):
-    host = gethostbyname(host)
-    sock = context.socket(zmq.REQ)
-    sock.setsockopt(zmq.LINGER, 0)
-    poller = zmq.Poller()
-    poller.register(sock, zmq.POLLIN)
-    sock.connect('tcp://%s:%s'%(host, str(port)))
-    sock.send_pyobj(data, zmq.NOBLOCK)
-    events = poller.poll(timeout*1000) # convert timeout to ms
-    if events:
-        response = sock.recv_pyobj()
-    else:
-        raise zmq.ZMQError('No response from server: timed out')
-    if isinstance(response, Exception):
-        raise response
-    else:
-        return response
-        
-        
+    def __call__(self, port, host='localhost', data=None, timeout=5):
+        # zmq sockets are not threadsafe, so serialise all calls to this function:
+        with self.lock:
+            host = gethostbyname(host)
+            # We cache the socket so as to not exhaust ourselves of tcp
+            # ports. However if a different server is in use, we need a new
+            # socket. Also if we don't have a socket, we also need a new one:
+            if self.sock is None or host != self.host or port != self.port:
+                self.host = host
+                self.sock = context.socket(zmq.REQ)
+                self.sock.setsockopt(zmq.LINGER, 0)
+                self.poller = zmq.Poller()
+                self.poller.register(self.sock, zmq.POLLIN)
+                self.sock.connect('tcp://%s:%s'%(host, str(port)))
+            self.sock.send_pyobj(data, zmq.NOBLOCK)
+            events = self.poller.poll(timeout*1000) # convert timeout to ms
+            if events:
+                response = self.sock.recv_pyobj()
+            else:
+                # The server hasn't replied. We don't know what it's doing,
+                # so we'd better stop using this socket in case late messages
+                # arrive on it in the future:
+                self.sock = None
+                raise zmq.ZMQError('No response from server: timed out')
+            if isinstance(response, Exception):
+                raise response
+            else:
+                return response
+
+# Actually need to instantiate it!        
+zmq_get = ZMQGet()
+
 class HeartbeatServer(object):
     """A server which recieves messages from clients and echoes them
     back. There is only one server for however many clients there are"""
