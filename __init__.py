@@ -18,6 +18,7 @@ def raise_exception_in_thread(exc_info):
 class ZMQServer(object):
     def __init__(self,port):
         self.sock = context.socket(zmq.REP)
+        self.sock.setsockopt(zmq.LINGER, 0)
         self.sock.bind('tcp://0.0.0.0:%s'%str(port))
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
@@ -59,7 +60,9 @@ class ZMQGet(object):
             # ports. However if a different server is in use, we need a new
             # socket. Also if we don't have a socket, we also need a new one:
             if self.sock is None or host != self.host or port != self.port:
+                print 'new socket!'
                 self.host = host
+                self.port = port
                 self.sock = context.socket(zmq.REQ)
                 self.sock.setsockopt(zmq.LINGER, 0)
                 self.poller = zmq.Poller()
