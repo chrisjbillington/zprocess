@@ -60,7 +60,6 @@ class ZMQGet(object):
             # ports. However if a different server is in use, we need a new
             # socket. Also if we don't have a socket, we also need a new one:
             if self.sock is None or host != self.host or port != self.port:
-                print 'new socket!'
                 self.host = host
                 self.port = port
                 self.sock = context.socket(zmq.REQ)
