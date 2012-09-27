@@ -4,6 +4,8 @@ import threading
 
 import zmq
 
+DEFAULT_TIMEOUT = 15 # seconds
+
 class ZMQLockClient(object):
 
     RESPONSE_TIMEOUT = 2000
@@ -25,20 +27,24 @@ class ZMQLockClient(object):
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)
         self.local.sock.connect('tcp://%s:%s'%(self.host, str(self.port)))    
-        self.local.uuid = self.uuid()
+        self.local.client_id = self.client_id()
     
-    def uuid(self):
+    def client_id(self):
         host_name = socket.gethostname()
         process_id = str(os.getpid())
         thread_name= threading.current_thread().name
         return ':'.join([host_name,process_id,thread_name])
     
-    def say_hello(self):
+    def say_hello(self,timeout=None):
         """Ping the server to test for a response"""
+        if timeout is None:
+            timeout = self.RESPONSE_TIMEOUT
+        else:
+            timeout = 1000*timeout # convert to ms
         if not hasattr(self.local,'sock'):
             self.new_socket()
         self.local.sock.send('hello')
-        events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
+        events = self.local.poller.poll(timeout)
         if events:
             response = self.local.sock.recv()
             if response == 'hello':
@@ -50,7 +56,7 @@ class ZMQLockClient(object):
         if not hasattr(self.local,'sock'):
             self.new_socket()
         while True:
-            messages = ['acquire',str(key),self.uuid(), str(timeout)]
+            messages = ['acquire',str(key),self.client_id(), str(timeout)]
             self.local.sock.send_multipart(messages)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
@@ -68,7 +74,7 @@ class ZMQLockClient(object):
     def release(self, key):
         if not hasattr(self.local,'sock'):
             self.new_socket()
-        messages = ['release',str(key),self.uuid()]
+        messages = ['release',str(key),self.client_id()]
         self.local.sock.send_multipart(messages)
         events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
         if not events:
@@ -82,10 +88,12 @@ class ZMQLockClient(object):
                 return
 
 
-def acquire(key, timeout=15):
+def acquire(key, timeout=None):
     """Acquire a lock identified by key, for a specified time in
     seconds. Blocks until success, raises exception if the server isn't
     responding"""
+    if timeout is None:
+        timeout = DEFAULT_TIMEOUT
     try:
         _zmq_lock_client.acquire(key, timeout)
     except NameError:
@@ -124,11 +132,14 @@ class Lock(object):
         if self.held:
             self.release()
       
-      
-def connect(host='localhost', port=7339):
+def set_default_timeout(t):
+    global DEFAULT_TIMEOUT
+    DEFAULT_TIMEOUT = t
+          
+def connect(host='localhost', port=7339, timeout=1):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
     global _zmq_lock_client                 
     _zmq_lock_client = ZMQLockClient(host, port)
-    _zmq_lock_client.say_hello()
+    _zmq_lock_client.say_hello(timeout)
     
