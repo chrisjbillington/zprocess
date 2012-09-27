@@ -1,11 +1,33 @@
-import zmq
+import os
+import sys
 import traceback
 import threading
 import time
-import sys
+import logging, logging.handlers
+
+import zmq
 
 SERVER_PORT = 7339
 RETRY_INTERVAL = 1000 # ms
+
+def setup_logging():
+    logger = logging.getLogger('Zlock')
+    handler = logging.handlers.RotatingFileHandler(r'zlock.log', maxBytes=1024*1024*50)
+    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
+    handler.setFormatter(formatter)
+    handler.setLevel(logging.DEBUG)
+    logger.addHandler(handler)
+    if sys.stdout.isatty():
+        terminalhandler = logging.StreamHandler(sys.stdout)
+        terminalhandler.setFormatter(formatter)
+        terminalhandler.setLevel(logging.DEBUG)
+        logger.addHandler(terminalhandler)
+    else:
+        # Prevent bug on windows where writing to stdout without a command
+        # window causes a crash:
+        sys.stdout = sys.stderr = open(os.devnull,'w')
+    logger.setLevel(logging.DEBUG)
+    return logger
 
 class ZMQLockServer(object):
     def __init__(self, port, retry_interval):
@@ -79,7 +101,7 @@ class ZMQLockServer(object):
         
         # Connect the dealer to the rep socket:
         dealer.connect('inproc://to-rep-socket')
-
+        logger.info('This is zlock server, running on port %d'%self.port)
         while True:
             # Forward a (multipart) message from the router, through the dealer, to the REP socket:
             message = router.recv_multipart()
@@ -95,6 +117,7 @@ class ZMQLockServer(object):
                     success, data = self.acquire(*args)
                     if success:
                         sock.send_multipart(['ok','lock acquired, re-entry depth %d'%data])
+                        logger.info('%s %sacquired %s'%(args[1], 're-entrantly ' if data > 1 else '', args[0]))
                     else:
                         # Wait until next event, or RETRY_INTERVAL if no
                         # events. The event might be the other client
@@ -104,19 +127,28 @@ class ZMQLockServer(object):
                         # whether there's been any activity on the server:
                         events = poller.poll(self.retry_interval)
                         sock.send_multipart(['retry', 'lock held by uuid %s'%data])
+                        logger.info('%s failed to acquire %s, because %s is holding it'%(args[1], args[0], data))
                 elif request == 'release':
                     args = messages[1:]
                     success, data = self.release(*args)
                     if success:
                         sock.send_multipart(['ok','lock released, re-entry depth %d'%data])
+                        if data:
+                            logger.info('%s lowered its re-entrance level on %s'%(args[1], args[0]))
+                            pass
+                        else:
+                            logger.info('%s released %s'%(args[1], args[0]))
+                            pass
                     else:
                         sock.send_multipart(['error','lock holding timed out or was never acquired'])
+                        logger.warning('%s tried to released %s, but it wasn\'t holding it at the time'%(args[2], args[1]))
                 else:
                     raise ValueError('invalid method: %s'%request)
             except Exception:
                 traceback_lines = traceback.format_exception(sys.exc_type, sys.exc_value, sys.exc_traceback)
                 message = ''.join(traceback_lines)
                 sock.send_multipart(['error',message])
+                logger.error('Exception whilst processing request %s:\n%s'%(str(messages), message))
             # And finally, forward the response from the dealer back
             # through the router to the client:
             message = dealer.recv_multipart()
@@ -127,13 +159,16 @@ class ZMQLockServer(object):
             time.sleep(1)
             with self.access_lock:
                 # copy so as not to modify whilst iterating over:
-                for filename, lock in self.held_locks.copy().items():
+                for key, lock in self.held_locks.copy().items():
                     lock['timeout'] -= 1
                     if lock['timeout'] <= 0:
                         # lock holding has timed out. release lock:
-                        del self.held_locks[filename]
+                        del self.held_locks[key]
+                        logger.warning('%s timed out and was released'%key)
      
 if __name__ == '__main__':
+    os.chdir(os.path.dirname(os.path.abspath(__file__)))
+    logger = setup_logging()
     server = ZMQLockServer(SERVER_PORT, RETRY_INTERVAL)
     server.run()
     

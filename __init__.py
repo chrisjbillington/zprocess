@@ -82,7 +82,7 @@ class ZMQLockClient(object):
                 return
 
 
-def acquire(key, timeout):
+def acquire(key, timeout=15):
     """Acquire a lock identified by key, for a specified time in
     seconds. Blocks until success, raises exception if the server isn't
     responding"""
@@ -99,7 +99,32 @@ def release(key):
         _zmq_lock_client.release(key)
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
+
+
+class Lock(object):
+    def __init__(self, key):
+        self.key = key
+        self.held = False
         
+    def acquire(self):
+        acquire(self.key)
+        self.held = True
+        
+    def release(self):
+        self.held = False
+        release(self.key)
+
+    def __enter__(self):
+        self.acquire()
+        
+    def __exit__(self, *args):
+        self.release()
+        
+    def __del__(self):
+        if self.held:
+            self.release()
+      
+      
 def connect(host='localhost', port=7339):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
