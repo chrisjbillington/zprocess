@@ -7,7 +7,7 @@ import logging, logging.handlers
 
 import zmq
 
-SERVER_PORT = 7339
+DEFAULT_PORT = 7339
 RETRY_INTERVAL = 1000 # ms
 
 def setup_logging():
@@ -30,9 +30,8 @@ def setup_logging():
     return logger
 
 class ZMQLockServer(object):
-    def __init__(self, port, retry_interval):
-        self.port = port
-        self.retry_interval = retry_interval
+    def __init__(self, port):
+        self.port = int(port)
         
         # A dictionary of locks currently held by clients:
         self.held_locks = {}
@@ -127,7 +126,7 @@ class ZMQLockServer(object):
                         # immediately.  This is much better than the client
                         # retrying every .1 seconds or something, not knowing
                         # whether there's been any activity on the server:
-                        events = self.poller.poll(self.retry_interval)
+                        events = self.poller.poll(RETRY_INTERVAL)
                         self.sock.send_multipart(['retry', 'lock held by %s'%data])
                         logger.info('%s failed to acquire %s, because %s is holding it'%(args[1], args[0], data))
                 elif request == 'release':
@@ -172,10 +171,14 @@ class ZMQLockServer(object):
                 logger.critical('unexpected exception, attempting to continue:\n%s'%message)
                 
 if __name__ == '__main__':
+    if len(sys.argv) > 1:
+        port = sys.argv[1]
+    else:
+        port = DEFAULT_PORT
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     logger = setup_logging()
     # First instantiation outside the while loop, so a failure to initialise will quit rather than loop forever:
-    server = ZMQLockServer(SERVER_PORT, RETRY_INTERVAL)
+    server = ZMQLockServer(port)
     while True:
         try:
             server.run()
@@ -190,7 +193,7 @@ if __name__ == '__main__':
             context = zmq.Context.instance()
             context.destroy(linger=False)
             # Re-initialise the server:
-            server = ZMQLockServer(SERVER_PORT, RETRY_INTERVAL)
+            server = ZMQLockServer(port)
             
             
             
