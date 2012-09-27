@@ -157,18 +157,37 @@ class ZMQLockServer(object):
     def monitor_timeouts(self):
         while True:
             time.sleep(1)
-            with self.access_lock:
-                # copy so as not to modify whilst iterating over:
-                for key, lock in self.held_locks.copy().items():
-                    lock['timeout'] -= 1
-                    if lock['timeout'] <= 0:
-                        # lock holding has timed out. release lock:
-                        del self.held_locks[key]
-                        logger.warning('%s timed out and was released'%key)
-     
+            try:
+                with self.access_lock:
+                    # copy so as not to modify whilst iterating over:
+                    for key, lock in self.held_locks.copy().items():
+                        lock['timeout'] -= 1
+                        if lock['timeout'] <= 0:
+                            # lock holding has timed out. release lock:
+                            del self.held_locks[key]
+                            logger.warning('%s timed out and was released'%key)
+            except Exception:
+                traceback_lines = traceback.format_exception(sys.exc_type, sys.exc_value, sys.exc_traceback)
+                message = ''.join(traceback_lines)
+                logger.critical('unexpected exception, attempting to continue:\n%s'%message)
+                
 if __name__ == '__main__':
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     logger = setup_logging()
-    server = ZMQLockServer(SERVER_PORT, RETRY_INTERVAL)
-    server.run()
+    while True:
+        try:
+            server = ZMQLockServer(SERVER_PORT, RETRY_INTERVAL)
+            try:
+                server.run()
+            except KeyboardInterrupt:
+                logger.info('KeyboardInterrupt, stopping')
+                break
+        except Exception:
+            traceback_lines = traceback.format_exception(sys.exc_type, sys.exc_value, sys.exc_traceback)
+            message = ''.join(traceback_lines)
+            logger.critical('unhandled exception, attempting to restart:\n%s'%message)
+            
+            
+            
+            
     
