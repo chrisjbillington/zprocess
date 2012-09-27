@@ -70,27 +70,27 @@ class ZMQLockServer(object):
         # Connect the dealer to the rep socket:
         self.dealer.connect('inproc://to-rep-socket')
         
-    def acquire(self, filepath, uuid, timeout):
+    def acquire(self, filepath, client_id, timeout):
         timeout = int(timeout)
         with self.access_lock:
             if filepath in self.held_locks:
                 lock = self.held_locks[filepath]
-                if lock['uuid'] == uuid:
+                if lock['client_id'] == client_id:
                     lock['depth'] += 1
                     lock['timeout'] = max(lock['timeout'], timeout)
                     return True, lock['depth']
                 else:
-                    return False, lock['uuid']
+                    return False, lock['client_id']
             else:
-                lock = {'uuid':uuid, 'timeout': timeout, 'depth': 1}
+                lock = {'client_id':client_id, 'timeout': timeout, 'depth': 1}
                 self.held_locks[filepath] = lock
                 return True, lock['depth']
         
-    def release(self, filepath, uuid):
+    def release(self, filepath, client_id):
         with self.access_lock:
             if filepath in self.held_locks.copy():
                 lock = self.held_locks[filepath]
-                if lock['uuid'] == uuid:
+                if lock['client_id'] == client_id:
                     lock['depth'] -= 1
                     if lock['depth'] == 0:
                         del self.held_locks[filepath]
@@ -128,7 +128,7 @@ class ZMQLockServer(object):
                         # retrying every .1 seconds or something, not knowing
                         # whether there's been any activity on the server:
                         events = self.poller.poll(self.retry_interval)
-                        self.sock.send_multipart(['retry', 'lock held by uuid %s'%data])
+                        self.sock.send_multipart(['retry', 'lock held by %s'%data])
                         logger.info('%s failed to acquire %s, because %s is holding it'%(args[1], args[0], data))
                 elif request == 'release':
                     args = messages[1:]
