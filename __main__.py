@@ -12,11 +12,8 @@ RETRY_INTERVAL = 1000 # ms
 
 def setup_logging():
     logger = logging.getLogger('Zlock')
-    handler = logging.handlers.RotatingFileHandler(r'zlock.log', maxBytes=1024*1024*50)
-    formatter = logging.Formatter('%(asctime)s %(levelname)s %(name)s: %(message)s')
-    handler.setFormatter(formatter)
-    handler.setLevel(logging.DEBUG)
-    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
     if sys.stdout.isatty():
         terminalhandler = logging.StreamHandler(sys.stdout)
         terminalhandler.setFormatter(formatter)
@@ -26,7 +23,18 @@ def setup_logging():
         # Prevent bug on windows where writing to stdout without a command
         # window causes a crash:
         sys.stdout = sys.stderr = open(os.devnull,'w')
-    logger.setLevel(logging.DEBUG)
+    if os.name == 'nt':
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'zlock.log')
+    else:
+        path = '/var/log/zlock.log'
+    if os.access(path,os.W_OK):
+        handler = logging.handlers.RotatingFileHandler(path, maxBytes=1024*1024*50)
+        handler.setFormatter(formatter)
+        handler.setLevel(logging.DEBUG)
+        logger.addHandler(handler)
+    else:
+        logger.warning('Do not have permission to write to log file %s. '%path + 
+                       'Only terminal logging will be output.')
     return logger
 
 class ZMQLockServer(object):
@@ -171,7 +179,6 @@ class ZMQLockServer(object):
                 logger.critical('unexpected exception, attempting to continue:\n%s'%message)
                 
 if __name__ == '__main__':
-    os.chdir(os.path.dirname(os.path.abspath(__file__)))
     logger = setup_logging()
     # First instantiation outside the while loop, so a failure to initialise will quit rather than loop forever:
     try:
