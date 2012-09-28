@@ -1,17 +1,25 @@
 import os
 import sys
 import traceback
-import threading
 import time
 import logging, logging.handlers
 
 import zmq
- 
+
 DEFAULT_PORT = 7339   
 RETRY_INTERVAL = 1000 # ms
 
+try:
+    import ConfigParser
+    from LabConfig import LabConfig
+    port = LabConfig().get('ports','zlock')
+except (ImportError, IOError, ConfigParser.NoOptionError):
+    logger.warning("Couldn't get port setting from LabConfig. Using default port")
+    port = DEFAULT_PORT
+        
+        
 def setup_logging():
-    logger = logging.getLogger('Zlock')
+    logger = logging.getLogger('ZLock')
     logger.setLevel(logging.DEBUG)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
     if sys.stdout.isatty():
@@ -37,30 +45,20 @@ def setup_logging():
                        'Only terminal logging will be output.')
     return logger
 
+
 class ZMQLockServer(object):
+    
     def __init__(self, port):
         self.port = int(port)
         
         # A dictionary of locks currently held by clients:
         self.held_locks = {}
         
-        # A lock for serialising access to the above dictionary, so that
-        # the thread decrementing locks' time-to-live doesn't modify it
-        # at the same time as the main server:
-        self.access_lock = threading.Lock()
-        
-        # The thread which decrements timeouts on held locks, releasing
-        # them when it hits zero:
-        self.timeout_monitor = threading.Thread(target=self.monitor_timeouts)
-        self.timeout_monitor.daemon = True
-        self.timeout_monitor.start()
-        
-        context = zmq.Context.instance()
         # We have an extra ROUTER-DEALER layer before our REP socket
         # so that we can monitor for incoming requests from clients
         # on the ROUTER before having sent a response to the current
         # client. Otherwise the REP socket hides this from us.
-
+        context = zmq.Context.instance()
         self.router = context.socket(zmq.ROUTER)
         self.dealer = context.socket(zmq.DEALER)
         self.sock = context.socket(zmq.REP)
@@ -68,126 +66,59 @@ class ZMQLockServer(object):
         self.poller = zmq.Poller()
         self.poller.register(self.router, zmq.POLLIN)
         
-        # Bind the router to the outside world:            
+        # Bind the router to the outside world and connect the dealer
+        # to the REP socket via inproc:
         self.router.bind('tcp://0.0.0.0:%d'%self.port)
-
-        # Bind the REP socket to an inproc handle:
         self.sock.bind('inproc://to-rep-socket')
-        
-        # Connect the dealer to the rep socket:
         self.dealer.connect('inproc://to-rep-socket')
-        
+    
+    def hello(self):
+        return 'hello'
+            
     def acquire(self, filepath, client_id, timeout):
-        timeout = int(timeout)
-        with self.access_lock:
-            if filepath in self.held_locks:
-                lock = self.held_locks[filepath]
-                if lock['client_id'] == client_id:
-                    lock['depth'] += 1
-                    lock['timeout'] = max(lock['timeout'], timeout)
-                    return True, lock['depth']
-                else:
-                    return False, lock['client_id']
-            else:
-                lock = {'client_id':client_id, 'timeout': timeout, 'depth': 1}
-                self.held_locks[filepath] = lock
-                return True, lock['depth']
-        
+        if (filepath not in self.held_locks) or self.held_locks[filepath]['expiry'] < time.time():
+            self.held_locks[filepath] = {'client_id': client_id, 'expiry': float(timeout) + time.time()}
+            logger.info('%s acquired %s'%(client_id, filepath))
+            return 'ok'
+        logger.info('%s is waiting to acquire %s'%(client_id, filepath))
+        # Wait at most RETRY_INTERVAl for incoming requests to the server
+        # before telling the client to retry:
+        self.poller.poll(RETRY_INTERVAL)
+        return 'retry'
+            
     def release(self, filepath, client_id):
-        with self.access_lock:
-            if filepath in self.held_locks.copy():
-                lock = self.held_locks[filepath]
-                if lock['client_id'] == client_id:
-                    lock['depth'] -= 1
-                    if lock['depth'] == 0:
-                        del self.held_locks[filepath]
-                        return True, lock['depth']
-                    return True, lock['depth']
-                else:
-                    return False, None
-            else:
-                return False, None
-        
+        if filepath in self.held_locks:
+            if self.held_locks[filepath]['client_id'] == client_id and self.held_locks[filepath]['expiry'] > time.time():
+                del self.held_locks[filepath]
+                logger.info('%s released %s'%(client_id, filepath))
+                return 'ok'
+        raise RuntimeError('lock timed out or was not acquired prior to release')
+                        
     def run(self):
         logger.info('This is zlock server, running on port %d'%self.port)
+        handlers = {'hello': self.hello, 'acquire': self.acquire, 'release': self.release}
         while True:
-            # Forward a (multipart) message from the router, through the dealer, to the REP socket:
+            # Forward a request from the router, through
+            # the dealer, to the REP socket:
             message = self.router.recv_multipart()
             self.dealer.send_multipart(message)
-            # Pull the same message out of the REP socket
             messages = self.sock.recv_multipart()
+            # Handle the request:
+            request, args = messages[0], messages[1:]
             try:
-                request = messages[0]
-                if request == 'hello':
-                    self.sock.send('hello')
-                    logger.info('someone said hello')
-                elif request == 'acquire':
-                    args = messages[1:]
-                    success, data = self.acquire(*args)
-                    if success:
-                        self.sock.send_multipart(['ok','lock acquired, re-entry depth %d'%data])
-                        logger.info('%s %sacquired %s'%(args[1], 're-entrantly ' if data > 1 else '', args[0]))
-                    else:
-                        # Wait until next event, or RETRY_INTERVAL if no
-                        # events. The event might be the other client
-                        # releasing the lock! This client should retry
-                        # immediately.  This is much better than the client
-                        # retrying every .1 seconds or something, not knowing
-                        # whether there's been any activity on the server:
-                        events = self.poller.poll(RETRY_INTERVAL)
-                        self.sock.send_multipart(['retry', 'lock held by %s'%data])
-                        logger.info('%s failed to acquire %s, because %s is holding it'%(args[1], args[0], data))
-                elif request == 'release':
-                    args = messages[1:]
-                    success, data = self.release(*args)
-                    if success:
-                        self.sock.send_multipart(['ok','lock released, re-entry depth %d'%data])
-                        if data:
-                            logger.info('%s lowered its re-entrance level on %s'%(args[1], args[0]))
-                        else:
-                            logger.info('%s released %s'%(args[1], args[0]))
-                    else:
-                        self.sock.send_multipart(['error','lock holding timed out or was never acquired'])
-                        logger.warning('%s tried to release %s, but wasn\'t holding it at the time'%(args[1], args[0]))
-                else:
-                    raise ValueError('invalid method: %s'%request)
+                response = handlers[request](*args)
             except Exception:
-                traceback_lines = traceback.format_exception(sys.exc_type, sys.exc_value, sys.exc_traceback)
-                message = ''.join(traceback_lines)
-                logger.error('Exception whilst processing request %s:\n%s'%(str(messages), message))
-                self.sock.send_multipart(['error',message])
-            # And finally, forward the response from the dealer back
-            # through the router to the client:
+                response = traceback.format_exc()
+                logger.error('%s:\n%s'%(str(messages), response))
+            # Send the response back through the REP socket, then forward
+            # from the dealer to the router back to the client:
+            self.sock.send(response)                        
             message = self.dealer.recv_multipart()
             self.router.send_multipart(message)
             
-    def monitor_timeouts(self):
-        while True:
-            time.sleep(1)
-            try:
-                with self.access_lock:
-                    # copy so as not to modify whilst iterating over:
-                    for key, lock in self.held_locks.copy().items():
-                        lock['timeout'] -= 1
-                        if lock['timeout'] <= 0:
-                            # lock holding has timed out. release lock:
-                            del self.held_locks[key]
-                            logger.warning('%s timed out and was released'%key)
-            except Exception:
-                traceback_lines = traceback.format_exception(sys.exc_type, sys.exc_value, sys.exc_traceback)
-                message = ''.join(traceback_lines)
-                logger.critical('unexpected exception, attempting to continue:\n%s'%message)
-                
+            
 if __name__ == '__main__':
     logger = setup_logging()
-    # First instantiation outside the while loop, so a failure to initialise will quit rather than loop forever:
-    try:
-        import ConfigParser
-        from LabConfig import LabConfig
-        port = LabConfig().get('ports','zlock')
-    except (ImportError, IOError, ConfigParser.NoOptionError):
-        logger.warning("Couldn't get port setting from LabConfig. Using default port")
-        port = DEFAULT_PORT
     server = ZMQLockServer(port)
     while True:
         try:
@@ -196,8 +127,7 @@ if __name__ == '__main__':
             logger.info('KeyboardInterrupt, stopping')
             break
         except Exception:
-            traceback_lines = traceback.format_exception(sys.exc_type, sys.exc_value, sys.exc_traceback)
-            message = ''.join(traceback_lines)
+            message = traceback.format_exc()
             logger.critical('unhandled exception, attempting to restart:\n%s'%message)
             # Close all sockets:
             context = zmq.Context.instance()

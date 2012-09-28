@@ -58,36 +58,37 @@ class ZMQLockClient(object):
         if not hasattr(self.local,'sock'):
             self.new_socket()
         while True:
-            messages = ['acquire',str(key),self.client_id(), str(timeout)]
-            self.local.sock.send_multipart(messages,zmq.NOBLOCK)
+            messages = ('acquire',str(key),self.local.client_id, str(timeout))
+            self.local.sock.send_multipart(messages, zmq.NOBLOCK)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
                 del self.local.sock
                 raise zmq.ZMQError('No response from server: timed out')
             else:    
-                signal, data = self.local.sock.recv_multipart()
-                if signal == 'error':
-                    raise zmq.ZMQError(data)
-                elif signal == 'retry':
-                    continue
-                elif signal == 'ok':
+                response = self.local.sock.recv()
+                if response == 'ok':
                     break
+                elif response == 'retry':
+                    continue
+                else:
+                    raise zmq.ZMQError(response)
+
         
     def release(self, key):
         if not hasattr(self.local,'sock'):
             self.new_socket()
-        messages = ['release',str(key),self.client_id()]
+        messages = ('release',str(key),self.local.client_id)
         self.local.sock.send_multipart(messages)
         events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
         if not events:
             del self.local.sock
             raise zmq.ZMQError('No response from server: timed out')
         else:    
-            signal, data = self.local.sock.recv_multipart()
-            if signal == 'error':
-                raise zmq.ZMQError(data)
-            elif signal == 'ok':
+            response = self.local.sock.recv()
+            if response == 'ok':
                 return
+            else:
+                raise zmq.ZMQError(response)
 
 
 def acquire(key, timeout=None):
