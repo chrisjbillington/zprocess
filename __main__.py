@@ -6,8 +6,8 @@ import time
 import logging, logging.handlers
 
 import zmq
-
-DEFAULT_PORT = 7339
+ 
+DEFAULT_PORT = 7339   
 RETRY_INTERVAL = 1000 # ms
 
 def setup_logging():
@@ -171,13 +171,16 @@ class ZMQLockServer(object):
                 logger.critical('unexpected exception, attempting to continue:\n%s'%message)
                 
 if __name__ == '__main__':
-    if len(sys.argv) > 1:
-        port = sys.argv[1]
-    else:
-        port = DEFAULT_PORT
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     logger = setup_logging()
     # First instantiation outside the while loop, so a failure to initialise will quit rather than loop forever:
+    try:
+        import ConfigParser
+        from LabConfig import LabConfig
+        port = LabConfig().get('ports','zlock')
+    except (ImportError, IOError, ConfigParser.NoOptionError):
+        logger.warning("Couldn't get port setting from LabConfig. Using default port")
+        port = DEFAULT_PORT
     server = ZMQLockServer(port)
     while True:
         try:
