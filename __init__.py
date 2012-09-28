@@ -1,10 +1,12 @@
 import os
 import socket
 import threading
+import time
 
 import zmq
 
 DEFAULT_TIMEOUT = 15 # seconds
+DEFAULT_PORT = 7339
 
 class ZMQLockClient(object):
 
@@ -14,7 +16,7 @@ class ZMQLockClient(object):
         self.host = socket.gethostbyname(host)
         self.port = port
         self.lock = threading.Lock()
-        # We'll store one zmq socket/poller for each thread, wit thread local storage:
+        # We'll store one zmq socket/poller for each thread, with thread local storage:
         self.local = threading.local()
         
     def new_socket(self):
@@ -131,15 +133,46 @@ class Lock(object):
     def __del__(self):
         if self.held:
             self.release()
-      
+
+            
+def ping(timeout=1):
+    start_time = time.time()
+    try:
+        _zmq_lock_client.say_hello(timeout)
+        return (time.time() - start_time)*1000
+    except NameError:
+        raise RuntimeError('Not connected to a zlock server')
+        
 def set_default_timeout(t):
     global DEFAULT_TIMEOUT
     DEFAULT_TIMEOUT = t
           
-def connect(host='localhost', port=7339, timeout=1):
+def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
     global _zmq_lock_client                 
     _zmq_lock_client = ZMQLockClient(host, port)
-    _zmq_lock_client.say_hello(timeout)
+    return ping(timeout)
+
+try:
+    import ConfigParser
+    from LabConfig import LabConfig
+    host = LabConfig().get('servers','zlock')
+    port = LabConfig().get('ports','zlock')
+except (ImportError, IOError, ConfigParser.NoOptionError):
+    # Couldn't get connection settings.  Try localhost, default
+    # port. Short timeout, don't want to waste time if it's not there:
+    try:
+        connect('localhost', timeout=0.05)
+        host, port = 'locahost', DEFAULT_PORT
+    except zmq.ZMQError:
+        # The user will have to call connect() themselves:
+        host = port = None
+    
+if host is not None:
+    # Automatically connect to the settings from LabConfig:
+    connect(host,port)
+
+    
+    
     
