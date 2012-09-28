@@ -43,7 +43,7 @@ class ZMQLockClient(object):
             timeout = 1000*timeout # convert to ms
         if not hasattr(self.local,'sock'):
             self.new_socket()
-        self.local.sock.send('hello')
+        self.local.sock.send('hello',zmq.NOBLOCK)
         events = self.local.poller.poll(timeout)
         if events:
             response = self.local.sock.recv()
@@ -57,7 +57,7 @@ class ZMQLockClient(object):
             self.new_socket()
         while True:
             messages = ['acquire',str(key),self.client_id(), str(timeout)]
-            self.local.sock.send_multipart(messages)
+            self.local.sock.send_multipart(messages,zmq.NOBLOCK)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
                 del self.local.sock
