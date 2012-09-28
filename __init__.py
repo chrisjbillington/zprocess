@@ -118,13 +118,13 @@ class Lock(object):
         self.held = False
         
     def acquire(self):
-        acquire(self.key)
         self.held = True
+        acquire(self.key)
         
     def release(self):
-        self.held = False
         release(self.key)
-
+        self.held = False
+                
     def __enter__(self):
         self.acquire()
         
@@ -135,7 +135,30 @@ class Lock(object):
         if self.held:
             self.release()
 
-            
+class ProcessLock(object):
+    def __init__(self, key):
+        self.key = key
+        self.held = False
+        
+    def acquire(self):
+        acquire(self.key)
+        self.held = True
+        
+    def release(self):
+        release(self.key)
+        self.held = False
+                
+    def __enter__(self):
+        self.acquire()
+        
+    def __exit__(self, *args):
+        self.release()
+        
+    def __del__(self):
+        if self.held:
+            self.release()
+
+        
 def ping(timeout=1):
     start_time = time.time()
     try:

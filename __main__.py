@@ -6,18 +6,11 @@ import logging, logging.handlers
 
 import zmq
 
+
 DEFAULT_PORT = 7339   
 RETRY_INTERVAL = 1000 # ms
 
-try:
-    import ConfigParser
-    from LabConfig import LabConfig
-    port = LabConfig().get('ports','zlock')
-except (ImportError, IOError, ConfigParser.NoOptionError):
-    logger.warning("Couldn't get port setting from LabConfig. Using default port")
-    port = DEFAULT_PORT
-        
-        
+
 def setup_logging():
     logger = logging.getLogger('ZLock')
     logger.setLevel(logging.DEBUG)
@@ -119,6 +112,15 @@ class ZMQLockServer(object):
             
 if __name__ == '__main__':
     logger = setup_logging()
+    
+    try:
+        import ConfigParser
+        from LabConfig import LabConfig
+        port = LabConfig().get('ports','zlock')
+    except (ImportError, IOError, ConfigParser.NoOptionError):
+        logger.warning("Couldn't get port setting from LabConfig. Using default port")
+        port = DEFAULT_PORT
+    
     server = ZMQLockServer(port)
     while True:
         try:
