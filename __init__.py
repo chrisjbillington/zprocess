@@ -45,45 +45,67 @@ class ZMQServer(object):
         return response
         
 class ZMQGet(object):
-    def __init__(self):
-        self.sock = None
-        self.poller = None
-        self.host = None
-        self.port = None
-        self.lock = threading.Lock()
+    def __init__(self,type='pyobj'):
+        self.local = threading.local()
+        self.type = type
         
+    def new_socket(self,host,port):
+        # Every time the REQ/REP cadence is broken, we need to create
+        # and bind a new socket to get it back on track. Also, we have
+        # a separate socket for each thread. Also a new socket if there
+        # is a different host or port:
+        self.local.host = gethostbyname(host)
+        self.local.port = int(port)
+        context = zmq.Context.instance()
+        self.local.sock = context.socket(zmq.REQ)
+        self.local.sock.setsockopt(zmq.LINGER, 0)
+        self.local.poller = zmq.Poller()
+        self.local.poller.register(self.local.sock, zmq.POLLIN)
+        self.local.sock.connect('tcp://%s:%d'%(self.local.host, self.local.port))
+        # Different send/recv methods depending on the desired protocol:
+        if self.type == 'pyobj':
+            self.local.send = self.local.sock.send_pyobj
+            self.local.recv = self.local.sock.recv_pyobj
+        elif self.type == 'multipart':
+            self.local.send = self.local.sock.send_multipart
+            self.local.recv = self.local.sock.recv_multipart
+        elif self.type == 'raw':
+            self.local.send = self.local.sock.send
+            self.local.recv = self.local.sock.recv
+            
     def __call__(self, port, host='localhost', data=None, timeout=5):
-        # zmq sockets are not threadsafe, so serialise all calls to this function:
-        with self.lock:
-            host = gethostbyname(host)
-            # We cache the socket so as to not exhaust ourselves of tcp
-            # ports. However if a different server is in use, we need a new
-            # socket. Also if we don't have a socket, we also need a new one:
-            if self.sock is None or host != self.host or port != self.port:
-                self.host = host
-                self.port = port
-                self.sock = context.socket(zmq.REQ)
-                self.sock.setsockopt(zmq.LINGER, 0)
-                self.poller = zmq.Poller()
-                self.poller.register(self.sock, zmq.POLLIN)
-                self.sock.connect('tcp://%s:%s'%(host, str(port)))
-            self.sock.send_pyobj(data, zmq.NOBLOCK)
-            events = self.poller.poll(timeout*1000) # convert timeout to ms
+        # We cache the socket so as to not exhaust ourselves of tcp
+        # ports. However if a different server is in use, we need a new
+        # socket. Also if we don't have a socket, we also need a new one:
+        if not hasattr(self.local,'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
+            self.new_socket(host,port)
+        if self.type == 'multipart' and isinstance(data,str):
+            # Wrap up a single string into a list so it doesn't get sent
+            # as one character per message!
+            data = [data]
+        try:
+            self.local.send(data, zmq.NOBLOCK)
+            events = self.local.poller.poll(timeout*1000) # convert timeout to ms
             if events:
-                response = self.sock.recv_pyobj()
+                response = self.local.recv()
             else:
                 # The server hasn't replied. We don't know what it's doing,
                 # so we'd better stop using this socket in case late messages
                 # arrive on it in the future:
-                self.sock = None
                 raise zmq.ZMQError('No response from server: timed out')
             if isinstance(response, Exception):
                 raise response
             else:
                 return response
-
-# Actually need to instantiate it!        
-zmq_get = ZMQGet()
+        except:
+            # Any exceptions, we want to stop using this socket:
+            del self.local.sock
+            raise
+            
+# Instantiate our zmq_get functions:        
+zmq_get = ZMQGet('pyobj')
+zmq_get_multipart = ZMQGet('multipart')
+zmq_get_raw = ZMQGet('raw')
 
 class HeartbeatServer(object):
     """A server which recieves messages from clients and echoes them
