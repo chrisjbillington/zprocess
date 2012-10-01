@@ -8,7 +8,8 @@ import zmq
 
 
 DEFAULT_PORT = 7339   
-RETRY_INTERVAL = 1000 # ms
+RETRY_INTERVAL = 100 # ms
+MAX_RESPONSE_TIME = 1000 # ms
 
 
 def setup_logging():
@@ -48,9 +49,13 @@ class ZMQLockServer(object):
         self.held_locks = {}
         
         # We have an extra ROUTER-DEALER layer before our REP socket
-        # so that we can monitor for incoming requests from clients
-        # on the ROUTER before having sent a response to the current
-        # client. Otherwise the REP socket hides this from us.
+        # so that we can delay replying to some requests until after
+        # other requests have been processed. This is useful in the case
+        # of lock contention: instead of replying saying 'sorry, the
+        # lock is already held', we can instead wait until some other
+        # requests have been processed (which may release the lock)
+        # before replying.
+
         context = zmq.Context.instance()
         self.router = context.socket(zmq.ROUTER)
         self.dealer = context.socket(zmq.DEALER)
@@ -64,7 +69,10 @@ class ZMQLockServer(object):
         self.router.bind('tcp://0.0.0.0:%d'%self.port)
         self.sock.bind('inproc://to-rep-socket')
         self.dealer.connect('inproc://to-rep-socket')
-    
+        
+        self.handlers = {'hello': self.hello, 'acquire': self.acquire, 'release': self.release}
+        
+        
     def hello(self):
         return 'hello'
             
@@ -74,9 +82,6 @@ class ZMQLockServer(object):
             logger.info('%s acquired %s'%(client_id, filepath))
             return 'ok'
         logger.info('%s is waiting to acquire %s'%(client_id, filepath))
-        # Wait at most RETRY_INTERVAl for incoming requests to the server
-        # before telling the client to retry:
-        self.poller.poll(RETRY_INTERVAL)
         return 'retry'
             
     def release(self, filepath, client_id):
@@ -86,28 +91,52 @@ class ZMQLockServer(object):
                 logger.info('%s released %s'%(client_id, filepath))
                 return 'ok'
         raise RuntimeError('lock timed out or was not acquired prior to release')
-                        
+    
+    def handle_one_request(self):
+        messages = self.sock.recv_multipart()
+        # Handle the request:
+        request, args = messages[0], messages[1:]
+        try:
+            response = self.handlers[request](*args)
+        except Exception:
+            response = traceback.format_exc()
+            logger.error('%s:\n%s'%(str(messages), response))
+        self.sock.send(response)
+        return response
+                          
     def run(self):
         logger.info('This is zlock server, running on port %d'%self.port)
-        handlers = {'hello': self.hello, 'acquire': self.acquire, 'release': self.release}
+        unprocessed_messages = []
         while True:
-            # Forward a request from the router, through
-            # the dealer, to the REP socket:
-            message = self.router.recv_multipart()
-            self.dealer.send_multipart(message)
-            messages = self.sock.recv_multipart()
-            # Handle the request:
-            request, args = messages[0], messages[1:]
-            try:
-                response = handlers[request](*args)
-            except Exception:
-                response = traceback.format_exc()
-                logger.error('%s:\n%s'%(str(messages), response))
-            # Send the response back through the REP socket, then forward
-            # from the dealer to the router back to the client:
-            self.sock.send(response)                        
-            message = self.dealer.recv_multipart()
-            self.router.send_multipart(message)
+            # Wait at most RETRY_INTERVAL for incoming request messages:
+            events = self.poller.poll(RETRY_INTERVAL)
+            if events:
+                # If there was a new request, this will be processed
+                # first, being prepended to unprocessed_messages.  Then we
+                # will process any other requests that are waiting,
+                # in case the locks they are waiting on have timed out,
+                # or MAX_RESPONSE_TIME has elapse and we need to reply
+                # to their client.
+                new_request_message = self.router.recv_multipart()
+                unprocessed_messages.insert(0, (new_request_message, time.time() + MAX_RESPONSE_TIME))
+            # Process all waiting request messages:
+            for request_message, expiry in unprocessed_messages[:]:
+                self.dealer.send_multipart(request_message)
+                response = self.handle_one_request()
+                reply_message = self.dealer.recv_multipart()
+                if response == 'retry' and time.time() < expiry:
+                    # Lock contention. Lock acquisition will be
+                    # retried after other requests are processed, or
+                    # every RETRY_INTERVAL. Don't give the client a
+                    # response yet.
+                    continue
+                else:
+                    # If success or error, tell the client about it. Or
+                    # if we have already been retrying their request for
+                    # MAX_RESPONSE_TIME, forward the 'retry' response
+                    # to them.
+                    unprocessed_messages.remove((request_message, expiry))
+                    self.router.send_multipart(reply_message)
             
             
 if __name__ == '__main__':
