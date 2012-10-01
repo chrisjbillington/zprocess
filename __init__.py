@@ -2,10 +2,11 @@ import os
 import socket
 import threading
 import time
+import weakref
 
 import zmq
 
-DEFAULT_TIMEOUT = 15 # seconds
+DEFAULT_TIMEOUT = 60 # seconds
 DEFAULT_PORT = 7339
 
 class ZMQLockClient(object):
@@ -111,54 +112,6 @@ def release(key):
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
 
-
-class Lock(object):
-    def __init__(self, key):
-        self.key = key
-        self.held = False
-        
-    def acquire(self):
-        self.held = True
-        acquire(self.key)
-        
-    def release(self):
-        release(self.key)
-        self.held = False
-                
-    def __enter__(self):
-        self.acquire()
-        
-    def __exit__(self, *args):
-        self.release()
-        
-    def __del__(self):
-        if self.held:
-            self.release()
-
-class ProcessLock(object):
-    def __init__(self, key):
-        self.key = key
-        self.held = False
-        
-    def acquire(self):
-        acquire(self.key)
-        self.held = True
-        
-    def release(self):
-        release(self.key)
-        self.held = False
-                
-    def __enter__(self):
-        self.acquire()
-        
-    def __exit__(self, *args):
-        self.release()
-        
-    def __del__(self):
-        if self.held:
-            self.release()
-
-        
 def ping(timeout=1):
     start_time = time.time()
     try:
@@ -177,7 +130,81 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     global _zmq_lock_client                 
     _zmq_lock_client = ZMQLockClient(host, port)
     return ping(timeout)
+    
+    
+class KeyedSingletons(object):
+    """A superclass for classes with the requirement that there not be
+    more than one instance with the same key. If an instance with the
+    same key is instantiated, the existing instance is returned instead.
+    __init__ is called regardless, so it should have an if statement
+    checking for non-existance of some attribute indicating previous
+    initialisation before proceeding
 
+    Furthermore subclasses should acquire the class_lock during their
+    __init__ methods so that there can be no possibility of two __init__
+    methods running simultaneously. """
+
+    instances = weakref.WeakValueDictionary()
+    class_lock = threading.Lock()
+    
+    def __new__(cls, key, *args, **kwargs):
+        with cls.class_lock:
+            return  cls.instances.setdefault(key,object.__new__(cls))
+        
+        
+class Lock(KeyedSingletons):
+            
+    def __init__(self, key):
+        with self.class_lock:
+            if not hasattr(self,'key'):
+                print 'Lock init:', key
+                self.key = key
+                self.lock = threading.Lock()
+                self.local_only = False
+        
+    def acquire(self):
+        self.lock.acquire()
+        if not self.local_only:
+            acquire(self.key)
+        
+    def release(self):
+        if not self.local_only:
+            release(self.key)
+        self.lock.release()
+        
+    def __enter__(self):
+        self.acquire()
+        
+    def __exit__(self, type, value, traceback):
+        self.release()
+        
+        
+class NetworkOnlyLock(KeyedSingletons):
+        
+    def __init__(self, key):
+        with self.class_lock:
+            if not hasattr(self,'key'):
+                print 'NetWorkOnly init:', key
+                self.key = key
+                # Get the Lock for this key:
+                self.lock = Lock(key)
+        
+    def acquire(self):
+        with self.lock.lock:
+            acquire(self.key)
+            self.lock.local_only = True
+            
+    def release(self):
+        with self.lock.lock:
+            release(self.key)
+            self.lock.local_only = False
+        
+    def __enter__(self):
+        self.acquire()
+        
+    def __exit__(self, type, value, traceback):
+        self.release()
+        
 try:
     import ConfigParser
     from LabConfig import LabConfig
