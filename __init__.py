@@ -17,16 +17,23 @@ def raise_exception_in_thread(exc_info):
 
 class ZMQServer(object):
     def __init__(self,port):
+        self.port = port
         self.sock = context.socket(zmq.REP)
         self.sock.setsockopt(zmq.LINGER, 0)
-        self.sock.bind('tcp://0.0.0.0:%s'%str(port))
+        self.sock.bind('tcp://0.0.0.0:%s'%str(self.port))
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
+        self.shutting_down = False
+        self.finished_shutting_down = threading.Event()
         self.mainloop_thread.start()
         
     def mainloop(self):
         while True:
             request_data = self.sock.recv_pyobj()
+            if request_data == 'shutdown' and self.shutting_down:
+                self.sock.close(linger=False)
+                self.finished_shutting_down.set()
+                break
             try:
                 response_data = self.handler(request_data)
             except Exception as e:
@@ -37,12 +44,19 @@ class ZMQServer(object):
                 response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request: %s'%str(e))
             self.sock.send_pyobj(response_data)
             
+    def shutdown(self):
+        self.shutting_down = True
+        sock = context.socket(zmq.REQ)
+        sock.connect('tcp://0.0.0.0:%s'%str(self.port))
+        sock.send_pyobj('shutdown')
+        self.finished_shutting_down.wait()
             
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example
         implementation"""
         response = 'This is an example ZMQServer. Your request was %s.'%str(request_data)
         return response
+        
         
 class ZMQGet(object):
     def __init__(self,type='pyobj'):
