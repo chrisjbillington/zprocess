@@ -8,8 +8,8 @@ import zmq
 
 
 DEFAULT_PORT = 7339   
-RETRY_INTERVAL = 100 # ms
-MAX_RESPONSE_TIME = 1000 # ms
+RETRY_INTERVAL = .1 # sec
+MAX_RESPONSE_TIME = 1 # sec
 LOGGING = True
 
 def setup_logging():
@@ -110,7 +110,7 @@ class ZMQLockServer(object):
         unprocessed_messages = []
         while True:
             # Wait at most RETRY_INTERVAL for incoming request messages:
-            events = self.poller.poll(RETRY_INTERVAL)
+            events = self.poller.poll(RETRY_INTERVAL*1000)
             if events:
                 # If there was a new request, this will be processed
                 # first, being prepended to unprocessed_messages.  Then we
@@ -130,6 +130,7 @@ class ZMQLockServer(object):
                     # retried after other requests are processed, or
                     # every RETRY_INTERVAL. Don't give the client a
                     # response yet.
+                    print time.time(), expiry
                     continue
                 else:
                     # If success or error, tell the client about it. Or
@@ -137,6 +138,7 @@ class ZMQLockServer(object):
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
+                    if LOGGING: logger.info('Replying...')
                     self.router.send_multipart(reply_message)
                     
                     
