@@ -77,21 +77,21 @@ class ZMQLockServer(object):
         if LOGGING: logger.info('someone said hello')
         return 'hello'
             
-    def acquire(self, filepath, client_id, timeout):
-        if (filepath not in self.held_locks) or self.held_locks[filepath]['expiry'] < time.time():
-            self.held_locks[filepath] = {'client_id': client_id, 'expiry': float(timeout) + time.time()}
-            if LOGGING: logger.info('%s acquired %s'%(client_id, filepath))
+    def acquire(self, key, client_id, timeout):
+        if (key not in self.held_locks) or self.held_locks[key]['expiry'] < time.time():
+            self.held_locks[key] = {'client_id': client_id, 'expiry': float(timeout) + time.time()}
+            if LOGGING: logger.info('%s acquired %s'%(client_id, key))
             return 'ok'
-        if LOGGING: logger.info('%s is waiting to acquire %s'%(client_id, filepath))
+        if LOGGING: logger.info('%s is waiting to acquire %s'%(client_id, key))
         return 'retry'
             
-    def release(self, filepath, client_id):
-        if filepath in self.held_locks:
-            if self.held_locks[filepath]['client_id'] == client_id and self.held_locks[filepath]['expiry'] > time.time():
-                del self.held_locks[filepath]
-                if LOGGING: logger.info('%s released %s'%(client_id, filepath))
+    def release(self, key, client_id):
+        if key in self.held_locks:
+            if self.held_locks[key]['client_id'] == client_id and self.held_locks[key]['expiry'] > time.time():
+                del self.held_locks[key]
+                if LOGGING: logger.info('%s released %s'%(client_id, key))
                 return 'ok'
-        raise RuntimeError('lock timed out or was not acquired prior to release')
+        raise RuntimeError('lock %s timed out or was not acquired prior to release by %s'%(key, client_id))
     
     def handle_one_request(self):
         messages = self.sock.recv_multipart()
