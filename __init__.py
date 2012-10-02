@@ -40,58 +40,69 @@ class ZMQLockClient(object):
     
     def say_hello(self,timeout=None):
         """Ping the server to test for a response"""
-        if timeout is None:
-            timeout = self.RESPONSE_TIMEOUT
-        else:
-            timeout = 1000*timeout # convert to ms
-        if not hasattr(self.local,'sock'):
-            self.new_socket()
-        start_time = time.time()
-        self.local.sock.send('hello',zmq.NOBLOCK)
-        events = self.local.poller.poll(timeout)
-        if events:
-            response = self.local.sock.recv()
-            if response == 'hello':
-                return round((time.time() - start_time)*1000,2)
-        del self.local.sock
-        raise zmq.ZMQError('No response from server: timed out')
-        
+        try:
+            if timeout is None:
+                timeout = self.RESPONSE_TIMEOUT
+            else:
+                timeout = 1000*timeout # convert to ms
+            if not hasattr(self.local,'sock'):
+                self.new_socket()
+            start_time = time.time()
+            self.local.sock.send('hello',zmq.NOBLOCK)
+            events = self.local.poller.poll(timeout)
+            if events:
+                response = self.local.sock.recv()
+                if response == 'hello':
+                    return round((time.time() - start_time)*1000,2)
+            raise zmq.ZMQError('No response from server: timed out')
+        except:
+            self.local.sock.close(linger=False)
+            del self.local.sock
+            raise
+            
     def acquire(self, key, timeout):
         if not hasattr(self.local,'sock'):
             self.new_socket()
-        while True:
-            messages = ('acquire',str(key),self.local.client_id, str(timeout))
-            self.local.sock.send_multipart(messages, zmq.NOBLOCK)
-            events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
-            if not events:
-                del self.local.sock
-                raise zmq.ZMQError('No response from server: timed out')
-            else:    
-                response = self.local.sock.recv()
-                if response == 'ok':
-                    break
-                elif response == 'retry':
-                    continue
-                else:
-                    raise zmq.ZMQError(response)
+        try:
+            while True:
+                messages = ('acquire',str(key),self.local.client_id, str(timeout))
+                self.local.sock.send_multipart(messages, zmq.NOBLOCK)
+                events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
+                if not events:
+                    raise zmq.ZMQError('No response from server: timed out')
+                else:    
+                    response = self.local.sock.recv()
+                    if response == 'ok':
+                        break
+                    elif response == 'retry':
+                        continue
+                    else:
+                        raise zmq.ZMQError(response)
+        except: 
+            self.local.sock.close(linger=False)
+            del self.local.sock
+            raise
 
         
     def release(self, key):
         if not hasattr(self.local,'sock'):
             self.new_socket()
-        messages = ('release',str(key),self.local.client_id)
-        self.local.sock.send_multipart(messages)
-        events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
-        if not events:
+        try:
+            messages = ('release',str(key),self.local.client_id)
+            self.local.sock.send_multipart(messages)
+            events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
+            if not events:
+                raise zmq.ZMQError('No response from server: timed out')
+            else:    
+                response = self.local.sock.recv()
+                if response == 'ok':
+                    return
+                else:
+                    raise zmq.ZMQError(response)
+        except:
+            self.local.sock.close(linger=False)
             del self.local.sock
-            raise zmq.ZMQError('No response from server: timed out')
-        else:    
-            response = self.local.sock.recv()
-            if response == 'ok':
-                return
-            else:
-                raise zmq.ZMQError(response)
-
+            raise
 
 def acquire(key, timeout=None):
     """Acquire a lock identified by key, for a specified time in
@@ -129,6 +140,9 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     communication with the server and ensures it is responding"""
     global _zmq_lock_client                 
     _zmq_lock_client = ZMQLockClient(host, port)
+    # We ping twice since the first does initialisation and so takes
+    # longer. The second will be more accurate:
+    ping(timeout)
     return ping(timeout)
     
     
