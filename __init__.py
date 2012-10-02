@@ -46,12 +46,13 @@ class ZMQLockClient(object):
             timeout = 1000*timeout # convert to ms
         if not hasattr(self.local,'sock'):
             self.new_socket()
+        start_time = time.time()
         self.local.sock.send('hello',zmq.NOBLOCK)
         events = self.local.poller.poll(timeout)
         if events:
             response = self.local.sock.recv()
             if response == 'hello':
-                return
+                return round((time.time() - start_time)*1000,2)
         del self.local.sock
         raise zmq.ZMQError('No response from server: timed out')
         
@@ -115,8 +116,7 @@ def release(key):
 def ping(timeout=1):
     start_time = time.time()
     try:
-        _zmq_lock_client.say_hello(timeout)
-        return (time.time() - start_time)*1000
+        return _zmq_lock_client.say_hello(timeout)
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
         
@@ -157,7 +157,6 @@ class Lock(KeyedSingletons):
     def __init__(self, key):
         with self.class_lock:
             if not hasattr(self,'key'):
-                print 'Lock init:', key
                 self.key = key
                 self.lock = threading.Lock()
                 self.local_only = False
@@ -184,7 +183,6 @@ class NetworkOnlyLock(KeyedSingletons):
     def __init__(self, key):
         with self.class_lock:
             if not hasattr(self,'key'):
-                print 'NetWorkOnly init:', key
                 self.key = key
                 # Get the Lock for this key:
                 self.lock = Lock(key)

@@ -10,7 +10,7 @@ import zmq
 DEFAULT_PORT = 7339   
 RETRY_INTERVAL = 100 # ms
 MAX_RESPONSE_TIME = 1000 # ms
-
+LOGGING = True
 
 def setup_logging():
     logger = logging.getLogger('ZLock')
@@ -74,21 +74,22 @@ class ZMQLockServer(object):
         
         
     def hello(self):
+        if LOGGING: logger.info('someone said hello')
         return 'hello'
             
     def acquire(self, filepath, client_id, timeout):
         if (filepath not in self.held_locks) or self.held_locks[filepath]['expiry'] < time.time():
             self.held_locks[filepath] = {'client_id': client_id, 'expiry': float(timeout) + time.time()}
-            logger.info('%s acquired %s'%(client_id, filepath))
+            if LOGGING: logger.info('%s acquired %s'%(client_id, filepath))
             return 'ok'
-        logger.info('%s is waiting to acquire %s'%(client_id, filepath))
+        if LOGGING: logger.info('%s is waiting to acquire %s'%(client_id, filepath))
         return 'retry'
             
     def release(self, filepath, client_id):
         if filepath in self.held_locks:
             if self.held_locks[filepath]['client_id'] == client_id and self.held_locks[filepath]['expiry'] > time.time():
                 del self.held_locks[filepath]
-                logger.info('%s released %s'%(client_id, filepath))
+                if LOGGING: logger.info('%s released %s'%(client_id, filepath))
                 return 'ok'
         raise RuntimeError('lock timed out or was not acquired prior to release')
     
@@ -105,7 +106,7 @@ class ZMQLockServer(object):
         return response
                           
     def run(self):
-        logger.info('This is zlock server, running on port %d'%self.port)
+        if LOGGING: logger.info('This is zlock server, running on port %d'%self.port)
         unprocessed_messages = []
         while True:
             # Wait at most RETRY_INTERVAL for incoming request messages:
@@ -137,17 +138,17 @@ class ZMQLockServer(object):
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
                     self.router.send_multipart(reply_message)
-            
-            
+                    
+                    
 if __name__ == '__main__':
-    logger = setup_logging()
+    if LOGGING: logger = setup_logging()
     
     try:
         import ConfigParser
         from LabConfig import LabConfig
         port = LabConfig().get('ports','zlock')
     except (ImportError, IOError, ConfigParser.NoOptionError):
-        logger.warning("Couldn't get port setting from LabConfig. Using default port")
+        if LOGGING: logger.warning("Couldn't get port setting from LabConfig. Using default port")
         port = DEFAULT_PORT
     
     server = ZMQLockServer(port)
@@ -155,11 +156,11 @@ if __name__ == '__main__':
         try:
             server.run()
         except KeyboardInterrupt:
-            logger.info('KeyboardInterrupt, stopping')
+            if LOGGING: logger.info('KeyboardInterrupt, stopping')
             break
         except Exception:
             message = traceback.format_exc()
-            logger.critical('unhandled exception, attempting to restart:\n%s'%message)
+            if LOGGING: logger.critical('unhandled exception, attempting to restart:\n%s'%message)
             # Close all sockets:
             context = zmq.Context.instance()
             context.destroy(linger=False)
