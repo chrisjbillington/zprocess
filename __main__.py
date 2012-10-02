@@ -15,7 +15,7 @@ MAX_RESPONSE_TIME = 1000 # ms
 def setup_logging():
     logger = logging.getLogger('ZLock')
     logger.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(name)s: %(message)s')
+    formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
     if sys.stdout.isatty():
         terminalhandler = logging.StreamHandler(sys.stdout)
         terminalhandler.setFormatter(formatter)
