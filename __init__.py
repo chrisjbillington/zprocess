@@ -205,25 +205,3 @@ class NetworkOnlyLock(KeyedSingletons):
     def __exit__(self, type, value, traceback):
         self.release()
         
-try:
-    import ConfigParser
-    from LabConfig import LabConfig
-    host = LabConfig().get('servers','zlock')
-    port = LabConfig().get('ports','zlock')
-except (ImportError, IOError, ConfigParser.NoOptionError):
-    # Couldn't get connection settings.  Try localhost, default
-    # port. Short timeout, don't want to waste time if it's not there:
-    try:
-        connect('localhost', timeout=0.05)
-        host, port = 'locahost', DEFAULT_PORT
-    except zmq.ZMQError:
-        # The user will have to call connect() themselves:
-        host = port = None
-    
-if host is not None:
-    # Automatically connect to the settings from LabConfig:
-    connect(host,port)
-
-    
-    
-    
