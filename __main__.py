@@ -3,12 +3,12 @@ import sys
 import traceback
 import time
 import logging, logging.handlers
+import random
 
 import zmq
 
 
 DEFAULT_PORT = 7339   
-RETRY_INTERVAL = .1 # sec
 MAX_RESPONSE_TIME = 1 # sec
 LOGGING = True
 
@@ -108,9 +108,11 @@ class ZMQLockServer(object):
     def run(self):
         if LOGGING: logger.info('This is zlock server, running on port %d'%self.port)
         unprocessed_messages = []
+        poll_interval = -1
         while True:
             # Wait at most RETRY_INTERVAL for incoming request messages:
-            events = self.poller.poll(RETRY_INTERVAL*1000)
+            events = self.poller.poll(poll_interval)
+            poll_interval = -1
             if events:
                 # If there was a new request, this will be processed
                 # first, being prepended to unprocessed_messages.  Then we
@@ -120,17 +122,22 @@ class ZMQLockServer(object):
                 # to their client.
                 new_request_message = self.router.recv_multipart()
                 unprocessed_messages.insert(0, (new_request_message, time.time() + MAX_RESPONSE_TIME))
+                if LOGGING: logger.debug(' '.join(new_request_message[1:]))
+            else:
+                if LOGGING: logger.debug('processing existing requests')
             # Process all waiting request messages:
             for request_message, expiry in unprocessed_messages[:]:
                 self.dealer.send_multipart(request_message)
                 response = self.handle_one_request()
                 reply_message = self.dealer.recv_multipart()
-                if response == 'retry' and time.time() < expiry:
-                    # Lock contention. Lock acquisition will be
-                    # retried after other requests are processed, or
-                    # every RETRY_INTERVAL. Don't give the client a
-                    # response yet.
-                    print time.time(), expiry
+                if response == 'retry' and expiry - time.time() > 0:
+                    # Lock contention. Lock acquisition will be retried
+                    # after other requests are processed, or once maximum
+                    # response time is reached. Don't give the client
+                    # a response yet:
+                    # conversion to ms and a +1 to ensure that
+                    # time_until_response_required truly is zero or less
+                    # by the time we next get here
                     continue
                 else:
                     # If success or error, tell the client about it. Or
@@ -138,10 +145,20 @@ class ZMQLockServer(object):
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
-                    if LOGGING: logger.info('Replying...')
+#                    if LOGGING: logger.info('Replying...')
                     self.router.send_multipart(reply_message)
-                    
-                    
+            # Shuffle the waiting requests so as to remove any systematic
+            # ordering effects:
+            random.shuffle(unprocessed_messages)
+            # When is the soonest time that a client requires a
+            # response? Process the requests again then:
+            if unprocessed_messages:
+                poll_interval = 1000*min(t - time.time() for m, t in unprocessed_messages)
+                # ensure non-negative, that would block forever:
+                poll_interval = max(0, poll_interval)
+            else:
+                poll_interval = -1
+                
 if __name__ == '__main__':
     if LOGGING: logger = setup_logging()
     

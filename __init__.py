@@ -175,9 +175,11 @@ def _delayed_release_loop(rep_sock, poller):
                     # the Lock so that it's not garbage collected
                     # and its state is maintained even if there are
                     # no other instances left:
-                    locks_to_release[key] = (Lock(key), client_id)
-                    max_release_times[key] = time.time() + MAX_CACHE_TIME
-                release_times[key] = time.time() + MIN_CACHE_TIME
+                    lock = Lock(key)
+                    locks_to_release[key] = (lock, client_id)
+                    max_release_times[key] = lock.acquire_time + MAX_CACHE_TIME
+                release_time = time.time() + MIN_CACHE_TIME
+                release_times[key] = min(release_time, max_release_times[key])
             rep_sock.send('')
         for key, release_time in release_times.items():
 #            print 'release loop: checking', key, release_time
@@ -252,7 +254,8 @@ class Lock(object):
         self.lock.acquire()
         if not self.local_only:
             acquire(self.key)
-        
+            self.acquire_time = time.time()
+            
     def release(self):
         if not self.local_only:
             if MIN_CACHE_TIME:
