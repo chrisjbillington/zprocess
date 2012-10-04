@@ -9,8 +9,13 @@ import zmq
 
 import zlock
 
-# Protocol description:
 
+MAX_RESPONSE_TIME = 1 # sec
+LOGGING = True
+
+
+# Protocol description:
+#
 # Clients make requests as multipart zmq messages. To acquire a lock,
 # the request should be:
 #
@@ -71,10 +76,6 @@ import zlock
 # to show that it is alive and working. Or you can send ['status'],
 # and the server will respond with a message with information about
 # currently held locks.
-
-
-MAX_RESPONSE_TIME = 1 # sec
-LOGGING = True
 
 def setup_logging():
     logger = logging.getLogger('ZLock')
