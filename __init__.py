@@ -89,6 +89,23 @@ class ZMQLockClient(object):
             self.local.sock.close(linger=False)
             del self.local.sock
             raise
+    
+    def status(self):
+        try:
+            if not hasattr(self.local,'sock'):
+                self.new_socket()
+            self.local.sock.send('status',zmq.NOBLOCK)
+            events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
+            if events:
+                response = self.local.sock.recv()
+                if response.startswith('ok'):
+                    return response
+                raise zmq.ZMQError(response)
+            raise zmq.ZMQError('No response from server: timed out')
+        except:
+            self.local.sock.close(linger=False)
+            del self.local.sock
+            raise
             
     def acquire(self, key, timeout):
         if not hasattr(self.local,'sock'):
@@ -333,12 +350,17 @@ def release(key, client_id=None):
         raise RuntimeError('Not connected to a zlock server')
 
 def ping(timeout=1):
-    start_time = time.time()
     try:
         return _zmq_lock_client.say_hello(timeout)
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
-        
+
+def status():
+    try:
+        return _zmq_lock_client.status()
+    except NameError:
+        raise RuntimeError('Not connected to a zlock server')
+              
 def set_default_timeout(t):
     """Sets how long the locks should be acquired for before the server
     times them out and allows other clients to acquire them. Attempting
