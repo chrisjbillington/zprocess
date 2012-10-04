@@ -107,6 +107,23 @@ class ZMQLockClient(object):
             del self.local.sock
             raise
             
+    def clear(self, clear_all):
+        try:
+            if not hasattr(self.local,'sock'):
+                self.new_socket()
+            self.local.sock.send_multipart(['clear', str(clear_all)],zmq.NOBLOCK)
+            events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
+            if events:
+                response = self.local.sock.recv()
+                if response == 'ok':
+                    return
+                raise zmq.ZMQError(response)
+            raise zmq.ZMQError('No response from server: timed out')
+        except:
+            self.local.sock.close(linger=False)
+            del self.local.sock
+            raise
+            
     def acquire(self, key, timeout):
         if not hasattr(self.local,'sock'):
             self.new_socket()
@@ -351,6 +368,12 @@ def status():
         return _zmq_lock_client.status()
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
+        
+def clear(clear_all):
+    try:
+        return _zmq_lock_client.clear(clear_all)
+    except NameError:
+        raise RuntimeError('Not connected to a zlock server')
               
 def set_default_timeout(t):
     """Sets how long the locks should be acquired for before the server
@@ -372,7 +395,35 @@ def set_cache_time(min=0, max=30):
     global MAX_CACHE_TIME
     MIN_CACHE_TIME = min
     MAX_CACHE_TIME = max
-    
+
+def guess_server_address():
+    host, port = None, None
+
+    if len(sys.argv) > 1:
+        host = sys.argv[1]
+    if len(sys.argv) > 2:
+        port = sys.argv[2]
+
+    if host is None or port is None:    
+        try:
+            import ConfigParser
+            from LabConfig import LabConfig
+            config = LabConfig()
+        except (ImportError, IOError):
+            host, port = 'localhost', zlock.DEFAULT_PORT
+        else:
+            if host is None:
+                try:
+                    host = config.get('servers','zlock')
+                except ConfigParser.NoOptionError:
+                    host = 'localhost'
+            if port is None:
+                try:
+                    port = config.get('ports','zlock')
+                except ConfigParser.NoOptionError:
+                    port = zlock.DEFAULT_PORT
+    return host, port
+        
 def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
