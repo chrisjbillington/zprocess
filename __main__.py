@@ -7,8 +7,8 @@ import random
 
 import zmq
 
+import zlock
 
-DEFAULT_PORT = 7339   
 MAX_RESPONSE_TIME = 1 # sec
 LOGGING = True
 
@@ -70,7 +70,7 @@ class ZMQLockServer(object):
         self.sock.bind('inproc://to-rep-socket')
         self.dealer.connect('inproc://to-rep-socket')
         
-        self.handlers = {'hello': self.hello, 'acquire': self.acquire, 'release': self.release}
+        self.handlers = {'hello': self.hello, 'acquire': self.acquire, 'release': self.release, 'status': self.status}
         
         
     def hello(self):
@@ -93,6 +93,23 @@ class ZMQLockServer(object):
                 return 'ok'
         raise RuntimeError('lock %s timed out or was not acquired prior to release by %s'%(key, client_id))
     
+    def status(self):
+        lines = ['ok']
+        fmt = lambda key, client, expiry: ('-------\n'
+                                           '   key: %s\n'%key +
+                                           'client: %s\n'%client+
+                                           'expiry: %d'%expiry)
+                                           
+        for key, lock in self.held_locks.items():
+            lines.append(fmt(key, lock['client_id'], int(lock['expiry']-time.time())))
+        lines.append('-------')
+        if not self.held_locks:
+            lines.append('no locks currently held')
+            lines.append('-------')
+        response = '\n'.join(lines)
+        if LOGGING: logger.info('Got a status request. Status is: %s'%response)
+        return response
+        
     def handle_one_request(self):
         messages = self.sock.recv_multipart()
         # Handle the request:
@@ -168,7 +185,7 @@ if __name__ == '__main__':
         port = LabConfig().get('ports','zlock')
     except (ImportError, IOError, ConfigParser.NoOptionError):
         if LOGGING: logger.warning("Couldn't get port setting from LabConfig. Using default port")
-        port = DEFAULT_PORT
+        port = zlock.DEFAULT_PORT
     
     server = ZMQLockServer(port)
     while True:
