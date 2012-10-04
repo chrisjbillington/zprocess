@@ -135,7 +135,11 @@ class ZMQLockServer(object):
         self.sock.bind('inproc://to-rep-socket')
         self.dealer.connect('inproc://to-rep-socket')
         
-        self.handlers = {'hello': self.hello, 'acquire': self.acquire, 'release': self.release, 'status': self.status}
+        self.handlers = {'hello': self.hello, 
+                         'acquire': self.acquire,
+                         'release': self.release,
+                         'status': self.status,
+                         'clear': self.clear}
         
         
     def hello(self):
@@ -163,7 +167,7 @@ class ZMQLockServer(object):
         fmt = lambda key, client, expiry: ('-------\n'
                                            '   key: %s\n'%key +
                                            'client: %s\n'%client+
-                                           'expiry: %d'%expiry)
+                                           'expiry: %d'%expiry + ' [EXPIRED]' if expiry < 0 else '')
                                            
         for key, lock in self.held_locks.items():
             lines.append(fmt(key, lock['client_id'], int(lock['expiry']-time.time())))
@@ -174,6 +178,16 @@ class ZMQLockServer(object):
         response = '\n'.join(lines)
         if LOGGING: logger.info('Got a status request. Status is: %s'%response)
         return response
+    
+    def clear(self, clear_all=False):
+        if clear_all:
+            if clear_all.lower() == 'false':
+                clear_all = False
+        if LOGGING: logger.info('Got a request to clear %s locks'%('*all*' if clear_all else 'expired'))
+        for key, lock in self.held_locks.copy().items():
+            if clear_all or time.time() > lock['expiry']:
+                del self.held_locks[key]
+        return 'ok'
         
     def handle_one_request(self):
         messages = self.sock.recv_multipart()
