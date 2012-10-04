@@ -9,6 +9,70 @@ import zmq
 
 import zlock
 
+# Protocol description:
+
+# Clients make requests as multipart zmq messages. To acquire a lock,
+# the request should be:
+#
+# ['acquire', some_lock_key, client_id, timeout]
+#
+# where some_lock_key is a string uniquely identifying the resource
+# that is being locked, client id is a string uniquely identifying who
+# is acquiring the lock, and timeout is how long (in seconds) the lock
+# should be held for in the event that it is not released, say if the
+# client process dies. So for example a request to lock access to a file
+# might be:
+#
+# ['acquire', 'Z:\\some_folder\some_file.h5', 'hostname:process_id:thread-id', '30']
+#
+# The server will then block for up to MAX_RESPONSE_TIME attempting to
+# acquire the lock (it continues to serve other requests in this time,
+# some of which may release the lock), and responds as soon as it can
+# (immediately if the lock is currently free).  If it succeeds it will
+# respond with a single zmq message:
+#
+# ['ok']
+#
+# If it can't acquire it after MAX_RESPONSE_TIME, it will instead
+# respond with:
+#
+# ['retry']
+#
+# The client is free to retry immediately at that point, if it is going
+# to retry there is no need to insert a delay before doing so. Not having
+# a delay will not create tons of network activity as this only happens
+# once every MAX_RESPONSE_TIME in the case of ongoing lock contention.
+
+#
+# Anything else the server replies with will be a single zmq message
+# and should be considered an error and raised in the client code. This
+# will occur if the client provides the wrong number of messages, if it
+# spells 'acquire' wrong or similar, or if there is an exception in the
+# server due to a bug in the server itself. If you see a server crash,
+# please tell me (chrisjbillington@gmail.com) about it.
+#
+# To release a lock, send a three-part multipart message:
+#
+# ['release', some_lock_key, client_id]
+#
+# so for example:
+#
+# ['release', 'Z:\\some_folder\some_file.h5', 'hostname:process_id:thread-id']
+#
+# The server will respond with:
+#
+# ['ok']
+#
+# And again anything else (always a single message though) indicates an
+# exception, perhaps inicating that the client releasing the lock never
+# held it in the first place, or that it had expired.
+#
+# You can also send ['hello'], and the server will respond with ['hello']
+# to show that it is alive and working. Or you can send ['status'],
+# and the server will respond with a message with information about
+# currently held locks.
+
+
 MAX_RESPONSE_TIME = 1 # sec
 LOGGING = True
 
@@ -162,7 +226,6 @@ class ZMQLockServer(object):
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
-#                    if LOGGING: logger.info('Replying...')
                     self.router.send_multipart(reply_message)
             # Shuffle the waiting requests so as to remove any systematic
             # ordering effects:
