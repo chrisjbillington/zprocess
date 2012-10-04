@@ -8,5 +8,6 @@ try:
 except (ImportError, IOError, ConfigParser.NoOptionError):
     print "Couldn't get host/port settings from LabConfig. Using localhost %d"%zlock.DEFAULT_PORT
     
+print 'status of zlock server on %s %s is:'%(host, port)
 zlock.connect(host, port)
 print zlock.status()
