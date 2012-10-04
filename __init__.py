@@ -180,14 +180,10 @@ def _delayed_release_loop(rep_sock, poller):
         events = poller.poll(poll_duration)
         if events:
             request, key, client_id = rep_sock.recv_multipart()
-#            print 'release loop: request:', request, key, client_id
             if request == 'cancel' and key in locks_to_release:
-#                print 'release loop: cancelled'
                 release_times[key] = max_release_times[key]
             elif request == 'add':
-#                print 'release loop: not cancelled'
                 if key not in locks_to_release:
-#                    print 'release loop: new key'
                     # It's important to hold onto a reference to
                     # the Lock so that it's not garbage collected
                     # and its state is maintained even if there are
@@ -199,16 +195,12 @@ def _delayed_release_loop(rep_sock, poller):
                 release_times[key] = min(release_time, max_release_times[key])
             rep_sock.send('')
         for key, release_time in release_times.items():
-#            print 'release loop: checking', key, release_time
             if time.time() > release_time:
-#                print 'release loop: has gone past release_time:', key
                 lock, client_id = locks_to_release[key]
                 with lock.lock:
-#                    print 'release loop: got lock'
                     lock.local_only = False
                     try:
                         _zmq_lock_client.release(key, client_id)
-#                        print 'release loop: released successfully'
                     except Exception:
                         # Raise the exception in a separate thread
                         # so the user knows about it but we can
@@ -228,7 +220,6 @@ def _delayed_release_loop(rep_sock, poller):
         else:
             # poll will block until there are events:
             poll_duration = -1
-#        print 'release loop: next poll duration is', poll_duration
                         
         
 class Lock(object):
@@ -386,16 +377,11 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
     global _zmq_lock_client                 
-#    print 'creating client'
     _zmq_lock_client = ZMQLockClient(host, port)
-#    print 'client created'
     # We ping twice since the first does initialisation and so takes
     # longer. The second will be more accurate:
-#    print 'about to ping'
-#    ping(timeout)
-#    print 'ping done'
+    ping(timeout)
     try:
-#        print 'starting delayed_release thread'
         global _delayed_release_thread
         _delayed_release_thread
     except NameError:
@@ -411,27 +397,12 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
         # Since I want other modules to be able to call connect() whilst
         # they are being imported, this seemed like a logical solution.
         context = zmq.Context.instance()
-#        print 'context obtained'
         rep_sock = context.socket(zmq.REP)
-#        print 'rep socket created'
         poller = zmq.Poller()
         poller.register(rep_sock, zmq.POLLIN)
-#        print 'poller created'
         rep_sock.bind('inproc://delayed-release')
-#        print 'socket bound'
         _delayed_release_thread = threading.Thread(target=_delayed_release_loop,args=(rep_sock, poller))
-#        print 'thread created'
         _delayed_release_thread.daemon = True
-#        print 'starting thread'
         _delayed_release_thread.start()
-#        print 'thread started'
     return ping(timeout)
 
-if __name__ == '__main__':
-    connect()
-    l = Lock('foo')
-    while True:
-        start_time = time.time()
-        l.acquire()
-        l.release()
-        print time.time() - start_time
