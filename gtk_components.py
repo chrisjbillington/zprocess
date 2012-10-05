@@ -2,8 +2,10 @@ import threading
 import gtk
 import pango
 
+import zmq
+
 class OutputBox(object):
-    def __init__(self,container, queue):
+    def __init__(self, container):
     
         self.output_view = gtk.TextView()
         container.add(self.output_view)
@@ -19,18 +21,45 @@ class OutputBox(object):
         self.output_view.set_editable(False)
         self.output_view.show()
                 
-        self.queue = queue
-        self.mainloop = threading.Thread(target=self.mainloop)
+        context = zmq.Context.instance()
+        socket = context.socket(zmq.PULL)
+        socket.setsockopt(zmq.LINGER, 0)
+        self.port = socket.bind_to_random_port('tcp://127.0.0.1')
+        
+        # Tread-local storage so we can have one push_sock per
+        # thread. push_sock is for sending data to the output queue in
+        # a non-blocking way from the same process as this object is
+        # instantiated in.  Providing the function OutputBox.output()
+        # for this is much easier than expecting every thread to have
+        # its own push socket that the user has to manage. Also we can't
+        # give callers direct access to the output code, because then
+        # it matters whether they hold the gtk lock, and we'll either
+        # have deadlocks when they already do, or have to have calling
+        # code peppered with lock acquisitions. Screw that.
+        self.local = threading.local()
+        
+        self.mainloop = threading.Thread(target=self.mainloop,args=(socket,))
         self.mainloop.daemon = True
         self.mainloop.start()
+    
+    def new_socket(self):
+        # One socket per thread, so we don't have to acquire a lock
+        # to send:
+        context = zmq.Context.instance()
+        self.local.push_sock = context.socket(zmq.PUSH)
+        self.local.push_sock.setsockopt(zmq.LINGER, 0)
+        self.local.push_sock.connect('tcp://127.0.0.1:%d'%self.port)
         
-    def mainloop(self):
+    def output(self, text,red=False):
+        if not hasattr(self.local, 'push_sock'):
+            self.new_socket()
+        # Queue the output on the socket:
+        self.local.push_sock.send_multipart(['stderr' if red else 'stdout',text])
+        
+    def mainloop(self,socket):
         while True:
-            stream, text = self.queue.get()
-            if stream == 'stderr':
-                red = True
-            else:
-                red = False
+            stream, text = socket.recv_multipart()
+            red = (stream == 'stderr')
             with gtk.gdk.lock:
                 # Check if the scrollbar is at the bottom of the textview:
                 scrolling = self.output_adjustment.value == self.output_adjustment.upper - self.output_adjustment.page_size
