@@ -206,12 +206,21 @@ class ReadQueue(object):
 
 class OutputInterceptor(object):
 
-    def __init__(self, queue, streamname='stdout'):
-        self.queue = queue
+    def __init__(self, port, streamname='stdout'):
         self.streamname = streamname
         self.real_stream = getattr(sys,streamname)
         self.fileno = self.real_stream.fileno
-        
+        self.local = threading.local()
+        self.port = port
+    
+    def new_socket(self):
+        # One socket per thread, so we don't have to acquire a lock
+        # to send:
+        context = zmq.Context.instance()
+        self.local.sock = context.socket(zmq.PUSH)
+        self.local.sock.setsockopt(zmq.LINGER, 0)
+        self.local.sock.connect('tcp://127.0.0.1:%d'%self.port)
+            
     def connect(self):
         setattr(sys,self.streamname,self)
     
@@ -219,7 +228,9 @@ class OutputInterceptor(object):
         setattr(sys,self.streamname,self.real_stream)
             
     def write(self, s):
-        self.queue.put([self.streamname, s])
+        if not hasattr(self.local, 'sock'):
+            self.new_socket()
+        self.local.sock.send_multipart([self.streamname, s])
         
     def close(self):
         self.disconnect()
@@ -229,7 +240,7 @@ class OutputInterceptor(object):
         pass
         
             
-def subprocess_with_queues(path):
+def subprocess_with_queues(path, output_redirection_port=0):
 
     to_child = context.socket(zmq.PUSH)
     from_child = context.socket(zmq.PULL)
@@ -240,7 +251,8 @@ def subprocess_with_queues(path):
     
     heartbeat_port = heartbeat_server.run()
     
-    child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child),str(heartbeat_port)])
+    child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child), 
+                             str(heartbeat_port), str(output_redirection_port)])
     
     port_to_child = from_child.recv()
     to_child.connect('tcp://127.0.0.1:%s'%port_to_child)
@@ -250,10 +262,11 @@ def subprocess_with_queues(path):
     
     return to_child, from_child, child
     
-def setup_connection_with_parent(lock=False,redirect_output=False):
+def setup_connection_with_parent(lock=False):
     port_to_parent = int(sys.argv[1])
     port_to_heartbeat_server = int(sys.argv[2])
-
+    output_redirection_port = int(sys.argv[3])
+    
     to_parent = context.socket(zmq.PUSH)
     from_parent = context.socket(zmq.PULL)
     to_self = context.socket(zmq.PUSH)
@@ -267,9 +280,9 @@ def setup_connection_with_parent(lock=False,redirect_output=False):
     from_parent = ReadQueue(from_parent, to_self)
     to_parent = WriteQueue(to_parent)
     
-    if redirect_output:
-        stdout = OutputInterceptor(to_parent)
-        stderr = OutputInterceptor(to_parent,'stderr')
+    if output_redirection_port: # zero indicates no output redirection
+        stdout = OutputInterceptor(output_redirection_port)
+        stderr = OutputInterceptor(output_redirection_port,'stderr')
         stdout.connect()
         stderr.connect()
     
