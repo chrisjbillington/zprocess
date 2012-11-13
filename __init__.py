@@ -121,6 +121,54 @@ zmq_get = ZMQGet('pyobj')
 zmq_get_multipart = ZMQGet('multipart')
 zmq_get_raw = ZMQGet('raw')
 
+class ZMQPush(object):
+    def __init__(self,type='pyobj'):
+        self.local = threading.local()
+        self.type = type
+        
+    def new_socket(self,host,port):
+        # Every time there is an exception, we need to create and
+        # bind a new socket. Also, we have a separate socket for each
+        # thread. Also a new socket if there is a different host or port:
+        self.local.host = gethostbyname(host)
+        self.local.port = int(port)
+        context = zmq.Context.instance()
+        self.local.sock = context.socket(zmq.PUSH)
+        self.local.sock.setsockopt(zmq.LINGER, 0)
+        self.local.sock.connect('tcp://%s:%d'%(self.local.host, self.local.port))
+        # Different send/recv methods depending on the desired protocol:
+        if self.type == 'pyobj':
+            self.local.send = self.local.sock.send_pyobj
+            self.local.recv = self.local.sock.recv_pyobj
+        elif self.type == 'multipart':
+            self.local.send = self.local.sock.send_multipart
+            self.local.recv = self.local.sock.recv_multipart
+        elif self.type == 'raw':
+            self.local.send = self.local.sock.send
+            self.local.recv = self.local.sock.recv
+            
+    def __call__(self, port, host='localhost', data=None, timeout=5):
+        # We cache the socket so as to not exhaust ourselves of tcp
+        # ports. However if a different server is in use, we need a new
+        # socket. Also if we don't have a socket, we also need a new one:
+        if not hasattr(self.local,'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
+            self.new_socket(host,port)
+        if self.type == 'multipart' and isinstance(data,str):
+            # Wrap up a single string into a list so it doesn't get sent
+            # as one character per message!
+            data = [data]
+        try:
+            self.local.send(data, zmq.NOBLOCK)
+        except:
+            # Any exceptions, we want to stop using this socket:
+            del self.local.sock
+            raise
+
+# Instantiate our zmq_push functions:        
+zmq_push = ZMQPush('pyobj')
+zmq_push_multipart = ZMQPush('multipart')
+zmq_push_raw = ZMQPush('raw')
+            
 class HeartbeatServer(object):
     """A server which recieves messages from clients and echoes them
     back. There is only one server for however many clients there are"""
