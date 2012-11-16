@@ -84,7 +84,7 @@ class ZMQLockClient(object):
                 response = self.local.sock.recv()
                 if response == 'hello':
                     return round((time.time() - start_time)*1000,2)
-            raise zmq.ZMQError('No response from server: timed out')
+            raise zmq.ZMQError('No response from zlock server: timed out')
         except:
             self.local.sock.close(linger=False)
             del self.local.sock
@@ -101,7 +101,7 @@ class ZMQLockClient(object):
                 if response.startswith('ok'):
                     return response
                 raise zmq.ZMQError(response)
-            raise zmq.ZMQError('No response from server: timed out')
+            raise zmq.ZMQError('No response from zlock server: timed out')
         except:
             self.local.sock.close(linger=False)
             del self.local.sock
@@ -118,7 +118,7 @@ class ZMQLockClient(object):
                 if response == 'ok':
                     return
                 raise zmq.ZMQError(response)
-            raise zmq.ZMQError('No response from server: timed out')
+            raise zmq.ZMQError('No response from zlock server: timed out')
         except:
             self.local.sock.close(linger=False)
             del self.local.sock
@@ -133,7 +133,7 @@ class ZMQLockClient(object):
                 self.local.sock.send_multipart(messages, zmq.NOBLOCK)
                 events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
                 if not events:
-                    raise zmq.ZMQError('No response from server: timed out')
+                    raise zmq.ZMQError('No response from zlock server: timed out')
                 else:    
                     response = self.local.sock.recv()
                     if response == 'ok':
@@ -158,7 +158,7 @@ class ZMQLockClient(object):
             self.local.sock.send_multipart(messages)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
-                raise zmq.ZMQError('No response from server: timed out')
+                raise zmq.ZMQError('No response from zlock server: timed out')
             else:    
                 response = self.local.sock.recv()
                 if response == 'ok':
@@ -278,17 +278,27 @@ class Lock(object):
             _zmq_lock_client.cancel_delayed_release(self.key)
         self.lock.acquire()
         if not self.local_only:
-            acquire(self.key)
-            self.acquire_time = time.time()
+            try:
+                acquire(self.key)
+                self.acquire_time = time.time()
+            except:
+                # If we fail to acquire the network lock, don't acquire
+                # the local lock either:
+                self.lock.release()
+                raise
             
     def release(self):
-        if not self.local_only:
-            if MIN_CACHE_TIME:
-                _zmq_lock_client.delayed_release(self.key, get_client_id())
-                self.local_only = True
-            else:
-                release(self.key)
-        self.lock.release()
+        try:
+            if not self.local_only:
+                if MIN_CACHE_TIME:
+                    _zmq_lock_client.delayed_release(self.key, get_client_id())
+                    self.local_only = True
+                else:
+                    release(self.key)
+        finally:
+            # Always release the local lock, even if we failed to release
+            # the network lock:
+            self.lock.release()
         
     def __enter__(self):
         self.acquire()
