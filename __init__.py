@@ -278,7 +278,7 @@ class OutputInterceptor(object):
     def write(self, s):
         if not hasattr(self.local, 'sock'):
             self.new_socket()
-        self.local.sock.send_multipart([self.streamname, s])
+        self.local.sock.send_multipart([self.streamname, s.encode()])
         
     def close(self):
         self.disconnect()
