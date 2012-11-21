@@ -54,11 +54,12 @@ class OutputBox(object):
         if not hasattr(self.local, 'push_sock'):
             self.new_socket()
         # Queue the output on the socket:
-        self.local.push_sock.send_multipart(['stderr' if red else 'stdout',text])
+        self.local.push_sock.send_multipart(['stderr' if red else 'stdout',text.encode()])
         
     def mainloop(self,socket):
         while True:
             stream, text = socket.recv_multipart()
+            text = text.decode()
             red = (stream == 'stderr')
             with gtk.gdk.lock:
                 # Check if the scrollbar is at the bottom of the textview:
