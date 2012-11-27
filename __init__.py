@@ -170,7 +170,7 @@ zmq_push_multipart = ZMQPush('multipart')
 zmq_push_raw = ZMQPush('raw')
             
 class HeartbeatServer(object):
-    """A server which recieves messages from clients and echoes them
+    """A server which receives messages from clients and echoes them
     back. There is only one server for however many clients there are"""
     def __init__(self):
         self.running = False
@@ -186,7 +186,11 @@ class HeartbeatServer(object):
         return self.port
         
     def mainloop(self):
-        zmq.device(zmq.FORWARDER, self.sock, self.sock)
+        try:
+            zmq.device(zmq.FORWARDER, self.sock, self.sock)
+        except Exception:
+            # Shutting down:
+            return
 
 class HeartbeatClient(object):
     def __init__(self, server_port, lock):
