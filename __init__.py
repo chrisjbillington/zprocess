@@ -88,6 +88,7 @@ class ZMQGet(object):
             self.local.recv = self.local.sock.recv
             
     def __call__(self, port, host='localhost', data=None, timeout=5):
+        """Uses reliable request-reply to send data to a zmq REP socket, and returns the reply"""
         # We cache the socket so as to not exhaust ourselves of tcp
         # ports. However if a different server is in use, we need a new
         # socket. Also if we don't have a socket, we also need a new one:
