@@ -11,8 +11,8 @@ to_parent.put(item)
 # Waiting for an event posted by the parent (though it could be posted by any process, we don't care):
 foo_event = Event('foo',type='wait')
 for i in range(10):
-    foo_event.wait(i, timeout=1)
-    print 'client: received foo event %d'%i
+    data = foo_event.wait(i, timeout=1)
+    print 'client: received foo event %d. Data was: %s'%(i, str(data))
     
 import time
 # To prove that this process gets killed when its parent ends:

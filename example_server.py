@@ -13,4 +13,4 @@ foo_event = Event('foo',type='post')
 for i in range(10):
     time.sleep(0.5)
     print 'server: posting a foo event with id=%d'%i
-    foo_event.post(i)
+    foo_event.post(i, data='hello!')

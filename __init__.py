@@ -6,6 +6,7 @@ import zmq
 import time
 import signal
 from socket import gethostbyname
+import cPickle as pickle
 
 context = zmq.Context.instance()
 # Only the top-level process has a Broker for event passing, which will
@@ -369,11 +370,11 @@ class Event(object):
             self.pub.connect('tcp://127.0.0.1:%s'%broker_sub_port) 
             self.publock = threading.Lock()
             
-    def post(self, id):
+    def post(self, id, data=None):
         if not self.can_post:
             raise ValueError("Instantiate Event with type='post' or 'both' to be able to post events")
         with self.publock:
-            self.pub.send_multipart([self.event_name, str(id)])
+            self.pub.send_multipart([self.event_name, str(id), pickle.dumps(data)])
     
     def wait(self, id, timeout=None):
         id = str(id)
@@ -389,10 +390,11 @@ class Event(object):
                     events = self.poller.poll(poll_timeout)
                     if not events:
                         break
-                event_name, event_id = self.sub.recv_multipart()
+                event_name, event_id, data = self.sub.recv_multipart()
+                data = pickle.loads(data)
                 assert event_name == self.event_name
                 if event_id == id:
-                    return
+                    return data
         raise TimeoutError('No event received: timed out')
         
         
