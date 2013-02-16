@@ -8,12 +8,20 @@ import signal
 from socket import gethostbyname
 
 context = zmq.Context.instance()
+# Only the top-level process has a Broker for event passing, which will
+# be instantiated when it first makes a subprocess. For the moment we
+# assume we are the top-level process, and will set this to False if we
+# discover that wer're not (by setup_connection_with_parent() being called):
+we_are_the_top_process = True
 
 def raise_exception_in_thread(exc_info):
     """Raises an exception in a thread"""
     def f(exc_info):
         raise exc_info[0], exc_info[1], exc_info[2]
     threading.Thread(target=f,args=(exc_info,)).start()
+
+class TimeoutError(zmq.ZMQError):
+    pass
 
 class ZMQServer(object):
     def __init__(self,port):
@@ -107,7 +115,7 @@ class ZMQGet(object):
                 # The server hasn't replied. We don't know what it's doing,
                 # so we'd better stop using this socket in case late messages
                 # arrive on it in the future:
-                raise zmq.ZMQError('No response from server: timed out')
+                raise TimeoutError('No response from server: timed out')
             if isinstance(response, Exception):
                 raise response
             else:
@@ -170,21 +178,17 @@ zmq_push = ZMQPush('pyobj')
 zmq_push_multipart = ZMQPush('multipart')
 zmq_push_raw = ZMQPush('raw')
             
+            
 class HeartbeatServer(object):
     """A server which receives messages from clients and echoes them
     back. There is only one server for however many clients there are"""
+    instance = None
     def __init__(self):
-        self.running = False
-        
-    def run(self):
-        if not self.running:
-            self.running = True
-            self.sock = context.socket(zmq.REP)
-            self.port = self.sock.bind_to_random_port('tcp://127.0.0.1')
-            self.mainloop_thread = threading.Thread(target=self.mainloop)
-            self.mainloop_thread.daemon = True
-            self.mainloop_thread.start()
-        return self.port
+        self.sock = context.socket(zmq.REP)
+        self.port = self.sock.bind_to_random_port('tcp://127.0.0.1')
+        self.mainloop_thread = threading.Thread(target=self.mainloop)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
         
     def mainloop(self):
         try:
@@ -192,8 +196,16 @@ class HeartbeatServer(object):
         except Exception:
             # Shutting down:
             return
-
+    
+    @classmethod
+    def create_instance(cls):
+        if cls.instance is None:
+            cls.instance = cls()
+        return cls.instance.port
+            
+            
 class HeartbeatClient(object):
+    instance = None
     def __init__(self, server_port, lock):
         self.sock = context.socket(zmq.REQ)
         self.sock.setsockopt(zmq.LINGER, 0)
@@ -225,6 +237,13 @@ class HeartbeatClient(object):
         else:
             os.kill(os.getpid(), signal.SIGTERM)
     
+    @classmethod
+    def create_instance(cls, server_port):
+        if cls.instance is None:
+            lock = threading.Lock()
+            cls.instance = cls(server_port, lock)
+        return cls.instance.lock
+        
 class WriteQueue(object):
     """Provides writing of python objects to the underlying zmq socket,
     with added locking. No reading is supported, once you put an object,
@@ -257,8 +276,8 @@ class ReadQueue(object):
         with self.to_self_sock_lock:
             self.to_self_sock.send_pyobj(obj)
 
-class OutputInterceptor(object):
 
+class OutputInterceptor(object):
     def __init__(self, port, streamname='stdout'):
         self.streamname = streamname
         self.real_stream = getattr(sys,streamname)
@@ -292,7 +311,91 @@ class OutputInterceptor(object):
     def flush(self):
         pass
         
+        
+class Broker(object):
+    instance = None
+     # If instance is None, then these ports are those of a Broker running in a parent process:
+    server_ports = None
+    def __init__(self):
+        self.sub = context.socket(zmq.SUB)
+        self.sub.setsockopt(zmq.SUBSCRIBE, '')
+        self.pub = context.socket(zmq.PUB)
+        self.sub_port = self.sub.bind_to_random_port('tcp://127.0.0.1')
+        self.pub_port = self.pub.bind_to_random_port('tcp://127.0.0.1')
+        self.mainloop_thread = threading.Thread(target=self.mainloop)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
+        
+    def mainloop(self):
+        try:
+            zmq.device(zmq.FORWARDER, self.sub, self.pub)
+        except Exception:
+            # Shutting down:
+            return
+ 
+    @classmethod
+    def create_instance(cls):
+        if we_are_the_top_process and cls.instance is None:
+            cls.instance = cls()
+            cls.server_ports = cls.instance.sub_port, cls.instance.pub_port
+        return cls.server_ports
             
+    @classmethod
+    def set_server_ports(cls, sub_port, pub_port):
+        cls.server_ports = sub_port, pub_port 
+        
+            
+class Event(object):
+    def __init__(self, event_name, type='wait'):
+        # Ensure we have a broker, whether it's in this process or a parent one:
+        Broker.create_instance()
+        broker_sub_port, broker_pub_port = Broker.server_ports
+        self.event_name = event_name
+        self.type = type
+        if not type in ['wait', 'post', 'both']:
+            raise ValueError("type must be 'wait', 'post', or 'both'")
+        self.can_wait = self.type in ['wait','both']
+        self.can_post = self.type in ['post','both']
+        if self.can_wait:
+            self.sub = context.socket(zmq.SUB)
+            self.sub.setsockopt(zmq.HWM, 1000)
+            self.sub.setsockopt(zmq.SUBSCRIBE, self.event_name)
+            self.sub.connect('tcp://127.0.0.1:%s'%broker_pub_port) 
+            self.poller = zmq.Poller()
+            self.poller.register(self.sub, zmq.POLLIN)
+            self.sublock = threading.Lock()
+        if self.can_post:
+            self.pub = context.socket(zmq.PUB)
+            self.pub.connect('tcp://127.0.0.1:%s'%broker_sub_port) 
+            self.publock = threading.Lock()
+            
+    def post(self, id):
+        if not self.can_post:
+            raise ValueError("Instantiate Event with type='post' or 'both' to be able to post events")
+        with self.publock:
+            self.pub.send_multipart([self.event_name, str(id)])
+    
+    def wait(self, id, timeout=None):
+        id = str(id)
+        if not self.can_wait:
+            raise ValueError("Instantiate Event with type='wait' or 'both' to be able to wait for events")
+        # Since we might have to make several recv() calls before we get the right id, we must implement our own timeout:
+        start_time = time.time()
+        while timeout is None or (time.time() < start_time + timeout):
+            with self.sublock:
+                if timeout is not None:
+                    # How long left before the elapsed time is greater than timeout?
+                    poll_timeout = max(0, (start_time + timeout - time.time())*1000)
+                    events = self.poller.poll(poll_timeout)
+                    if not events:
+                        break
+                event_name, event_id = self.sub.recv_multipart()
+                assert event_name == self.event_name
+                if event_id == id:
+                    return
+        raise TimeoutError('No event received: timed out')
+        
+        
 def subprocess_with_queues(path, output_redirection_port=0):
 
     to_child = context.socket(zmq.PUSH)
@@ -301,11 +404,10 @@ def subprocess_with_queues(path, output_redirection_port=0):
     
     port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
     to_self.connect('tcp://127.0.0.1:%s'%port_from_child)
-    
-    heartbeat_port = heartbeat_server.run()
-    
+    broker_sub_port, broker_pub_port = Broker.create_instance()
+    heartbeat_server_port = HeartbeatServer.create_instance()
     child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child), 
-                             str(heartbeat_port), str(output_redirection_port)])
+                             str(heartbeat_server_port), str(output_redirection_port), str(broker_sub_port), str(broker_pub_port)])
     
     port_to_child = from_child.recv()
     to_child.connect('tcp://127.0.0.1:%s'%port_to_child)
@@ -316,10 +418,13 @@ def subprocess_with_queues(path, output_redirection_port=0):
     return to_child, from_child, child
     
 def setup_connection_with_parent(lock=False):
+    global we_are_the_top_process
+    we_are_the_top_process = False
     port_to_parent = int(sys.argv[1])
     port_to_heartbeat_server = int(sys.argv[2])
     output_redirection_port = int(sys.argv[3])
-    
+    broker_sub_port = int(sys.argv[4])
+    broker_pub_port = int(sys.argv[5])
     to_parent = context.socket(zmq.PUSH)
     from_parent = context.socket(zmq.PULL)
     to_self = context.socket(zmq.PUSH)
@@ -339,12 +444,10 @@ def setup_connection_with_parent(lock=False):
         stdout.connect()
         stderr.connect()
     
-    global heartbeat_client
-    kill_lock = threading.Lock()
-    heartbeat_cient = HeartbeatClient(port_to_heartbeat_server,kill_lock) 
+    kill_lock = HeartbeatClient.create_instance(port_to_heartbeat_server) 
+    Broker.set_server_ports(broker_sub_port, broker_pub_port)
     if lock:
         return to_parent, from_parent, kill_lock
     else:
         return to_parent, from_parent
 
-heartbeat_server = HeartbeatServer()
