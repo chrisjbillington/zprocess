@@ -380,6 +380,17 @@ class Event(object):
         id = str(id)
         if not self.can_wait:
             raise ValueError("Instantiate Event with type='wait' or 'both' to be able to wait for events")
+        # First check through events that are already in the buffer:
+        while True:
+            with self.sublock:
+                events = self.poller.poll(0)
+                if not events:
+                    break
+                event_name, event_id, data = self.sub.recv_multipart()
+                data = pickle.loads(data)
+                assert event_name == self.event_name
+                if event_id == id:
+                    return data
         # Since we might have to make several recv() calls before we get the right id, we must implement our own timeout:
         start_time = time.time()
         while timeout is None or (time.time() < start_time + timeout):
