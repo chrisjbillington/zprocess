@@ -2,14 +2,16 @@
 def _setup():
     # Clear the namespace of any evidence we were here:
     del globals()['_setup']
+    import sys, os
     from subproc_utils import setup_connection_with_parent
     to_parent, from_parent, kill_lock = setup_connection_with_parent(lock=True)
-    module_name, module_filepath = from_parent.get()
-    # If the Process class was defined in the parent's __main__ module,
-    # run the code from that file so that the class is unpickleable
-    # (otherwise __main__ would refer to the file you're readin now,
-    # in which the class is not defined)
+    module_name, module_filepath, syspath = from_parent.get()
+    # Set sys.path so that all modules imported in the user's code are importable here:
+    sys.path = syspath
+    sys.path.append(os.path.dirname(module_filepath))
     if module_name == '__main__':
+        # Execute the user's module in __main__, so that the class is unpickleable.
+        # Otherwise __main__ will refer to this file, which is not where their class is!
         # Temporarily rename this module so that the user's __main__ block doesn't execute:
         globals()['__name__'] = 'process_class_wrapper'
         execfile(module_filepath, globals(), globals())
