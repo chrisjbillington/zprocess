@@ -439,7 +439,10 @@ class Process(object):
         self.kill_lock = kill_lock
         args, kwargs = from_parent.get()
         self.run(*args, **kwargs)
-        
+    
+    def terminate(self):
+        self.child.terminate()
+            
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by subclasses"""
         pass 
