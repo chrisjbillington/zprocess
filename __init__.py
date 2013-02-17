@@ -409,6 +409,42 @@ class Event(object):
         raise TimeoutError('No event received: timed out')
         
         
+class Process(object):
+    """A class providing similar functionality to multiprocessing.Process,
+    but using zmq for communication and creating processes in a fresh
+    environment rather than by forking (or imitation forking as in
+    Windows). Do not override its methods other than run()."""
+    def __init__(self, output_redirection_port=0, instantiation_is_in_subprocess=False):
+        if not instantiation_is_in_subprocess:
+            self._output_redirection_port = 0
+            
+    def start(self, *args, **kwargs):
+        """Call in the parent process to start a subprocess. Passes args and kwargs to the run() method"""
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'process_class_wrapper.py')
+        self.to_child, self.from_child, self.child = subprocess_with_queues(path, self._output_redirection_port)
+        # Get the file that the class definition is in (not this file you're reading now, rather that of the subclass):
+        module_file =  os.path.abspath(sys.modules[self.__module__].__file__)
+        # Send it to the child process so it can execute it in __main__, otherwise class definitions from
+        # the users __main__ module will not be unpickleable. Note that though executed in __main__, the code's
+        # __name__ will not be __main__, and so any main block won't execute, which is good!
+        self.to_child.put([self.__module__, module_file])
+        self.to_child.put(self.__class__)
+        self.to_child.put([args, kwargs])
+        return self.to_child, self.from_child
+        
+    def _run(self, to_parent, from_parent, kill_lock):
+        """Called in the child process to set up the connection with the parent"""
+        self.to_parent = to_parent
+        self.from_parent = from_parent
+        self.kill_lock = kill_lock
+        args, kwargs = from_parent.get()
+        self.run(*args, **kwargs)
+        
+    def run(self, *args, **kwargs):
+        """The method that gets called in the subprocess. To be overridden by subclasses"""
+        pass 
+        
+        
 def subprocess_with_queues(path, output_redirection_port=0):
 
     to_child = context.socket(zmq.PUSH)
