@@ -424,10 +424,19 @@ class Process(object):
         self.to_child, self.from_child, self.child = subprocess_with_queues(path, self._output_redirection_port)
         # Get the file that the class definition is in (not this file you're reading now, rather that of the subclass):
         module_file =  os.path.abspath(sys.modules[self.__module__].__file__)
+        basepath, extension = os.path.splitext(module_file)
+        if extension == '.pyc':
+            module_file = basepath + '.py'
+        if not os.path.exists(module_file):
+            # Nope? How about this extension then?
+            module_file = basepath + '.pyw'
+        if not os.path.exists(module_file):
+            # Still no? Well I can't really work out what the extension is then, can I?
+            raise NotImplementedError("Can't find module file, what's going on, does it have an unusual extension?")
         # Send it to the child process so it can execute it in __main__, otherwise class definitions from
         # the users __main__ module will not be unpickleable. Note that though executed in __main__, the code's
         # __name__ will not be __main__, and so any main block won't execute, which is good!
-        self.to_child.put([self.__module__, module_file])
+        self.to_child.put([self.__module__, module_file, sys.path])
         self.to_child.put(self.__class__)
         self.to_child.put([args, kwargs])
         return self.to_child, self.from_child
