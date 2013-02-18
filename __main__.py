@@ -167,7 +167,7 @@ class ZMQLockServer(object):
         fmt = lambda key, client, expiry: ('-------\n'
                                            '   key: %s\n'%key +
                                            'client: %s\n'%client+
-                                           'expiry: %d'%expiry + ' [EXPIRED]' if expiry < 0 else '')
+                                           'expiry: %d'%expiry + (' [EXPIRED]' if expiry < 0 else ''))
                                            
         for key, lock in self.held_locks.items():
             lines.append(fmt(key, lock['client_id'], int(lock['expiry']-time.time())))

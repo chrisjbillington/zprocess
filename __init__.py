@@ -4,12 +4,13 @@ import socket
 import threading
 import time
 import weakref
+import atexit
 
 import zmq
 
 DEFAULT_TIMEOUT = 30 # seconds
-MIN_CACHE_TIME = 1 # seconds
-MAX_CACHE_TIME = 10 # seconds
+MIN_CACHE_TIME = 0.1 # seconds
+MAX_CACHE_TIME = 1 # seconds
 DEFAULT_PORT = 7339
 
 def get_client_id():
@@ -35,6 +36,7 @@ class ZMQLockClient(object):
         # We'll store one zmq socket/poller for each thread, with thread
         # local storage:
         self.local = threading.local()
+        self.shutdown_complete = threading.Event()
          
     def new_socket(self):
         # Every time the REQ/REP cadence is broken, we need to create
@@ -182,17 +184,24 @@ class ZMQLockClient(object):
         self.local.delayed_release_req.send_multipart(['cancel', key, ''])
         self.local.delayed_release_req.recv()
 
-
+    def shutdown_delayed_release(self):
+        if not hasattr(self.local,'delayed_release_req'):
+            self.new_delayed_release_socket()
+        self.local.delayed_release_req.send_multipart(['shutdown', '', ''])
+        self.shutdown_complete.wait()
+            
+            
 def _delayed_release_loop(rep_sock, poller):
     # Runs in a thread releasing locks after their requisite
     # delays.  Raises any exceptions in a separate thread and keeps
     # running. Gets requests for delayed releasing via a REP socket
-    # boind on inproc communication. The corresponding REQ socket
+    # bound on inproc communication. The corresponding REQ socket
     # has requests put into it in the delayed_release function.
     poll_duration = -1
     locks_to_release = {}
     release_times = {}
     max_release_times = {}
+    shutting_down = False
     while True:
         events = poller.poll(poll_duration)
         if events:
@@ -210,9 +219,14 @@ def _delayed_release_loop(rep_sock, poller):
                     max_release_times[key] = lock.acquire_time + MAX_CACHE_TIME
                 release_time = time.time() + MIN_CACHE_TIME
                 release_times[key] = min(release_time, max_release_times[key])
+            elif request == 'shutdown':
+                shutting_down = True
+            # Only reply once we have a reference to the lock, otherwise
+            # it might be garbage collected before we do:
             rep_sock.send('')
+            
         for key, release_time in release_times.items():
-            if time.time() > release_time:
+            if (time.time() > release_time) or shutting_down:
                 lock, client_id = locks_to_release[key]
                 with lock.lock:
                     lock.local_only = False
@@ -237,7 +251,21 @@ def _delayed_release_loop(rep_sock, poller):
         else:
             # poll will block until there are events:
             poll_duration = -1
+        if shutting_down:
+            _zmq_lock_client.shutdown_complete.set()
+            return
                         
+@atexit.register
+def release_delayed_locks():
+    # if the interpreter is shutting down, we don't want to delay
+    # releasing those locks any more, or they won't be released at all!
+    try:
+        _zmq_lock_client
+        _delayed_release_thread
+    except NameError:
+        # We're not connected, it doesn't matter:
+        return
+    _zmq_lock_client.shutdown_delayed_release()
         
 class Lock(object):
 
