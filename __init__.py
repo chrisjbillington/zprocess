@@ -450,7 +450,10 @@ class Process(object):
         self.run(*args, **kwargs)
     
     def terminate(self):
-        self.child.terminate()
+        try:
+            self.child.terminate()
+        except WindowsError if os.name == 'nt' else None:
+            pass # process is already dead
             
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by subclasses"""
