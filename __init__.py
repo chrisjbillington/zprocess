@@ -40,6 +40,7 @@ class ZMQServer(object):
             request_data = self.sock.recv_pyobj()
             if request_data == 'shutdown' and self.shutting_down:
                 self.sock.send_pyobj('ok')
+                self.sock.close(linger=1)
                 return
             try:
                 response_data = self.handler(request_data)
