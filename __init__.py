@@ -99,6 +99,9 @@ class ZMQGet(object):
         # socket. Also if we don't have a socket, we also need a new one:
         if not hasattr(self.local,'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
             self.new_socket(host,port)
+        # when not using python objects, a null message should be an empty string:
+        if data is None and self.type in ['raw','multipart']:
+            data = ''
         if self.type == 'multipart' and isinstance(data,str):
             # Wrap up a single string into a list so it doesn't get sent
             # as one character per message!
