@@ -222,6 +222,7 @@ class ZMQLockServer(object):
             else:
                 if LOGGING: logger.debug('processing existing requests')
             # Process all waiting request messages:
+            n_requests_processed = 0
             for request_message, expiry in unprocessed_messages[:]:
                 self.dealer.send_multipart(request_message)
                 response = self.handle_one_request()
@@ -242,12 +243,18 @@ class ZMQLockServer(object):
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
                     self.router.send_multipart(reply_message)
+                    n_requests_processed += 1
             # Shuffle the waiting requests so as to remove any systematic
             # ordering effects:
             random.shuffle(unprocessed_messages)
-            # When is the soonest time that a client requires a
-            # response? Process the requests again then:
-            if unprocessed_messages:
+            if n_requests_processed > 0:
+                # If at least one request was processed, then perhaps
+                # a previously contended lock is now free. Process all
+                # requests again immediately:
+                poll_interval = 0
+            elif unprocessed_messages:
+                # Otherwise, when is the soonest time that a client
+                # requires a response? Process the requests again then:
                 poll_interval = 1000*min(t - time.time() for m, t in unprocessed_messages)
                 # ensure non-negative, that would block forever:
                 poll_interval = max(0, poll_interval)
