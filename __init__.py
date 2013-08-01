@@ -13,21 +13,23 @@ MIN_CACHE_TIME = 0.1 # seconds
 MAX_CACHE_TIME = 1 # seconds
 DEFAULT_PORT = 7339
 
-process_identifier = str(os.getpid())
-thread_identifier_threadlocal = threading.local()
+process_identifier_prefix = ''
+thread_identifier_prefix = threading.local()
 
 def set_client_process_name(name):
-    global process_identifier
-    process_identifier = name + '-' + str(os.getpid())
+    global process_identifier_prefix
+    process_identifier_prefix = name + '-'
     
 def set_client_thread_name(name):
-    thread_identifier_threadlocal.identifier = name + '-' + threading.current_thread().name
+    thread_identifier_prefix.prefix = name + '-'
     
 def get_client_id():
     try:
-        thread_identifier = thread_identifier_threadlocal.identifier
+        prefix = thread_identifier_prefix.prefix
     except AttributeError:
-        thread_identifier = thread_identifier_threadlocal.identifier = threading.current_thread().name
+        thread_identifier_prefix.prefix = ''
+    thread_identifier = thread_identifier_prefix.prefix + threading.current_thread().name
+    process_identifier = process_identifier_prefix + str(os.getpid())
     host_name = socket.gethostname()
     return ':'.join([host_name, process_identifier,thread_identifier])
 
