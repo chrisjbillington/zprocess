@@ -469,8 +469,14 @@ def subprocess_with_queues(path, output_redirection_port=0):
     to_self.connect('tcp://127.0.0.1:%s'%port_from_child)
     broker_sub_port, broker_pub_port = Broker.create_instance()
     heartbeat_server_port = HeartbeatServer.create_instance()
+    # If a custom process identifier has been set in zlock, ensure the child inherits it:
+    zlock_process_identifier = ''
+    if 'zlock' in sys.modules:
+        zlock_process_identifier_prefix = sys.modules['zlock'].process_identifier_prefix
     child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child), 
-                             str(heartbeat_server_port), str(output_redirection_port), str(broker_sub_port), str(broker_pub_port)])
+                             str(heartbeat_server_port), str(output_redirection_port),
+                             str(broker_sub_port), str(broker_pub_port),
+                             zlock_process_identifier_prefix])
     
     port_to_child = from_child.recv()
     to_child.connect('tcp://127.0.0.1:%s'%port_to_child)
@@ -488,6 +494,14 @@ def setup_connection_with_parent(lock=False):
     output_redirection_port = int(sys.argv[3])
     broker_sub_port = int(sys.argv[4])
     broker_pub_port = int(sys.argv[5])
+    zlock_process_identifier_prefix = sys.argv[6]
+    # If a custom process identifier has been set in zlock, ensure we inherit it:
+    if zlock_process_identifier_prefix:
+        import zlock
+        # append '-sub' to indicate we're a subprocess, if it's not already there
+        if not zlock_process_identifier_prefix.endswith('sub'):
+            zlock_process_identifier_prefix += 'sub'
+        zlock.set_client_process_name(zlock_process_identifier_prefix)
     to_parent = context.socket(zmq.PUSH)
     from_parent = context.socket(zmq.PULL)
     to_self = context.socket(zmq.PUSH)
