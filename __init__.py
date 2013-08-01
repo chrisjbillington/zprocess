@@ -470,7 +470,7 @@ def subprocess_with_queues(path, output_redirection_port=0):
     broker_sub_port, broker_pub_port = Broker.create_instance()
     heartbeat_server_port = HeartbeatServer.create_instance()
     # If a custom process identifier has been set in zlock, ensure the child inherits it:
-    zlock_process_identifier = ''
+    zlock_process_identifier_prefix = ''
     if 'zlock' in sys.modules:
         zlock_process_identifier_prefix = sys.modules['zlock'].process_identifier_prefix
     child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child), 
