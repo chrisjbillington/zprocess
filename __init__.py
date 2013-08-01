@@ -17,18 +17,24 @@ process_identifier_prefix = ''
 thread_identifier_prefix = threading.local()
 
 def set_client_process_name(name):
+    if '_zmq_lock_client' in globals():
+        raise RuntimeError('Cannot change process name after connecting to zlock server.' +
+                           'Please change names before connecting.')
     global process_identifier_prefix
     process_identifier_prefix = name + '-'
     
 def set_client_thread_name(name):
+    if '_zmq_lock_client' in globals():
+        raise RuntimeError('Cannot change thread name after connecting to zlock server.' +
+                           'Please change names before connecting.')
     thread_identifier_prefix.prefix = name + '-'
     
 def get_client_id():
     try:
         prefix = thread_identifier_prefix.prefix
     except AttributeError:
-        thread_identifier_prefix.prefix = ''
-    thread_identifier = thread_identifier_prefix.prefix + threading.current_thread().name
+        prefix = thread_identifier_prefix.prefix = ''
+    thread_identifier = prefix + threading.current_thread().name
     process_identifier = process_identifier_prefix + str(os.getpid())
     host_name = socket.gethostname()
     return ':'.join([host_name, process_identifier,thread_identifier])
@@ -479,7 +485,7 @@ def guess_server_address():
 def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
-    global _zmq_lock_client                 
+    global _zmq_lock_client
     _zmq_lock_client = ZMQLockClient(host, port)
     # We ping twice since the first does initialisation and so takes
     # longer. The second will be more accurate:
