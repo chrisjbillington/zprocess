@@ -498,10 +498,12 @@ def setup_connection_with_parent(lock=False):
     # If a custom process identifier has been set in zlock, ensure we inherit it:
     if zlock_process_identifier_prefix:
         import zlock
-        # append '-sub' to indicate we're a subprocess, if it's not already there
+        # Append '-sub' to indicate we're a subprocess, if it's not already there
         if not zlock_process_identifier_prefix.endswith('sub'):
             zlock_process_identifier_prefix += 'sub'
-        zlock.set_client_process_name(zlock_process_identifier_prefix)
+        # Only set it if the user has not already set it to something in this process:
+        if not zlock.process_identifier_prefix:
+            zlock.set_client_process_name(zlock_process_identifier_prefix)
     to_parent = context.socket(zmq.PUSH)
     from_parent = context.socket(zmq.PULL)
     to_self = context.socket(zmq.PUSH)
