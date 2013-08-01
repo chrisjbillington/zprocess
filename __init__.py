@@ -16,20 +16,25 @@ DEFAULT_PORT = 7339
 process_identifier_prefix = ''
 thread_identifier_prefix = threading.local()
 
+def name_change_checks():
+    if Lock.instances:
+        raise RuntimeError('Cannot change process/thread name while Locks are in use.' +
+                           'Please change names before instantiating Lock objects.')
+    if '_zmq_lock_client' in globals():
+        # Clear thread local data so that the client id is re-generated in all threads:
+        _zmq_lock_client.local = threading.local()
+                     
 def set_client_process_name(name):
-    if '_zmq_lock_client' in globals():
-        raise RuntimeError('Cannot change process name after connecting to zlock server.' +
-                           'Please change names before connecting.')
     global process_identifier_prefix
+    name_change_checks()
     process_identifier_prefix = name + '-'
-    
+        
 def set_client_thread_name(name):
-    if '_zmq_lock_client' in globals():
-        raise RuntimeError('Cannot change thread name after connecting to zlock server.' +
-                           'Please change names before connecting.')
+    name_change_checks()
     thread_identifier_prefix.prefix = name + '-'
     
 def get_client_id():
+    print ''
     try:
         prefix = thread_identifier_prefix.prefix
     except AttributeError:
