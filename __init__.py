@@ -34,7 +34,6 @@ def set_client_thread_name(name):
     thread_identifier_prefix.prefix = name + '-'
     
 def get_client_id():
-    print ''
     try:
         prefix = thread_identifier_prefix.prefix
     except AttributeError:
