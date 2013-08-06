@@ -25,21 +25,34 @@ class TimeoutError(zmq.ZMQError):
     pass
 
 class ZMQServer(object):
-    def __init__(self,port):
+    def __init__(self,port,type='pyobj'):
+        self.type = type
         self.port = port
         self.sock = context.socket(zmq.REP)
         self.sock.setsockopt(zmq.LINGER, 0)
         self.sock.bind('tcp://0.0.0.0:%s'%str(self.port))
+        
+        if self.type == 'pyobj':
+            self.send = self.sock.send_pyobj
+            self.recv = self.sock.recv_pyobj
+        elif self.type == 'raw':
+            self.send = self.sock.send
+            self.recv = self.sock.recv
+        elif self.type == 'multipart':
+            self.send = self.sock.send_multipart
+            self.recv = self.sock.recv_multipart
+        else:
+            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'"%str(self.type))
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.shutting_down = False
         self.mainloop_thread.start()
-        
+       
     def mainloop(self):
         while True:
-            request_data = self.sock.recv_pyobj()
-            if request_data == 'shutdown' and self.shutting_down:
-                self.sock.send_pyobj('ok')
+            request_data = self.recv()
+            if request_data in ['shutdown',['shutdown']] and self.shutting_down:
+                self.sock.send('ok')
                 self.sock.close(linger=1)
                 return
             try:
@@ -50,11 +63,14 @@ class ZMQServer(object):
                 exc_info = sys.exc_info()
                 raise_exception_in_thread(exc_info)
                 response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request: %s'%str(e))
-            self.sock.send_pyobj(response_data)
+            self.send(response_data)
             
     def shutdown(self):
         self.shutting_down = True
-        zmq_get(self.port, data='shutdown', timeout=1)
+        if self.type == 'pyobj':
+            zmq_get(self.port, data='shutdown', timeout=1)
+        else:
+            zmq_get_raw(self.port, data='shutdown', timeout=1)
             
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example
@@ -91,6 +107,8 @@ class ZMQGet(object):
         elif self.type == 'raw':
             self.local.send = self.local.sock.send
             self.local.recv = self.local.sock.recv
+        else:
+            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'"%str(self.type))
             
     def __call__(self, port, host='localhost', data=None, timeout=5):
         """Uses reliable request-reply to send data to a zmq REP socket, and returns the reply"""
