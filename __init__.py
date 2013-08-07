@@ -63,6 +63,10 @@ class ZMQServer(object):
                 exc_info = sys.exc_info()
                 raise_exception_in_thread(exc_info)
                 response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request: %s'%str(e))
+                if self.type == 'raw':
+                    response_data = str(response_data)
+                elif self.type == 'multipart':
+                    response_data = [str(response_data)]
             self.send(response_data)
             
     def shutdown(self):
