@@ -52,7 +52,7 @@ class ZMQServer(object):
         while True:
             request_data = self.recv()
             if request_data in ['shutdown',['shutdown']] and self.shutting_down:
-                self.sock.send('ok')
+                self.send('ok')
                 self.sock.close(linger=1)
                 return
             try:
