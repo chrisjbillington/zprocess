@@ -94,13 +94,13 @@ def setup_logging():
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'zlock.log')
     else:
         path = '/var/log/zlock.log'
-    if os.access(path,os.W_OK):
+    try:
         handler = logging.handlers.RotatingFileHandler(path, maxBytes=1024*1024*50)
         handler.setFormatter(formatter)
         handler.setLevel(logging.DEBUG)
         logger.addHandler(handler)
-    else:
-        logger.warning('Do not have permission to write to log file %s. '%path + 
+    except IOError:
+        logger.warning('Can\'t open or do not have permission to write to log file %s. '%path + 
                        'Only terminal logging will be output.')
     return logger
 
