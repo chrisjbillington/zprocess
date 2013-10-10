@@ -150,7 +150,7 @@ class ZMQLockClient(object):
             del self.local.sock
             raise
             
-    def acquire(self, key, timeout):
+    def acquire(self, key, timeout, retries=1):
         if not hasattr(self.local,'sock'):
             self.new_socket()
         try:
@@ -159,6 +159,10 @@ class ZMQLockClient(object):
                 self.local.sock.send_multipart(messages, zmq.NOBLOCK)
                 events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
                 if not events:
+                    if retries > 0:
+                        self.local.sock.close(linger=False)
+                        del self.local.sock
+                        return self.acquire(key, timeout, retries-1)
                     raise zmq.ZMQError('No response from zlock server: timed out')
                 else:    
                     response = self.local.sock.recv()
@@ -172,9 +176,8 @@ class ZMQLockClient(object):
             self.local.sock.close(linger=False)
             del self.local.sock
             raise
-
         
-    def release(self, key, client_id):
+    def release(self, key, client_id, retries=1):
         if not hasattr(self.local,'sock'):
             self.new_socket()
         try:
@@ -184,6 +187,10 @@ class ZMQLockClient(object):
             self.local.sock.send_multipart(messages)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
+                if retries > 0:
+                    self.local.sock.close(linger=False)
+                    del self.local.sock
+                    return self.release(key, client_id, retries-1)
                 raise zmq.ZMQError('No response from zlock server: timed out')
             else:    
                 response = self.local.sock.recv()
@@ -316,7 +323,7 @@ class Lock(object):
                 except NameError:
                     raise RuntimeError('Not connected to a zlock server')
         
-    def acquire(self):
+    def acquire(self, retries=1):
         if self.local_only and MIN_CACHE_TIME:
             # We can't hold self.lock here as the lock releaser may try
             # to acquire it (in order to release the network lock) before
@@ -331,7 +338,7 @@ class Lock(object):
         self.lock.acquire()
         if not self.local_only:
             try:
-                acquire(self.key)
+                acquire(self.key, retries=retries)
                 self.acquire_time = time.time()
             except:
                 # If we fail to acquire the network lock, don't acquire
@@ -339,14 +346,14 @@ class Lock(object):
                 self.lock.release()
                 raise
             
-    def release(self):
+    def release(self, retries=1):
         try:
             if not self.local_only:
                 if MIN_CACHE_TIME:
                     _zmq_lock_client.delayed_release(self.key, get_client_id())
                     self.local_only = True
                 else:
-                    release(self.key)
+                    release(self.key, retries=retries)
         finally:
             # Always release the local lock, even if we failed to release
             # the network lock:
@@ -397,25 +404,25 @@ class NetworkOnlyLock(object):
         self.release()
 
 
-def acquire(key, timeout=None):
+def acquire(key, timeout=None, retries=1):
     """Acquire a lock identified by key, for a specified time in
     seconds. Blocks until success, raises exception if the server isn't
     responding"""
     if timeout is None:
         timeout = DEFAULT_TIMEOUT
     try:
-        _zmq_lock_client.acquire(key, timeout)
+        _zmq_lock_client.acquire(key, timeout, retries=retries)
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
         
-def release(key, client_id=None):
+def release(key, client_id=None, retries=1):
     """Release the lock identified by key. Raises an exception if the
     lock was not held, or was held by someone else, or if the server
     isn't responding. If client_id is provided, one thread can release
     the lock on behalf of another, but this should not be the normal
     usage. It is included mainly for for use by delayed_releaser."""
     try:
-        _zmq_lock_client.release(key, client_id)
+        _zmq_lock_client.release(key, client_id, retries=retries)
     except NameError:
         raise RuntimeError('Not connected to a zlock server')
 
