@@ -9,8 +9,6 @@ import atexit
 import zmq
 
 DEFAULT_TIMEOUT = 30 # seconds
-MIN_CACHE_TIME = 0.1 # seconds
-MAX_CACHE_TIME = 1 # seconds
 DEFAULT_PORT = 7339
 
 process_identifier_prefix = ''
@@ -73,26 +71,6 @@ class ZMQLockClient(object):
         self.local.poller.register(self.local.sock, zmq.POLLIN)
         self.local.sock.connect('tcp://%s:%s'%(self.host, str(self.port)))    
         self.local.client_id = get_client_id()
-        
-    def new_delayed_release_socket(self):
-        # Each new thread that uses the delayed release mechanism needs
-        # its own socket for it. I usually don't take very seriously
-        # the zeromq cohort's fire and brimstone tirade about not using
-        # sockets from multiple threads, I'm sure you can (with a lock of
-        # course, though I hear even that isn't required in later zeromq
-        # versions) but they just don't recommend it since it disagrees
-        # with their programming philosophy. I happen to agree with their
-        # non-state-sharing philosophy but still prefer not to be lied
-        # to. So I'll usually use a socket from multiple threads, if it
-        # suits. However in this case I don't want a single socket with a
-        # lock to serialize access to it, because I actually want separate
-        # threads to be able to use this mechanism simultaneously. So
-        # we'll have one socket per thread, instantiated via a call to
-        # this method the first time its needed by the calling thread.
-        context = zmq.Context.instance()
-        self.local.delayed_release_req = context.socket(zmq.REQ)
-        self.local.delayed_release_req.setsockopt(zmq.LINGER, 0)
-        self.local.delayed_release_req.connect('inproc://delayed-release')
         
     def say_hello(self,timeout=None):
         """Ping the server to test for a response"""
@@ -203,101 +181,6 @@ class ZMQLockClient(object):
             del self.local.sock
             raise
     
-    def delayed_release(self, key, client_id):
-        if not hasattr(self.local,'delayed_release_req'):
-            self.new_delayed_release_socket()
-        self.local.delayed_release_req.send_multipart(['add', key, client_id])
-        self.local.delayed_release_req.recv()
-        
-    def cancel_delayed_release(self, key):
-        if not hasattr(self.local,'delayed_release_req'):
-            self.new_delayed_release_socket()
-        self.local.delayed_release_req.send_multipart(['cancel', key, ''])
-        self.local.delayed_release_req.recv()
-
-    def shutdown_delayed_release(self):
-        if not hasattr(self.local,'delayed_release_req'):
-            self.new_delayed_release_socket()
-        self.local.delayed_release_req.send_multipart(['shutdown', '', ''])
-        self.shutdown_complete.wait()
-            
-            
-def _delayed_release_loop(rep_sock, poller):
-    # Runs in a thread releasing locks after their requisite
-    # delays.  Raises any exceptions in a separate thread and keeps
-    # running. Gets requests for delayed releasing via a REP socket
-    # bound on inproc communication. The corresponding REQ socket
-    # has requests put into it in the delayed_release function.
-    poll_duration = -1
-    locks_to_release = {}
-    release_times = {}
-    max_release_times = {}
-    shutting_down = False
-    while True:
-        events = poller.poll(poll_duration)
-        if events:
-            request, key, client_id = rep_sock.recv_multipart()
-            if request == 'cancel' and key in locks_to_release:
-                release_times[key] = max_release_times[key]
-            elif request == 'add':
-                if key not in locks_to_release:
-                    # It's important to hold onto a reference to
-                    # the Lock so that it's not garbage collected
-                    # and its state is maintained even if there are
-                    # no other instances left:
-                    lock = Lock(key)
-                    locks_to_release[key] = (lock, client_id)
-                    max_release_times[key] = lock.acquire_time + MAX_CACHE_TIME
-                release_time = time.time() + MIN_CACHE_TIME
-                release_times[key] = min(release_time, max_release_times[key])
-            elif request == 'shutdown':
-                shutting_down = True
-            # Only reply once we have a reference to the lock, otherwise
-            # it might be garbage collected before we do:
-            rep_sock.send('')
-            
-        for key, release_time in release_times.items():
-            if (time.time() > release_time) or shutting_down:
-                lock, client_id = locks_to_release[key]
-                with lock.lock:
-                    lock.local_only = False
-                    try:
-                        _zmq_lock_client.release(key, client_id)
-                    except Exception:
-                        # Raise the exception in a separate thread
-                        # so the user knows about it but we can
-                        # keep running:
-                        raise_exception_in_thread(sys.exc_info())
-                    finally:
-                        del release_times[key]
-                        del locks_to_release[key]
-                        del max_release_times[key]
-        # How long until the next lock needs releasing?
-        if release_times:
-            now = time.time()
-            poll_duration = int(min(t - now for t in release_times.values())*1000)
-            # Make sure it's non-negative if we've actually gone past
-            # the time we're supposed to release it:
-            poll_duration = max(poll_duration,0)
-        else:
-            # poll will block until there are events:
-            poll_duration = -1
-        if shutting_down:
-            _zmq_lock_client.shutdown_complete.set()
-            return
-                        
-@atexit.register
-def release_delayed_locks():
-    # if the interpreter is shutting down, we don't want to delay
-    # releasing those locks any more, or they won't be released at all!
-    try:
-        _zmq_lock_client
-        _delayed_release_thread
-    except NameError:
-        # We're not connected, it doesn't matter:
-        return
-    _zmq_lock_client.shutdown_delayed_release()
-        
 class Lock(object):
 
     instances = weakref.WeakValueDictionary()
@@ -316,48 +199,35 @@ class Lock(object):
         with self.class_lock:
             if not hasattr(self,'key'):
                 self.key = key
-                self.lock = threading.Lock()
-                self.local_only = False
+                self.local_lock = threading.RLock()
+                self.recursion_level=0
                 try:
                     _zmq_lock_client
                 except NameError:
                     raise RuntimeError('Not connected to a zlock server')
         
     def acquire(self, retries=1):
-        if self.local_only and MIN_CACHE_TIME:
-            # We can't hold self.lock here as the lock releaser may try
-            # to acquire it (in order to release the network lock) before
-            # seeing to our request.  This would deadlock. No matter,
-            # if we're too late with our cancel request and the delayed
-            # release has already been performed then the below block
-            # will notice that self.local_only == False after acquiring
-            # self.lock and all will be well.  And the delayed lock
-            # releaser ignores cancel requests for locks it has already
-            # released, so there will be no problem there either.
-            _zmq_lock_client.cancel_delayed_release(self.key)
-        self.lock.acquire()
-        if not self.local_only:
+        self.local_lock.acquire()
+        self.recursion_level += 1
+        if self.recursion_level==1:
             try:
                 acquire(self.key, retries=retries)
-                self.acquire_time = time.time()
             except:
-                # If we fail to acquire the network lock, don't acquire
-                # the local lock either:
-                self.lock.release()
+                self.recursion_level =- 1
+                self.local_lock.release()
                 raise
             
     def release(self, retries=1):
+        if self.recursion_level==0:
+            raise RuntimeError('cannot release un-acquired lock')
         try:
-            if not self.local_only:
-                if MIN_CACHE_TIME:
-                    _zmq_lock_client.delayed_release(self.key, get_client_id())
-                    self.local_only = True
-                else:
-                    release(self.key, retries=retries)
+            if self.recursion_level==1:
+                release(self.key, retries=retries)
         finally:
             # Always release the local lock, even if we failed to release
             # the network lock:
-            self.lock.release()
+            self.recursion_level -= 1
+            self.local_lock.release()
         
     def __enter__(self):
         self.acquire()
@@ -388,14 +258,18 @@ class NetworkOnlyLock(object):
                 self.lock = Lock(key)
         
     def acquire(self):
-        with self.lock.lock:
+        with self.lock.local_lock:
             acquire(self.key)
-            self.lock.local_only = True
+            self.lock.recursion_level += 1
             
     def release(self):
-        with self.lock.lock:
-            release(self.key)
-            self.lock.local_only = False
+        with self.lock.local_lock:
+            if self.lock.recursion_level != 1:
+                raise RuntimeError('cannot release network lock whilst local locks still held')
+            try:
+                release(self.key)
+            finally:
+                self.lock.recursion_level = 0
         
     def __enter__(self):
         self.acquire()
@@ -420,7 +294,7 @@ def release(key, client_id=None, retries=1):
     lock was not held, or was held by someone else, or if the server
     isn't responding. If client_id is provided, one thread can release
     the lock on behalf of another, but this should not be the normal
-    usage. It is included mainly for for use by delayed_releaser."""
+    usage."""
     try:
         _zmq_lock_client.release(key, client_id, retries=retries)
     except NameError:
@@ -450,20 +324,6 @@ def set_default_timeout(t):
     to release them will then result in an exception."""
     global DEFAULT_TIMEOUT
     DEFAULT_TIMEOUT = t
-
-def set_cache_time(min=0, max=30):
-    """Sets how long in seconds after a lock is locally released it should
-    be released on the network. If this is nonzero, then any local threads
-    acquiring the lock before it is released on the network but after
-    it is released locally, will instead only acquire a local lock (and
-    the previously scheduled network release will be cancelled). This
-    is so that rapid acquisition and release need not go out to the
-    network every time. Once the total hold time of the network lock
-    passes MAX_CACHE_TIME, it will be released regardless."""
-    global MIN_CACHE_TIME
-    global MAX_CACHE_TIME
-    MIN_CACHE_TIME = min
-    MAX_CACHE_TIME = max
 
 def guess_server_address():
     host, port = None, None
@@ -501,28 +361,5 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
     # We ping twice since the first does initialisation and so takes
     # longer. The second will be more accurate:
     ping(timeout)
-    try:
-        global _delayed_release_thread
-        _delayed_release_thread
-    except NameError:
-        # Start a thread for releasing the locks on the network after
-        # a delay. It uses inproc req/rep to communicate with other
-        # threads. Unlike other protocols, inproc sockets must bind before
-        # clients connect. So we'd better create this socket, bind it and
-        # pass it to the thread. We can't instantiate it in the thread
-        # itself and wait for it to bind, as socket instantiation
-        # in pyzmq implicity involves an import, which leads to a
-        # deadlock if another import is in progress in another thread (see
-        # http://docs.python.org/library/threading.html#importing-in-threaded-code).
-        # Since I want other modules to be able to call connect() whilst
-        # they are being imported, this seemed like a logical solution.
-        context = zmq.Context.instance()
-        rep_sock = context.socket(zmq.REP)
-        poller = zmq.Poller()
-        poller.register(rep_sock, zmq.POLLIN)
-        rep_sock.bind('inproc://delayed-release')
-        _delayed_release_thread = threading.Thread(target=_delayed_release_loop,args=(rep_sock, poller))
-        _delayed_release_thread.daemon = True
-        _delayed_release_thread.start()
     return ping(timeout)
 
