@@ -151,8 +151,9 @@ class ZMQLockClient(object):
                     else:
                         raise zmq.ZMQError(response)
         except: 
-            self.local.sock.close(linger=False)
-            del self.local.sock
+            if hasattr(self.local,'sock'):
+                self.local.sock.close(linger=False)
+                del self.local.sock
             raise
         
     def release(self, key, client_id, retries=1):
@@ -177,8 +178,9 @@ class ZMQLockClient(object):
                 else:
                     raise zmq.ZMQError(response)
         except:
-            self.local.sock.close(linger=False)
-            del self.local.sock
+            if hasattr(self.local,'sock'):
+                self.local.sock.close(linger=False)
+                del self.local.sock
             raise
     
 class Lock(object):
