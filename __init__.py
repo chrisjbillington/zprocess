@@ -324,7 +324,7 @@ class OutputInterceptor(object):
     def write(self, s):
         if not hasattr(self.local, 'sock'):
             self.new_socket()
-        self.local.sock.send_multipart([self.streamname, s.encode()])
+        self.local.sock.send_multipart([self.streamname, s.encode('utf8')])
         
     def close(self):
         self.disconnect()
@@ -332,7 +332,34 @@ class OutputInterceptor(object):
         
     def flush(self):
         pass
+      
         
+class StdInHook(object):
+    def __init__(self):
+        object.__setattr__(self, '_old_stdin', sys.stdin)
+        
+    def __getattribute__(self, name):
+        if name in ['read', 'readline', '_old_stdin', 'error']:
+            return object.__getattribute__(self, name)
+        _old_stdin = object.__getattribute__(self, '_old_stdin')
+        return getattr(_old_stdin, name)
+    
+    def __setattr__(self, name, value):
+        _old_stdin = object.__getattribute__(self, '_old_stdin')
+        return setattr(_old_stdin, name, value)
+        
+    def read(self, *args, **kwargs):
+        self.error()
+        return self._old_stdin.read(*args, **kwargs)
+        
+    def readline(self, *args, **kwargs):
+        self.error()
+        return self._old_stdin.readline(*args, **kwargs)
+    
+    def error(self):
+        sys.stderr.write('Warning: This process might not have a standard input stream! Prompts asking for input may not work. ' + 
+                         'Call subproc_utils.embed() at a point in your code to launch an interactive IPython qtconsole ' +
+                         ' there, and do your interactive work that way.\n')
         
 class Broker(object):
     instance = None
@@ -429,7 +456,36 @@ class Event(object):
                     return data
         raise TimeoutError('No event received: timed out')
         
-        
+def embed():
+    def launch_qtconsole():
+        while True:
+            time.sleep(.01)
+            if IPKernelApp.initialized():
+                app = IPKernelApp.instance()
+                retcode = subprocess.call(['ipython', 'qtconsole', 
+                                           '--existing', app.connection_file,
+                                           '--no-confirm-exit'])
+                if not kernel_has_quit.is_set():
+                    ioloop.IOLoop.instance().stop()
+                break
+            
+    import IPython
+    from IPython.zmq.ipkernel import IPKernelApp
+    from zmq.eventloop import ioloop
+    kernel_has_quit = threading.Event()
+    caller_module, caller_locals = IPython.extract_module_locals(1)
+    print caller_module
+    print caller_locals
+    thread = threading.Thread(target=launch_qtconsole)
+    thread.daemon = True
+    thread.start()
+    streams = sys.stdin, sys.stdout, sys.stderr
+    try:
+        IPython.embed_kernel(module=caller_module,locals_ns=caller_locals)
+    finally:
+        kernel_has_quit.set()
+        sys.stdin, sys.stdout, sys.stderr = streams
+                
 class Process(object):
     """A class providing similar functionality to multiprocessing.Process,
     but using zmq for communication and creating processes in a fresh
@@ -544,6 +600,7 @@ def setup_connection_with_parent(lock=False):
         stderr = OutputInterceptor(output_redirection_port,'stderr')
         stdout.connect()
         stderr.connect()
+    #sys.stdin = StdInHook()
     
     kill_lock = HeartbeatClient.create_instance(port_to_heartbeat_server) 
     Broker.set_server_ports(broker_sub_port, broker_pub_port)
