@@ -113,34 +113,28 @@ class ZMQLockServer(object):
         # A dictionary of locks currently held by clients:
         self.held_locks = {}
         
-        # We have an extra ROUTER-DEALER layer before our REP socket
-        # so that we can delay replying to some requests until after
-        # other requests have been processed. This is useful in the case
-        # of lock contention: instead of replying saying 'sorry, the
-        # lock is already held', we can instead wait until some other
-        # requests have been processed (which may release the lock)
-        # before replying.
+        # We use a ROUTER instead of a REP socket so that we can delay
+        # replying to some requests until after other requests have
+        # been processed. This is useful in the case of lock contention:
+        # instead of replying saying 'sorry, the lock is already held', we
+        # can instead wait until some other requests have been processed
+        # (which may release the lock) before replying. Then the client
+        # doesn't have to wait in between polls, the waiting happens on
+        # the server.
 
         context = zmq.Context.instance()
         self.router = context.socket(zmq.ROUTER)
-        self.dealer = context.socket(zmq.DEALER)
-        self.sock = context.socket(zmq.REP)
-        
         self.poller = zmq.Poller()
         self.poller.register(self.router, zmq.POLLIN)
         
-        # Bind the router to the outside world and connect the dealer
-        # to the REP socket via inproc:
+        # Bind the router to the outside world:
         self.router.bind('tcp://0.0.0.0:%d'%self.port)
-        self.sock.bind('inproc://to-rep-socket')
-        self.dealer.connect('inproc://to-rep-socket')
         
         self.handlers = {'hello': self.hello, 
                          'acquire': self.acquire,
                          'release': self.release,
                          'status': self.status,
                          'clear': self.clear}
-        
         
     def hello(self):
         if LOGGING: logger.info('someone said hello')
@@ -189,16 +183,12 @@ class ZMQLockServer(object):
                 del self.held_locks[key]
         return 'ok'
         
-    def handle_one_request(self):
-        messages = self.sock.recv_multipart()
-        # Handle the request:
-        request, args = messages[0], messages[1:]
+    def handle_one_request(self, request, *args):
         try:
             response = self.handlers[request](*args)
         except Exception:
             response = traceback.format_exc()
             logger.error('%s:\n%s'%(str(messages), response))
-        self.sock.send(response)
         return response
                           
     def run(self):
@@ -224,9 +214,11 @@ class ZMQLockServer(object):
             # Process all waiting request messages:
             n_requests_processed = 0
             for request_message, expiry in unprocessed_messages[:]:
-                self.dealer.send_multipart(request_message)
-                response = self.handle_one_request()
-                reply_message = self.dealer.recv_multipart()
+                # Unpack the REQ multipart message:
+                client_address = request_message[0]
+                args = request_message[2:]
+                # Handle the request:
+                response = self.handle_one_request(*args)
                 if response == 'retry' and expiry - time.time() > 0:
                     # Lock contention. Lock acquisition will be retried
                     # after other requests are processed, or once maximum
@@ -242,6 +234,8 @@ class ZMQLockServer(object):
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
+                    # Re-pack into a REP multipart message for reply:
+                    reply_message = [client_address, '', response]
                     self.router.send_multipart(reply_message)
                     n_requests_processed += 1
             # Shuffle the waiting requests so as to remove any systematic
