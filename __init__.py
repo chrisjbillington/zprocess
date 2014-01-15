@@ -355,7 +355,7 @@ def guess_server_address():
                     port = zlock.DEFAULT_PORT
     return host, port
         
-def connect(host='localhost', port=DEFAULT_PORT, timeout=1):
+def connect(host='localhost', port=DEFAULT_PORT, timeout=5):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
     global _zmq_lock_client
