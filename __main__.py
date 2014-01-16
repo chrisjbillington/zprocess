@@ -188,7 +188,7 @@ class ZMQLockServer(object):
             response = self.handlers[request](*args)
         except Exception:
             response = traceback.format_exc()
-            logger.error('%s:\n%s'%(str(messages), response))
+            logger.error('%s:\n%s'%(str([request] + list(args)), response))
         return response
                           
     def run(self):
