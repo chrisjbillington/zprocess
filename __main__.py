@@ -215,8 +215,7 @@ class ZMQLockServer(object):
             n_requests_processed = 0
             for request_message, expiry in unprocessed_messages[:]:
                 # Unpack the REQ multipart message:
-                client_address = request_message[0]
-                args = request_message[2:]
+                prefix, args = request_message[0:2], request_message[2:]
                 # Handle the request:
                 response = self.handle_one_request(*args)
                 if response == 'retry' and expiry - time.time() > 0:
@@ -224,19 +223,14 @@ class ZMQLockServer(object):
                     # after other requests are processed, or once maximum
                     # response time is reached. Don't give the client
                     # a response yet:
-                    # conversion to ms and a +1 to ensure that
-                    # time_until_response_required truly is zero or less
-                    # by the time we next get here
-                    continue
+                     continue
                 else:
                     # If success or error, tell the client about it. Or
                     # if we have already been retrying their request for
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
-                    # Re-pack into a REP multipart message for reply:
-                    reply_message = [client_address, '', response]
-                    self.router.send_multipart(reply_message)
+                    self.router.send_multipart(prefix + [response])
                     n_requests_processed += 1
             # Shuffle the waiting requests so as to remove any systematic
             # ordering effects:
