@@ -275,6 +275,7 @@ if __name__ == '__main__':
             context.destroy(linger=False)
             # Re-initialise the server:
             server = ZMQLockServer(port)
+            time.sleep(1)
             
             
             
