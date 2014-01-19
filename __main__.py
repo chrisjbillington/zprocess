@@ -95,10 +95,16 @@ class ZMQLogServer(object):
         self.last_access[filepath] = time.time()
         if not fresh:
             try:
-                return self.open_files[filepath]
-            except KeyError:
+                f = self.open_files[filepath]
+                fstat, pathstat = os.fstat(f.fileno()), os.stat(filepath)
+                assert fstat.st_ino == pathstat.st_ino and fstat.st_dev == pathstat.st_dev
+                return f
+            except KeyError, OSError, AssertionError:
+                # Either we don't have it, or it's been deleted or moved
+                # or something. Better open it from scratch.
                 pass
         self.open_files[filepath] = open(filepath,'a')
+        # Now we check if we have too many files open, and close some:
         while len(self.open_files) > MAX_OPEN_FILES:
             oldest_file = min(self.last_access, key=self.last_access.__getitem__)
             del self.last_access[oldest_file]
