@@ -8,7 +8,7 @@ import logging
 import subprocess
 import zmq
 
-DEFAULT_PORT = 7340
+DEFAULT_PORT = 7341
 import __main__
 
 class ZMQLogClient(object):
@@ -42,7 +42,10 @@ class ZMQLogClient(object):
         context = zmq.Context.instance()
         self.local.pushsock = context.socket(zmq.PUSH)
         self.local.pushsock.setsockopt(zmq.LINGER, 1000)
-        self.local.pushsock.setsockopt(zmq.SNDHWM, 1000)
+        try:
+            self.local.pushsock.setsockopt(zmq.SNDHWM, 1000)
+        except AttributeError:
+            self.local.pushsock.setsockopt(zmq.HWM, 1000)
         self.local.pushsock.connect('tcp://%s:%s'%(self.host, str(self.port)))
         self.local.high_water_mark = False
         
@@ -126,6 +129,14 @@ def check_file_access(filepath, timeout=None):
     return _zmq_log_client.check_file_access(filepath, timeout)
 
 
+class Formatter(logging.Formatter):
+    def formatTime(self, record, datefmt=None):
+        ct = self.converter(record.created)
+        t = time.strftime("%Y-%m-%d %H:%M:%S", ct)
+        s = "%s,%06d" % (t, int((record.created % 1)*1e6))
+        return s
+
+
 class Logger(logging.Logger): 
 
     instances = {}
@@ -207,8 +218,13 @@ class Logger(logging.Logger):
             check_file_access(filepath, timeout=None)
         
         if fmt is None:
-            fmt = '[%(asctime)s] %(levelname)s %(name)s: %(message)s'
-        self.formatter = logging.Formatter(fmt)
+            if name:
+                fmt = '[%(asctime)s] %(levelname)s %(name)s: %(message)s'
+            else:
+                fmt = '[%(asctime)s] %(levelname)s %(message)s'
+                
+        self.formatter = Formatter(fmt)
+            
         if to_terminal is not None and sys.stdout.isatty():
             terminalhandler = logging.StreamHandler(sys.stdout)
             terminalhandler.setFormatter(self.formatter)
