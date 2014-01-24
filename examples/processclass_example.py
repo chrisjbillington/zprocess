@@ -1,6 +1,6 @@
 #####################################################################
 #                                                                   #
-# qt_components.py                                                  #
+# processclass_example.py                                           #
 #                                                                   #
 # Copyright 2013, Chris Billington                                  #
 #                                                                   #
@@ -11,9 +11,21 @@
 #                                                                   #
 #####################################################################
 
-# This file is included for backward compatability, but the OutputBox
-# class has been moved to the qtutils project for licensing reasons.
-# A longer term aim is to remove GUI elements from zprocess, but they
-# are kept here for the moment for compatability.
+from zprocess import Process
+import os
 
-from qtutils.outputbox import OutputBox
+class Foo(Process):
+    def run(self, data):
+        print 'this is a running foo in process', os.getpid()
+        print 'data is', data
+        message = self.from_parent.get()
+        print 'foo, got a message:', message
+        self.to_parent.put('hello yourself!')
+
+# This __main__ check is important to stop the same code executing again in the child:
+if __name__ == '__main__':
+    foo = Foo()
+    to_child, from_child = foo.start('bar')
+    to_child.put('hello, foo!')
+    response = from_child.get()
+    print 'parent, got a response:', response
