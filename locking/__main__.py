@@ -7,7 +7,7 @@ import random
 
 import zmq
 
-import zlock
+import zprocess.zlock
 
 
 MAX_RESPONSE_TIME = 1 # sec
@@ -254,7 +254,7 @@ if __name__ == '__main__':
     
     try:
         import ConfigParser
-        from LabConfig import LabConfig
+        from labscript_utils.labconfig import LabConfig
         port = LabConfig().get('ports','zlock')
     except (ImportError, IOError, ConfigParser.NoOptionError):
         if LOGGING: logger.warning("Couldn't get port setting from LabConfig. Using default port")
