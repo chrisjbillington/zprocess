@@ -11,7 +11,7 @@
 from distutils.core import setup
 import os
 
-VERSION = '1.1.0'
+VERSION = '1.1.1'
 DESCRIPTION = \
 """A set of utilities for multiprocessing using
 zeromq. Includes process creation and management, output
@@ -29,5 +29,5 @@ setup(name='zprocess',
       author_email='chrisjbillington@gmail.com',
       url='https://bitbucket.org/cbillington/zprocess/',
       license="BSD",
-      packages=['zprocess']
+      packages=['zprocess', 'zprocess.locking', 'zprocess.logging']
      )
