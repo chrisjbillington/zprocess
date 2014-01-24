@@ -3,7 +3,7 @@ import sys
 import traceback
 import time
 import zmq
-import zlog
+import zprocess.logging as zlog
 
 LOGGING = True
 # The path to our own log file:

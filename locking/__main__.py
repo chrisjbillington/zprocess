@@ -7,7 +7,7 @@ import random
 
 import zmq
 
-import zprocess.zlock
+import zprocess.locking as zlock
 
 
 MAX_RESPONSE_TIME = 1 # sec
