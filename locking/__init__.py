@@ -1,3 +1,16 @@
+#####################################################################
+#                                                                   #
+# __init__.py                                                       #
+#                                                                   #
+# Copyright 2013, Chris Billington                                  #
+#                                                                   #
+# This file is part of the zprocess project (see                    #
+# https://bitbucket.org/cbillington/zprocess) and is licensed under #
+# the Simplified BSD License. See the license.txt file in the root  #
+# of the project for the full license.                              #
+#                                                                   #
+#####################################################################
+
 import sys
 import os
 import socket

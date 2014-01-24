@@ -1,9 +1,22 @@
+#####################################################################
+#                                                                   #
+# process_class_wrapper.py                                          #
+#                                                                   #
+# Copyright 2013, Chris Billington                                  #
+#                                                                   #
+# This file is part of the zprocess project (see                    #
+# https://bitbucket.org/cbillington/zprocess) and is licensed under #
+# the Simplified BSD License. See the license.txt file in the root  #
+# of the project for the full license.                              #
+#                                                                   #
+#####################################################################
+
 
 def _setup():
     # Clear the namespace of any evidence we were here:
     del globals()['_setup']
     import sys, os
-    from subproc_utils import setup_connection_with_parent
+    from zprocess import setup_connection_with_parent
     to_parent, from_parent, kill_lock = setup_connection_with_parent(lock=True)
     module_name, module_filepath, syspath = from_parent.get()
     # Set sys.path so that all modules imported in the user's code are importable here:
