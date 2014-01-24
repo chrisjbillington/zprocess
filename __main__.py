@@ -99,7 +99,7 @@ class ZMQLogServer(object):
                 fstat, pathstat = os.fstat(f.fileno()), os.stat(filepath)
                 assert fstat.st_ino == pathstat.st_ino and fstat.st_dev == pathstat.st_dev
                 return f
-            except KeyError, OSError, AssertionError:
+            except (KeyError, OSError, AssertionError):
                 # Either we don't have it, or it's been deleted or moved
                 # or something. Better open it from scratch.
                 pass

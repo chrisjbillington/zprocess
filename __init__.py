@@ -189,6 +189,8 @@ class Logger(logging.Logger):
         logging.Logger.__init__(self, name)
         
         self.terminal_only = terminal_only
+        self.to_terminal = to_terminal
+        
         if filepath is None:
             # Absolute import means this is not zlock.__main__, this is
             # the user's __main__:
@@ -236,9 +238,10 @@ class Logger(logging.Logger):
             sys.stdout = sys.stderr = open(os.devnull,'w')
 
     def handle(self, record):
-        logging.Logger.handle(self, record)
-        msg = self.formatter.format(record)
+        if self.to_terminal is not None:
+            logging.Logger.handle(self, record)
         if not self.terminal_only:
+            msg = self.formatter.format(record)
             log(self.filepath, msg)
             
     
