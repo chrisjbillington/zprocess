@@ -426,7 +426,10 @@ class Event(object):
         self.can_post = self.type in ['post','both']
         if self.can_wait:
             self.sub = context.socket(zmq.SUB)
-            self.sub.setsockopt(zmq.HWM, 1000)
+            try:
+                self.sub.setsockopt(zmq.HWM, 1000) # ZMQ v2 only
+            except:            
+                self.sub.set_hwm(1000) #ZMQ v3+
             self.sub.setsockopt(zmq.SUBSCRIBE, self.event_name)
             self.sub.connect('tcp://127.0.0.1:%s'%broker_pub_port) 
             self.poller = zmq.Poller()
