@@ -7,7 +7,7 @@ and a process-tree-wide event system.
 
 ( 
 [view on pypi](https://pypi.python.org/pypi/zprocess/);
-[view on Bitbucket](https://github.com/cbillginton/zprocess)
+[view on Bitbucket](https://bitbucket.org/cbillington/zprocess)
 )
 
    * Install `python setup.py install`.
