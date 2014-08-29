@@ -218,7 +218,7 @@ class Lock(object):
             try:
                 acquire(self.key, timeout)
             except:
-                self.recursion_level =- 1
+                self.recursion_level -= 1
                 self.local_lock.release()
                 raise
             
