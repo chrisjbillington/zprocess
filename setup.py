@@ -11,7 +11,7 @@
 from distutils.core import setup
 import os
 
-VERSION = '1.1.3-dev'
+VERSION = '1.1.3'
 DESCRIPTION = \
 """A set of utilities for multiprocessing using
 zeromq. Includes process creation and management, output
@@ -21,7 +21,7 @@ and a process-tree-wide event system.  """
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
     f.write("__version__ = '%s'\n"%VERSION)
-    
+
 setup(name='zprocess',
       version=VERSION,
       description=DESCRIPTION,
