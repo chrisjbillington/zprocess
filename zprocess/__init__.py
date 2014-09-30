@@ -47,8 +47,8 @@ class ZMQServer(object):
     def __init__(self,port,type='pyobj'):
         self.type = type
         self.port = port
-        self.sock = context.socket(zmq.REP)
-        self.sock.setsockopt(zmq.LINGER, 0)
+        self.context = zmq.Context()
+        self.sock = self.context.socket(zmq.REP)
         self.sock.bind('tcp://0.0.0.0:%s'%str(self.port))
 
         if self.type == 'pyobj':
@@ -64,15 +64,14 @@ class ZMQServer(object):
             raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'"%str(self.type))
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
-        self.shutting_down = False
         self.mainloop_thread.start()
 
     def mainloop(self):
         while True:
-            request_data = self.recv()
-            if request_data in ['shutdown',['shutdown']] and self.shutting_down:
-                self.send('ok')
-                self.sock.close(linger=1)
+            try:
+                request_data = self.recv()
+            except zmq.ContextTerminated:
+                self.sock.close(linger=0)
                 return
             try:
                 response_data = self.handler(request_data)
@@ -89,11 +88,7 @@ class ZMQServer(object):
             self.send(response_data)
 
     def shutdown(self):
-        self.shutting_down = True
-        if self.type == 'pyobj':
-            zmq_get(self.port, data='shutdown', timeout=1)
-        else:
-            zmq_get_raw(self.port, data='shutdown', timeout=1)
+        self.context.term()
 
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example
