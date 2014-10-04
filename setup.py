@@ -11,7 +11,7 @@
 from distutils.core import setup
 import os
 
-VERSION = '1.1.4'
+VERSION = '1.1.5'
 DESCRIPTION = \
 """A set of utilities for multiprocessing using
 zeromq. Includes process creation and management, output
