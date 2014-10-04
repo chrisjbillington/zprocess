@@ -34,22 +34,26 @@ context = zmq.Context.instance()
 # discover that wer're not (by setup_connection_with_parent() being called):
 we_are_the_top_process = True
 
+
 def raise_exception_in_thread(exc_info):
     """Raises an exception in a thread"""
     def f(exc_info):
         raise exc_info[0], exc_info[1], exc_info[2]
-    threading.Thread(target=f,args=(exc_info,)).start()
+    threading.Thread(target=f, args=(exc_info,)).start()
+
 
 class TimeoutError(zmq.ZMQError):
     pass
 
+
 class ZMQServer(object):
-    def __init__(self,port,type='pyobj'):
+
+    def __init__(self, port, type='pyobj'):
         self.type = type
         self.port = port
         self.context = zmq.Context()
         self.sock = self.context.socket(zmq.REP)
-        self.sock.bind('tcp://0.0.0.0:%s'%str(self.port))
+        self.sock.bind('tcp://0.0.0.0:%s' % str(self.port))
 
         if self.type == 'pyobj':
             self.send = self.sock.send_pyobj
@@ -61,7 +65,7 @@ class ZMQServer(object):
             self.send = self.sock.send_multipart
             self.recv = self.sock.recv_multipart
         else:
-            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'"%str(self.type))
+            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'" % str(self.type))
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
@@ -80,7 +84,8 @@ class ZMQServer(object):
                 # server keeps running:
                 exc_info = sys.exc_info()
                 raise_exception_in_thread(exc_info)
-                response_data = zmq.ZMQError('The server had an unhandled exception whilst processing the request: %s'%str(e))
+                response_data = zmq.ZMQError(
+                    'The server had an unhandled exception whilst processing the request: %s' % str(e))
                 if self.type == 'raw':
                     response_data = str(response_data)
                 elif self.type == 'multipart':
@@ -93,16 +98,17 @@ class ZMQServer(object):
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example
         implementation"""
-        response = 'This is an example ZMQServer. Your request was %s.'%str(request_data)
+        response = 'This is an example ZMQServer. Your request was %s.' % str(request_data)
         return response
 
 
 class ZMQGet(object):
-    def __init__(self,type='pyobj'):
+
+    def __init__(self, type='pyobj'):
         self.local = threading.local()
         self.type = type
 
-    def new_socket(self,host,port):
+    def new_socket(self, host, port):
         # Every time the REQ/REP cadence is broken, we need to create
         # and bind a new socket to get it back on track. Also, we have
         # a separate socket for each thread. Also a new socket if there
@@ -114,7 +120,7 @@ class ZMQGet(object):
         self.local.sock.setsockopt(zmq.LINGER, 0)
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)
-        self.local.sock.connect('tcp://%s:%d'%(self.local.host, self.local.port))
+        self.local.sock.connect('tcp://%s:%d' % (self.local.host, self.local.port))
         # Different send/recv methods depending on the desired protocol:
         if self.type == 'pyobj':
             self.local.send = self.local.sock.send_pyobj
@@ -126,25 +132,25 @@ class ZMQGet(object):
             self.local.send = self.local.sock.send
             self.local.recv = self.local.sock.recv
         else:
-            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'"%str(self.type))
+            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'" % str(self.type))
 
     def __call__(self, port, host='localhost', data=None, timeout=5):
         """Uses reliable request-reply to send data to a zmq REP socket, and returns the reply"""
         # We cache the socket so as to not exhaust ourselves of tcp
         # ports. However if a different server is in use, we need a new
         # socket. Also if we don't have a socket, we also need a new one:
-        if not hasattr(self.local,'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
-            self.new_socket(host,port)
+        if not hasattr(self.local, 'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
+            self.new_socket(host, port)
         # when not using python objects, a null message should be an empty string:
-        if data is None and self.type in ['raw','multipart']:
+        if data is None and self.type in ['raw', 'multipart']:
             data = ''
-        if self.type == 'multipart' and isinstance(data,str):
+        if self.type == 'multipart' and isinstance(data, str):
             # Wrap up a single string into a list so it doesn't get sent
             # as one character per message!
             data = [data]
         try:
             self.local.send(data, zmq.NOBLOCK)
-            events = self.local.poller.poll(timeout*1000) # convert timeout to ms
+            events = self.local.poller.poll(timeout * 1000)  # convert timeout to ms
             if events:
                 response = self.local.recv()
             else:
@@ -166,12 +172,14 @@ zmq_get = ZMQGet('pyobj')
 zmq_get_multipart = ZMQGet('multipart')
 zmq_get_raw = ZMQGet('raw')
 
+
 class ZMQPush(object):
-    def __init__(self,type='pyobj'):
+
+    def __init__(self, type='pyobj'):
         self.local = threading.local()
         self.type = type
 
-    def new_socket(self,host,port):
+    def new_socket(self, host, port):
         # Every time there is an exception, we need to create and
         # bind a new socket. Also, we have a separate socket for each
         # thread. Also a new socket if there is a different host or port:
@@ -180,7 +188,7 @@ class ZMQPush(object):
         context = zmq.Context.instance()
         self.local.sock = context.socket(zmq.PUSH)
         self.local.sock.setsockopt(zmq.LINGER, 0)
-        self.local.sock.connect('tcp://%s:%d'%(self.local.host, self.local.port))
+        self.local.sock.connect('tcp://%s:%d' % (self.local.host, self.local.port))
         # Different send/recv methods depending on the desired protocol:
         if self.type == 'pyobj':
             self.local.send = self.local.sock.send_pyobj
@@ -196,9 +204,9 @@ class ZMQPush(object):
         # We cache the socket so as to not exhaust ourselves of tcp
         # ports. However if a different server is in use, we need a new
         # socket. Also if we don't have a socket, we also need a new one:
-        if not hasattr(self.local,'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
-            self.new_socket(host,port)
-        if self.type == 'multipart' and isinstance(data,str):
+        if not hasattr(self.local, 'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
+            self.new_socket(host, port)
+        if self.type == 'multipart' and isinstance(data, str):
             # Wrap up a single string into a list so it doesn't get sent
             # as one character per message!
             data = [data]
@@ -216,9 +224,11 @@ zmq_push_raw = ZMQPush('raw')
 
 
 class HeartbeatServer(object):
+
     """A server which receives messages from clients and echoes them
     back. There is only one server for however many clients there are"""
     instance = None
+
     def __init__(self):
         self.sock = context.socket(zmq.REP)
         self.port = self.sock.bind_to_random_port('tcp://127.0.0.1')
@@ -242,12 +252,13 @@ class HeartbeatServer(object):
 
 class HeartbeatClient(object):
     instance = None
+
     def __init__(self, server_port, lock):
         self.sock = context.socket(zmq.REQ)
         self.sock.setsockopt(zmq.LINGER, 0)
         self.poller = zmq.Poller()
-        self.poller.register(self.sock,zmq.POLLIN)
-        self.port = self.sock.connect('tcp://127.0.0.1:%s'%server_port)
+        self.poller.register(self.sock, zmq.POLLIN)
+        self.port = self.sock.connect('tcp://127.0.0.1:%s' % server_port)
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
@@ -280,29 +291,37 @@ class HeartbeatClient(object):
             cls.instance = cls(server_port, lock)
         return cls.instance.lock
 
+
 class WriteQueue(object):
+
     """Provides writing of python objects to the underlying zmq socket,
     with added locking. No reading is supported, once you put an object,
     you can't check what was put or whether the items have been gotten"""
-    def __init__(self,sock):
+
+    def __init__(self, sock):
         self.sock = sock
         self.lock = threading.Lock()
-    def put(self,obj):
+
+    def put(self, obj):
         with self.lock:
             self.sock.send_pyobj(obj)
 
+
 class ReadQueue(object):
+
     """provides reading and writing methods to the underlying zqm socket,
     with added locking. Actually there are two sockets, one for reading,
     one for writing. The only real use case for writing is when the
     read socket is blocking, but the process at the other end has died,
     and you need to stop the thread that is blocking on the read. So
     you send it a quit signal with put()."""
-    def __init__(self,sock,to_self_sock):
+
+    def __init__(self, sock, to_self_sock):
         self.sock = sock
         self.to_self_sock = to_self_sock
         self.socklock = threading.Lock()
         self.to_self_sock_lock = threading.Lock()
+
     def get(self):
         with self.socklock:
             obj = self.sock.recv_pyobj()
@@ -314,9 +333,10 @@ class ReadQueue(object):
 
 
 class OutputInterceptor(object):
+
     def __init__(self, port, streamname='stdout'):
         self.streamname = streamname
-        self.real_stream = getattr(sys,streamname)
+        self.real_stream = getattr(sys, streamname)
         self.fileno = self.real_stream.fileno
         self.local = threading.local()
         self.port = port
@@ -327,13 +347,13 @@ class OutputInterceptor(object):
         context = zmq.Context.instance()
         self.local.sock = context.socket(zmq.PUSH)
         self.local.sock.setsockopt(zmq.LINGER, 0)
-        self.local.sock.connect('tcp://127.0.0.1:%d'%self.port)
+        self.local.sock.connect('tcp://127.0.0.1:%d' % self.port)
 
     def connect(self):
-        setattr(sys,self.streamname,self)
+        setattr(sys, self.streamname, self)
 
     def disconnect(self):
-        setattr(sys,self.streamname,self.real_stream)
+        setattr(sys, self.streamname, self.real_stream)
 
     def write(self, s):
         if not hasattr(self.local, 'sock'):
@@ -348,37 +368,40 @@ class OutputInterceptor(object):
         pass
 
 
-#class StdInHook(object):
+# class StdInHook(object):
 #    def __init__(self):
 #        object.__setattr__(self, '_old_stdin', sys.stdin)
-#
+
 #    def __getattribute__(self, name):
 #        if name in ['read', 'readline', '_old_stdin', 'error']:
 #            return object.__getattribute__(self, name)
 #        _old_stdin = object.__getattribute__(self, '_old_stdin')
 #        return getattr(_old_stdin, name)
-#
+
 #    def __setattr__(self, name, value):
 #        _old_stdin = object.__getattribute__(self, '_old_stdin')
 #        return setattr(_old_stdin, name, value)
-#
+
 #    def read(self, *args, **kwargs):
 #        self.error()
 #        return self._old_stdin.read(*args, **kwargs)
-#
+
 #    def readline(self, *args, **kwargs):
 #        self.error()
 #        return self._old_stdin.readline(*args, **kwargs)
-#
+
 #    def error(self):
-#        sys.stderr.write('Warning: This process might not have a standard input stream! Prompts asking for input may not work. ' +
-#                         'Call zprocess.embed() at a point in your code to launch an interactive IPython qtconsole ' +
-#                         ' there, and do your interactive work that way.\n')
-#
+#        sys.stderr.write('Warning: This process might not have a standard input stream! ' +
+#                         'Prompts asking for input may not work. ' +
+#                         'Call zprocess.embed() at a point in your code to launch an interactive ' +
+#                         'IPython qtconsole there, and do your interactive work that way.\n')
+
+
 class Broker(object):
     instance = None
      # If instance is None, then these ports are those of a Broker running in a parent process:
     server_ports = None
+
     def __init__(self):
         self.sub = context.socket(zmq.SUB)
         self.sub.setsockopt(zmq.SUBSCRIBE, '')
@@ -409,6 +432,7 @@ class Broker(object):
 
 
 class Event(object):
+
     def __init__(self, event_name, type='wait'):
         # Ensure we have a broker, whether it's in this process or a parent one:
         Broker.create_instance()
@@ -417,22 +441,22 @@ class Event(object):
         self.type = type
         if not type in ['wait', 'post', 'both']:
             raise ValueError("type must be 'wait', 'post', or 'both'")
-        self.can_wait = self.type in ['wait','both']
-        self.can_post = self.type in ['post','both']
+        self.can_wait = self.type in ['wait', 'both']
+        self.can_post = self.type in ['post', 'both']
         if self.can_wait:
             self.sub = context.socket(zmq.SUB)
             try:
-                self.sub.setsockopt(zmq.HWM, 1000) # ZMQ v2 only
+                self.sub.setsockopt(zmq.HWM, 1000)  # ZMQ v2 only
             except:
-                self.sub.set_hwm(1000) #ZMQ v3+
+                self.sub.set_hwm(1000)  # ZMQ v3+
             self.sub.setsockopt(zmq.SUBSCRIBE, self.event_name)
-            self.sub.connect('tcp://127.0.0.1:%s'%broker_pub_port)
+            self.sub.connect('tcp://127.0.0.1:%s' % broker_pub_port)
             self.poller = zmq.Poller()
             self.poller.register(self.sub, zmq.POLLIN)
             self.sublock = threading.Lock()
         if self.can_post:
             self.pub = context.socket(zmq.PUB)
-            self.pub.connect('tcp://127.0.0.1:%s'%broker_sub_port)
+            self.pub.connect('tcp://127.0.0.1:%s' % broker_sub_port)
             self.publock = threading.Lock()
 
     def post(self, id, data=None):
@@ -456,13 +480,14 @@ class Event(object):
                 assert event_name == self.event_name
                 if event_id == id:
                     return data
-        # Since we might have to make several recv() calls before we get the right id, we must implement our own timeout:
+        # Since we might have to make several recv() calls before we get the right
+        # id, we must implement our own timeout:
         start_time = time.time()
         while timeout is None or (time.time() < start_time + timeout):
             with self.sublock:
                 if timeout is not None:
                     # How long left before the elapsed time is greater than timeout?
-                    poll_timeout = max(0, (start_time + timeout - time.time())*1000)
+                    poll_timeout = max(0, (start_time + timeout - time.time()) * 1000)
                     events = self.poller.poll(poll_timeout)
                     if not events:
                         break
@@ -473,7 +498,8 @@ class Event(object):
                     return data
         raise TimeoutError('No event received: timed out')
 
-#def embed():
+
+# def embed():
 #    def launch_qtconsole():
 #        while True:
 #            time.sleep(.01)
@@ -503,21 +529,24 @@ class Event(object):
 #        kernel_has_quit.set()
 #        sys.stdin, sys.stdout, sys.stderr = streams
 
+
 class Process(object):
+
     """A class providing similar functionality to multiprocessing.Process,
     but using zmq for communication and creating processes in a fresh
     environment rather than by forking (or imitation forking as in
     Windows). Do not override its methods other than run()."""
+
     def __init__(self, output_redirection_port=0, instantiation_is_in_subprocess=False):
         if not instantiation_is_in_subprocess:
             self._output_redirection_port = 0
 
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and kwargs to the run() method"""
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),'process_class_wrapper.py')
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'process_class_wrapper.py')
         self.to_child, self.from_child, self.child = subprocess_with_queues(path, self._output_redirection_port)
         # Get the file that the class definition is in (not this file you're reading now, rather that of the subclass):
-        module_file =  os.path.abspath(sys.modules[self.__module__].__file__)
+        module_file = os.path.abspath(sys.modules[self.__module__].__file__)
         basepath, extension = os.path.splitext(module_file)
         if extension == '.pyc':
             module_file = basepath + '.py'
@@ -547,7 +576,7 @@ class Process(object):
         try:
             self.child.terminate()
         except WindowsError if os.name == 'nt' else None:
-            pass # process is already dead
+            pass  # process is already dead
 
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by subclasses"""
@@ -561,7 +590,7 @@ def subprocess_with_queues(path, output_redirection_port=0):
     to_self = context.socket(zmq.PUSH)
 
     port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
-    to_self.connect('tcp://127.0.0.1:%s'%port_from_child)
+    to_self.connect('tcp://127.0.0.1:%s' % port_from_child)
     broker_sub_port, broker_pub_port = Broker.create_instance()
     heartbeat_server_port = HeartbeatServer.create_instance()
     # If a custom process identifier has been set in zlock, ensure the child inherits it:
@@ -569,17 +598,18 @@ def subprocess_with_queues(path, output_redirection_port=0):
     if 'zlock' in sys.modules:
         zlock_process_identifier_prefix = sys.modules['zlock'].process_identifier_prefix
     child = subprocess.Popen([sys.executable, '-u', path, str(port_from_child),
-                             str(heartbeat_server_port), str(output_redirection_port),
-                             str(broker_sub_port), str(broker_pub_port),
-                             zlock_process_identifier_prefix])
+                              str(heartbeat_server_port), str(output_redirection_port),
+                              str(broker_sub_port), str(broker_pub_port),
+                              zlock_process_identifier_prefix])
 
     port_to_child = from_child.recv()
-    to_child.connect('tcp://127.0.0.1:%s'%port_to_child)
+    to_child.connect('tcp://127.0.0.1:%s' % port_to_child)
 
     to_child = WriteQueue(to_child)
     from_child = ReadQueue(from_child, to_self)
 
     return to_child, from_child, child
+
 
 def setup_connection_with_parent(lock=False):
     global we_are_the_top_process
@@ -604,17 +634,17 @@ def setup_connection_with_parent(lock=False):
     to_self = context.socket(zmq.PUSH)
 
     port_from_parent = from_parent.bind_to_random_port('tcp://127.0.0.1')
-    to_self.connect('tcp://127.0.0.1:%s'%port_from_parent)
+    to_self.connect('tcp://127.0.0.1:%s' % port_from_parent)
 
-    to_parent.connect("tcp://127.0.0.1:%s"%port_to_parent)
+    to_parent.connect("tcp://127.0.0.1:%s" % port_to_parent)
     to_parent.send(str(port_from_parent))
 
     from_parent = ReadQueue(from_parent, to_self)
     to_parent = WriteQueue(to_parent)
 
-    if output_redirection_port: # zero indicates no output redirection
+    if output_redirection_port:  # zero indicates no output redirection
         stdout = OutputInterceptor(output_redirection_port)
-        stderr = OutputInterceptor(output_redirection_port,'stderr')
+        stderr = OutputInterceptor(output_redirection_port, 'stderr')
         stdout.connect()
         stderr.connect()
     #sys.stdin = StdInHook()
@@ -625,4 +655,3 @@ def setup_connection_with_parent(lock=False):
         return to_parent, from_parent, kill_lock
     else:
         return to_parent, from_parent
-
