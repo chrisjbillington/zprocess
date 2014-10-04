@@ -548,7 +548,7 @@ class Process(object):
 
     def __init__(self, output_redirection_port=0, instantiation_is_in_subprocess=False):
         if not instantiation_is_in_subprocess:
-            self._output_redirection_port = 0
+            self._output_redirection_port = output_redirection_port
 
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and kwargs to the run() method"""
