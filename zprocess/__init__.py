@@ -20,6 +20,7 @@ import time
 import signal
 from socket import gethostbyname
 import cPickle as pickle
+import weakref
 
 try:
     from __version__ import __version__
@@ -333,12 +334,20 @@ class ReadQueue(object):
 
 
 class OutputInterceptor(object):
+    threadlocals_by_port = weakref.WeakValueDictionary()
 
     def __init__(self, port, streamname='stdout'):
         self.streamname = streamname
         self.real_stream = getattr(sys, streamname)
         self.fileno = self.real_stream.fileno
-        self.local = threading.local()
+        # All instances with the same port will share a threadlocal object.
+        # This way two (or more) instances called from the same thread will be
+        # using the same zmq socket, and hence, their messages will arrive in
+        # order.
+        if port not in self.threadlocals_by_port:
+            self.local = threading.local()
+            self.threadlocals_by_port[port] = self.local
+        self.local = self.threadlocals_by_port[port]
         self.port = port
 
     def new_socket(self):
