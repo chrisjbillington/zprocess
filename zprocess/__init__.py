@@ -610,7 +610,10 @@ def subprocess_with_queues(path, output_redirection_port=0):
                               str(heartbeat_server_port), str(output_redirection_port),
                               str(broker_sub_port), str(broker_pub_port),
                               zlock_process_identifier_prefix])
-
+    # The child has ten seconds to connect to us:
+    events = from_child.poll(15000)
+    if not events:
+        raise RuntimeError('child process did not connect within the timeout.')
     port_to_child = from_child.recv()
     to_child.connect('tcp://127.0.0.1:%s' % port_to_child)
 
