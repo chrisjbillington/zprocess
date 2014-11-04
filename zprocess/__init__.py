@@ -376,7 +376,10 @@ class OutputInterceptor(object):
     def flush(self):
         pass
 
+    def isatty(self):
+        return False
 
+        
 # class StdInHook(object):
 #    def __init__(self):
 #        object.__setattr__(self, '_old_stdin', sys.stdin)
