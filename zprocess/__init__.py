@@ -511,35 +511,51 @@ class Event(object):
         raise TimeoutError('No event received: timed out')
 
 
-# def embed():
-#    def launch_qtconsole():
-#        while True:
-#            time.sleep(.01)
-#            if IPKernelApp.initialized():
-#                app = IPKernelApp.instance()
-#                retcode = subprocess.call(['ipython', 'qtconsole',
-#                                           '--existing', app.connection_file,
-#                                           '--no-confirm-exit'])
-#                if not kernel_has_quit.is_set():
-#                    ioloop.IOLoop.instance().stop()
-#                break
-#
-#    import IPython
-#    from IPython.zmq.ipkernel import IPKernelApp
-#    from zmq.eventloop import ioloop
-#    kernel_has_quit = threading.Event()
-#    caller_module, caller_locals = IPython.extract_module_locals(1)
-#    print caller_module
-#    print caller_locals
-#    thread = threading.Thread(target=launch_qtconsole)
-#    thread.daemon = True
-#    thread.start()
-#    streams = sys.stdin, sys.stdout, sys.stderr
-#    try:
-#        IPython.embed_kernel(module=caller_module,locals_ns=caller_locals)
-#    finally:
-#        kernel_has_quit.set()
-#        sys.stdin, sys.stdout, sys.stderr = streams
+def embed():
+    """embeds an IPython qt console in the calling scope"""
+
+    # Lots of this code is copied from IPython's internals
+
+    from IPython.utils.frame import extract_module_locals
+    from IPython.kernel.zmq.kernelapp import IPKernelApp
+    from zmq.eventloop import ioloop
+
+    def launch_qtconsole():
+        subprocess.call(['ipython', 'qtconsole', '--existing', app.connection_file])
+        if not kernel_has_quit.is_set():
+            ioloop.IOLoop.instance().stop()
+
+    kernel_has_quit = threading.Event()
+    sys_state = sys.stdin, sys.stdout, sys.stderr, sys.displayhook
+    ps1 = getattr(sys, 'ps1', None)
+    ps2 = getattr(sys, 'ps2', None)
+    qtconsole_thread = threading.Thread(target=launch_qtconsole)
+    qtconsole_thread.daemon = True
+
+    app = IPKernelApp.instance()
+    app.log_connection_info = lambda: None # Don't print this stuff to the terminal
+    app.initialize()
+    main = app.kernel.shell._orig_sys_modules_main_mod
+    if main is not None:
+        sys.modules[app.kernel.shell._orig_sys_modules_main_name] = main
+    caller_module, caller_locals = extract_module_locals(1)
+    app.kernel.user_module = caller_module
+    app.kernel.user_ns = caller_locals
+    app.shell.set_completer_frame()
+    qtconsole_thread.start()
+    try:
+        app.start()
+    finally:
+        sys.stdin, sys.stdout, sys.stderr, sys.displayhook = sys_state
+        if ps1 is not None:
+            sys.ps1 = ps1
+        else:
+            del sys.ps1
+        if ps2 is not None:
+            sys.ps2 = ps2
+        else:
+            del sys.ps2
+        kernel_has_quit.set()
 
 
 class Process(object):
