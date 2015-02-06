@@ -512,13 +512,27 @@ class Event(object):
 
 
 def embed():
-    """embeds an IPython qt console in the calling scope"""
+    """embeds an IPython qt console in the calling scope.
+    Intended for debugging. May cause strange interpreter behaviour."""
 
     # Lots of this code is copied from IPython's internals
-
     from IPython.utils.frame import extract_module_locals
     from IPython.kernel.zmq.kernelapp import IPKernelApp
     from zmq.eventloop import ioloop
+
+    import atexit
+
+    class DummySignalModule(object):
+        def signal(self, *args, **kwargs):
+            pass
+        def __getattr__(self, name):
+            return None
+
+    # Don't screw with our signals please:
+    import IPython.kernel.zmq.kernelapp
+    import IPython.kernel.zmq.ipkernel
+    IPython.kernel.zmq.kernelapp.signal = DummySignalModule()
+    IPython.kernel.zmq.ipkernel.signal = lambda *args, **kwargs: None
 
     def launch_qtconsole():
         subprocess.call(['ipython', 'qtconsole', '--existing', app.connection_file])
@@ -526,14 +540,15 @@ def embed():
             ioloop.IOLoop.instance().stop()
 
     kernel_has_quit = threading.Event()
-    sys_state = sys.stdin, sys.stdout, sys.stderr, sys.displayhook
+    sys_state = sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook
+    exithandlers = atexit._exithandlers[:]
     ps1 = getattr(sys, 'ps1', None)
     ps2 = getattr(sys, 'ps2', None)
     qtconsole_thread = threading.Thread(target=launch_qtconsole)
     qtconsole_thread.daemon = True
-
     app = IPKernelApp.instance()
     app.log_connection_info = lambda: None # Don't print this stuff to the terminal
+    #app.init_signal = lambda: None # Don't change signal handling
     app.initialize()
     main = app.kernel.shell._orig_sys_modules_main_mod
     if main is not None:
@@ -546,7 +561,10 @@ def embed():
     try:
         app.start()
     finally:
-        sys.stdin, sys.stdout, sys.stderr, sys.displayhook = sys_state
+        app.kernel.shell.atexit_operations()
+        atexit._exithandlers = exithandlers
+        app.kernel.shell.cleanup()
+        sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook = sys_state
         if ps1 is not None:
             sys.ps1 = ps1
         else:
