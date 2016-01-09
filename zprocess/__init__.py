@@ -49,12 +49,16 @@ class TimeoutError(zmq.ZMQError):
 
 class ZMQServer(object):
 
-    def __init__(self, port, type='pyobj'):
+    def __init__(self, port, type='pyobj', bind_address='tcp://0.0.0.0', start_thread=True):
         self.type = type
         self.port = port
+        self.bind_address = bind_address
         self.context = zmq.Context()
+        
+        self.auth = self.setup_auth(self.context)
+        
         self.sock = self.context.socket(zmq.REP)
-        self.sock.bind('tcp://0.0.0.0:%s' % str(self.port))
+        self.sock.bind('%s:%s' % (str(self.bind_address), str(self.port)))
 
         if self.type == 'pyobj':
             self.send = self.sock.send_pyobj
@@ -67,31 +71,39 @@ class ZMQServer(object):
             self.recv = self.sock.recv_multipart
         else:
             raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'" % str(self.type))
-        self.mainloop_thread = threading.Thread(target=self.mainloop)
-        self.mainloop_thread.daemon = True
-        self.mainloop_thread.start()
+            
+        if start_thread:
+            self.mainloop_thread = threading.Thread(target=self.mainloop)
+            self.mainloop_thread.daemon = True
+            self.mainloop_thread.start()
 
+    def setup_auth(self, context):
+        pass
+            
     def mainloop(self):
         while True:
-            try:
-                request_data = self.recv()
-            except zmq.ContextTerminated:
-                self.sock.close(linger=0)
-                return
-            try:
-                response_data = self.handler(request_data)
-            except Exception as e:
-                # Raise the exception in a separate thread so that the
-                # server keeps running:
-                exc_info = sys.exc_info()
-                raise_exception_in_thread(exc_info)
-                response_data = zmq.ZMQError(
-                    'The server had an unhandled exception whilst processing the request: %s' % str(e))
-                if self.type == 'raw':
-                    response_data = str(response_data)
-                elif self.type == 'multipart':
-                    response_data = [str(response_data)]
-            self.send(response_data)
+            self.receive()
+            
+    def receive(self):
+        try:
+            request_data = self.recv()
+        except zmq.ContextTerminated:
+            self.sock.close(linger=0)
+            return
+        try:
+            response_data = self.handler(request_data)
+        except Exception as e:
+            # Raise the exception in a separate thread so that the
+            # server keeps running:
+            exc_info = sys.exc_info()
+            raise_exception_in_thread(exc_info)
+            response_data = zmq.ZMQError(
+                'The server had an unhandled exception whilst processing the request: %s' % str(e))
+            if self.type == 'raw':
+                response_data = str(response_data)
+            elif self.type == 'multipart':
+                response_data = [str(response_data)]
+        self.send(response_data)
 
     def shutdown(self):
         self.context.term()
