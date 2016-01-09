@@ -27,7 +27,7 @@ def _setup():
         # Otherwise __main__ will refer to this file, which is not where their class is!
         # Temporarily rename this module so that the user's __main__ block doesn't execute:
         globals()['__name__'] = 'process_class_wrapper'
-        execfile(module_filepath, globals(), globals())
+        exec(compile(open(module_filepath, "rb").read(), module_filepath, 'exec'), globals(), globals())
         # Set __name__ back to normal. Runtime checks of this now cannot
         # distinguish between parent and child processes, but I think
         # wanting to do so without already knowing yourself is probably
