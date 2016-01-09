@@ -21,6 +21,8 @@ import logging
 import subprocess
 import zmq
 
+import six
+
 DEFAULT_PORT = 7341
 import __main__
 
@@ -159,7 +161,7 @@ class Logger(logging.Logger):
         namelevels = name.split('.')
         parent_levels = ['.'.join(namelevels[:i+1]) for i in range(len(namelevels))]
         # Convert all args to kwargs for easier parsing:
-        kwargs.update(dict(zip(cls.__init__.func_code.co_varnames[2:], args)))
+        kwargs.update(dict(list(zip(six.get_function_code(cls.__init__).co_varnames[2:], args))))
         for parent_level in reversed(parent_levels):
             try:
                 parent_logger = cls.instances[parent_level]
@@ -170,7 +172,7 @@ class Logger(logging.Logger):
             parent_logger = None
         # Inherit unset args from parent logger:
         new_kwargs = {}
-        for argname in cls.__init__.func_code.co_varnames[2:]:
+        for argname in six.get_function_code(cls.__init__).co_varnames[2:]:
             try:
                 new_kwargs[argname] = kwargs[argname]
             except KeyError:
@@ -263,7 +265,10 @@ def connect(host=None, port=None, timeout=None):
     communication with the server and ensures it is responding"""
     if host is None or port is None:
         try:
-            import ConfigParser
+            if six.PY2:
+                import ConfigParser
+            else:
+                import configparser as ConfigParser
             from LabConfig import LabConfig
             config = LabConfig()
         except (ImportError, IOError):
