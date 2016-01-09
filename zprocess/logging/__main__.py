@@ -183,7 +183,11 @@ class ZMQLogServer(object):
                 
 if __name__ == '__main__':
     try:
-        import ConfigParser
+        import six
+        if six.PY2:
+            import ConfigParser
+        else:
+            import configparser as ConfigParser
         from LabConfig import LabConfig
         port = LabConfig().get('ports','zlog')
         found_config = True

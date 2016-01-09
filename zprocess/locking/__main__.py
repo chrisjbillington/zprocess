@@ -176,7 +176,7 @@ class ZMQLockServer(object):
                                            'client: %s\n'%client+
                                            'expiry: %d'%expiry + (' [EXPIRED]' if expiry < 0 else ''))
                                            
-        for key, lock in self.held_locks.items():
+        for key, lock in list(self.held_locks.items()):
             lines.append(fmt(key, lock['client_id'], int(lock['expiry']-time.time())))
         lines.append('-------')
         if not self.held_locks:
@@ -191,7 +191,7 @@ class ZMQLockServer(object):
             if clear_all.lower() == 'false':
                 clear_all = False
         if LOGGING: logger.info('Got a request to clear %s locks'%('*all*' if clear_all else 'expired'))
-        for key, lock in self.held_locks.copy().items():
+        for key, lock in list(self.held_locks.copy().items()):
             if clear_all or time.time() > lock['expiry']:
                 del self.held_locks[key]
         return 'ok'
@@ -266,7 +266,11 @@ if __name__ == '__main__':
     if LOGGING: logger = setup_logging()
     
     try:
-        import ConfigParser
+        import six
+        if six.PY2:
+            import ConfigParser
+        else:
+            import configparser as ConfigParser
         from labscript_utils.labconfig import LabConfig
         port = LabConfig().get('ports','zlock')
     except (ImportError, IOError, ConfigParser.NoOptionError):

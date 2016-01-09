@@ -21,6 +21,10 @@ import time
 import weakref
 import atexit
 
+import six
+if six.PY3:
+    unicode = str
+from zprocess import raise_exception_in_thread
 import zmq
 
 DEFAULT_TIMEOUT = 30 # seconds
@@ -62,14 +66,7 @@ def get_client_id():
     host_name = socket.gethostname()
     return ':'.join([host_name, process_identifier,thread_identifier])
 
-    
-def raise_exception_in_thread(exc_info):
-    """Raises an exception in a thread"""
-    def f(exc_info):
-        raise exc_info[0], exc_info[1], exc_info[2]
-    threading.Thread(target=f,args=(exc_info,)).start()
-          
-          
+
 class ZMQLockClient(object):
 
     RESPONSE_TIMEOUT = 5000
