@@ -15,11 +15,20 @@ import os
 import sys
 import subprocess
 import threading
-import zmq
 import time
 import signal
 from socket import gethostbyname
-import cPickle as pickle
+import six
+if six.PY2:
+    import cPickle as pickle
+else:
+    # Python 2 compatibility
+    import pickle
+    # set pickle protocol version to the highest supported by Python 2
+    # must be done before import zmq
+    pickle.DEFAULT_PROTOCOL = 2
+    pickle.HIGHEST_PROTOCOL = 2
+import zmq
 import weakref
 
 try:
@@ -39,7 +48,9 @@ we_are_the_top_process = True
 def raise_exception_in_thread(exc_info):
     """Raises an exception in a thread"""
     def f(exc_info):
-        raise exc_info[0], exc_info[1], exc_info[2]
+        type, value, traceback = exc_info
+        # handle python2/3 difference in raising exception        
+        six.reraise(type, value, traceback)
     threading.Thread(target=f, args=(exc_info,)).start()
 
 
