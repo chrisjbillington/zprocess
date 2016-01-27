@@ -271,10 +271,7 @@ class ZMQPush(object):
         # socket. Also if we don't have a socket, we also need a new one:
         if not hasattr(self.local, 'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
             self.new_socket(host, port)
-        if self.type == 'multipart' and isinstance(data, str):
-            # Wrap up a single string into a list so it doesn't get sent
-            # as one character per message!
-            data = [data]
+        data = _typecheck_or_convert_data(data)
         try:
             self.local.send(data, zmq.NOBLOCK)
         except:
@@ -342,6 +339,7 @@ class HeartbeatClient(object):
                 else:
                     break
             except Exception as e:
+                sys.stderr.write('Heartbeat failure:\n%s\n'%str(e))
                 break
         if self.lock is not None:
             with self.lock:
