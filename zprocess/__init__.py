@@ -57,6 +57,33 @@ def raise_exception_in_thread(exc_info):
 class TimeoutError(zmq.ZMQError):
     pass
 
+def _typecheck_or_convert_data(data, send_type):
+    """Utility function to check that messages are the valid type to be sent,
+    for the send_type (one of 'pyobj', 'multipart', or 'raw'). Returns
+    converted data or raises TypeError. Only conversion done is to wrap single
+    bytes objects into a single-element list for multipart messages. We *do
+    not* do auto encoding of strings here. Strings can't be sent by raw and
+    multipart sends, so yes, they need to be encoded, but we can't to auto
+    *decoding* on the other end, because the data may not represent text - it
+    might just be bytes. So we prefer symmetry and so don't encode here."""
+    # when not using python objects, a null message should be an empty string:
+    if data is None and self.type in ['raw', 'multipart']:
+        data = b''
+    if self.type == 'multipart' and isinstance(data, bytes):
+        # Wrap up a single string into a list so it doesn't get sent
+        # as one character per message!
+        data = [data]
+    # Type error checking:
+    if self.type == 'raw':
+        if not isinstance(response_data, bytes):
+            msg = 'raw sockets can only send bytes, not unencoded strings or other types.'
+            raise TypeError(msg)
+    elif self.type == 'multipart':
+        if not all(isinstance(part, bytes) for part in response_data):
+            msg = ('multipart sockets can only send an iterable of bytes objects, ' +
+                   'not unencoded strings or other types.')
+            raise TypeError(msg)
+    return data
 
 class ZMQServer(object):
 
@@ -103,6 +130,7 @@ class ZMQServer(object):
             return
         try:
             response_data = self.handler(request_data)
+            response_data = _typecheck_or_convert_data(request_data, self.type)
         except Exception as e:
             # Raise the exception in a separate thread so that the
             # server keeps running:
@@ -111,9 +139,9 @@ class ZMQServer(object):
             response_data = zmq.ZMQError(
                 'The server had an unhandled exception whilst processing the request: %s' % str(e))
             if self.type == 'raw':
-                response_data = str(response_data)
+                response_data = str(response_data).encode('utf8')
             elif self.type == 'multipart':
-                response_data = [str(response_data)]
+                response_data = [str(response_data).encode('utf8')]
         self.send(response_data)
 
     def shutdown(self):
@@ -165,13 +193,7 @@ class ZMQGet(object):
         # socket. Also if we don't have a socket, we also need a new one:
         if not hasattr(self.local, 'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
             self.new_socket(host, port)
-        # when not using python objects, a null message should be an empty string:
-        if data is None and self.type in ['raw', 'multipart']:
-            data = ''
-        if self.type == 'multipart' and isinstance(data, str):
-            # Wrap up a single string into a list so it doesn't get sent
-            # as one character per message!
-            data = [data]
+        data = _typecheck_or_convert_data(data, self.type)
         try:
             self.local.send(data, zmq.NOBLOCK)
             events = self.local.poller.poll(timeout * 1000)  # convert timeout to ms
@@ -230,10 +252,7 @@ class ZMQPush(object):
         # socket. Also if we don't have a socket, we also need a new one:
         if not hasattr(self.local, 'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
             self.new_socket(host, port)
-        if self.type == 'multipart' and isinstance(data, str):
-            # Wrap up a single string into a list so it doesn't get sent
-            # as one character per message!
-            data = [data]
+        data = _typecheck_or_convert_data(data)
         try:
             self.local.send(data, zmq.NOBLOCK)
         except:
@@ -293,14 +312,15 @@ class HeartbeatClient(object):
         while True:
             try:
                 time.sleep(1)
-                self.sock.send(self.pid, zmq.NOBLOCK)
+                self.sock.send(self.pid.encode('utf8'), zmq.NOBLOCK)
                 events = self.poller.poll(1000)
                 if events:
-                    msg = self.sock.recv()
+                    msg = self.sock.recv().decode('utf8')
                     assert msg == self.pid
                 else:
                     break
             except Exception as e:
+                sys.stderr.write('Heartbeat failure:\n%s\n'%str(e))
                 break
         if self.lock is not None:
             with self.lock:
@@ -527,6 +547,8 @@ class Event(object):
                     if not events:
                         break
                 event_name, event_id, data = self.sub.recv_multipart()
+                event_name = event_name.decode('utf8')
+                event_id = event_id.decode('utf8')
                 data = pickle.loads(data)
                 assert event_name == self.event_name
                 if event_id == id:
@@ -674,7 +696,7 @@ def subprocess_with_queues(path, output_redirection_port=0):
     events = from_child.poll(15000)
     if not events:
         raise RuntimeError('child process did not connect within the timeout.')
-    port_to_child = from_child.recv()
+    port_to_child = from_child.recv().decode('utf8')
     to_child.connect('tcp://127.0.0.1:%s' % port_to_child)
 
     to_child = WriteQueue(to_child)
@@ -694,13 +716,13 @@ def setup_connection_with_parent(lock=False):
     zlock_process_identifier_prefix = sys.argv[6]
     # If a custom process identifier has been set in zlock, ensure we inherit it:
     if zlock_process_identifier_prefix:
-        import zlock
+        import zprocess.locking
         # Append '-sub' to indicate we're a subprocess, if it's not already there
         if not zlock_process_identifier_prefix.endswith('sub'):
             zlock_process_identifier_prefix += 'sub'
         # Only set it if the user has not already set it to something in this process:
-        if not zlock.process_identifier_prefix:
-            zlock.set_client_process_name(zlock_process_identifier_prefix)
+        if not zprocess.locking.process_identifier_prefix:
+            zprocess.locking.set_client_process_name(zlock_process_identifier_prefix)
     to_parent = context.socket(zmq.PUSH)
     from_parent = context.socket(zmq.PULL)
     to_self = context.socket(zmq.PUSH)
@@ -709,7 +731,7 @@ def setup_connection_with_parent(lock=False):
     to_self.connect('tcp://127.0.0.1:%s' % port_from_parent)
 
     to_parent.connect("tcp://127.0.0.1:%s" % port_to_parent)
-    to_parent.send(str(port_from_parent))
+    to_parent.send(str(port_from_parent).encode('utf8'))
 
     from_parent = ReadQueue(from_parent, to_self)
     to_parent = WriteQueue(to_parent)
