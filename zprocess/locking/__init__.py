@@ -13,18 +13,14 @@
 
 # from __future__ import division, unicode_literals, print_function, absolute_import # Ease the transition to Python 3
 
-import sys
 import os
 import socket
 import threading
 import time
 import weakref
-import atexit
-
 import six
-if six.PY3:
-    unicode = str
-from zprocess import raise_exception_in_thread
+if six.PY2:
+    str = unicode
 import zmq
 
 DEFAULT_TIMEOUT = 30 # seconds
@@ -44,8 +40,6 @@ def name_change_checks():
                 
                 
 def set_client_process_name(name):
-    if isinstance(name, unicode):
-        name = name.encode('utf8')
     global process_identifier_prefix
     name_change_checks()
     process_identifier_prefix = name + '-'
@@ -65,6 +59,26 @@ def get_client_id():
     process_identifier = process_identifier_prefix + str(os.getpid())
     host_name = socket.gethostname()
     return ':'.join([host_name, process_identifier,thread_identifier])
+
+
+def _typecheck_or_convert_key(key):
+    """Checks that key is bytes or string and encodes to bytes with utf8.
+    Raises TypeError if it's neither. If data is bytes, checks that it is utf8
+    encoded and raises ValueError if not."""
+
+    msg = "Key must be a string or bytes, if bytes, must be utf-8 encoded"
+    # Decode to ensure that if it's python2 str or python3 bytes that is
+    # is in fact utf8 encoded:
+    if isinstance(data, bytes):
+        try:
+            key.decode('utf8')
+        except UnicodeDecodeError:
+            raise ValueError(msg)
+    elif isinstance(key, str):
+        key = key.encode('utf8')
+    else:
+        raise TypeError(msg)
+    return key
 
 
 class ZMQLockClient(object):
@@ -102,10 +116,10 @@ class ZMQLockClient(object):
             if not hasattr(self.local,'sock'):
                 self.new_socket()
             start_time = time.time()
-            self.local.sock.send('hello',zmq.NOBLOCK)
+            self.local.sock.send(b'hello', zmq.NOBLOCK)
             events = self.local.poller.poll(timeout)
             if events:
-                response = self.local.sock.recv()
+                response = self.local.sock.recv().decode('utf8')
                 if response == 'hello':
                     return round((time.time() - start_time)*1000,2)
             raise zmq.ZMQError('No response from zlock server: timed out')
@@ -118,10 +132,10 @@ class ZMQLockClient(object):
         try:
             if not hasattr(self.local,'sock'):
                 self.new_socket()
-            self.local.sock.send('status',zmq.NOBLOCK)
+            self.local.sock.send(b'status', zmq.NOBLOCK)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if events:
-                response = self.local.sock.recv()
+                response = self.local.sock.recv().decode('utf8')
                 if response.startswith('ok'):
                     return response
                 raise zmq.ZMQError(response)
@@ -133,12 +147,12 @@ class ZMQLockClient(object):
             
     def clear(self, clear_all):
         try:
-            if not hasattr(self.local,'sock'):
+            if not hasattr(self.local, 'sock'):
                 self.new_socket()
-            self.local.sock.send_multipart(['clear', str(clear_all)],zmq.NOBLOCK)
+            self.local.sock.send_multipart([b'clear', str(clear_all)], zmq.NOBLOCK)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if events:
-                response = self.local.sock.recv()
+                response = self.local.sock.recv().decode('utf8')
                 if response == 'ok':
                     return
                 raise zmq.ZMQError(response)
@@ -149,54 +163,48 @@ class ZMQLockClient(object):
             raise
             
     def acquire(self, key, timeout=None):
-        if isinstance(key, unicode):
-            key = key.encode('utf8')
-        elif not isinstance(key, str):
-            raise TypeError('key must be unicode string or bytestring')
+        key = _typecheck_or_convert_key(key)
         if timeout is None:
             timeout = DEFAULT_TIMEOUT
-        if not hasattr(self.local,'sock'):
+        if not hasattr(self.local, 'sock'):
             self.new_socket()
         try:
             while True:
-                messages = ('acquire', key, self.local.client_id, str(timeout))
+                messages = (b'acquire', key, self.local.client_id.encode('utf8'), str(timeout).encode('utf8'))
                 self.local.sock.send_multipart(messages, zmq.NOBLOCK)
                 events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
                 if not events:
                     raise zmq.ZMQError('No response from zlock server: timed out')
-                response = self.local.sock.recv()
+                response = self.local.sock.recv().decode('utf8')
                 if response == 'ok':
                     break
                 elif response == 'retry':
                     continue
                 raise zmq.ZMQError(response)
         except: 
-            if hasattr(self.local,'sock'):
+            if hasattr(self.local, 'sock'):
                 self.local.sock.close(linger=False)
                 del self.local.sock
             raise
         
     def release(self, key, client_id):
-        if isinstance(key, unicode):
-            key = key.encode('utf8')
-        elif not isinstance(key, str):
-            raise TypeError('key must be unicode string or bytestring')
+        key = _typecheck_or_convert_key(key)
         if not hasattr(self.local,'sock'):
             self.new_socket()
         try:
             if client_id is None:
                 client_id = self.local.client_id
-            messages = ('release', key, client_id)
+            messages = (b'release', key, client_id.encode('utf8'))
             self.local.sock.send_multipart(messages)
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
                 raise zmq.ZMQError('No response from zlock server: timed out')
-            response = self.local.sock.recv()
+            response = self.local.sock.recv().decode('utf8')
             if response == 'ok':
                 return
             raise zmq.ZMQError(response)
         except:
-            if hasattr(self.local,'sock'):
+            if hasattr(self.local, 'sock'):
                 self.local.sock.close(linger=False)
                 del self.local.sock
             raise
@@ -218,7 +226,7 @@ class Lock(object):
             
     def __init__(self, key):
         with self.class_lock:
-            if not hasattr(self,'key'):
+            if not hasattr(self, 'key'):
                 self.key = key
                 self.local_lock = threading.RLock()
                 self.recursion_level=0
