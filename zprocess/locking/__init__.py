@@ -11,7 +11,7 @@
 #                                                                   #
 #####################################################################
 
-# from __future__ import division, unicode_literals, print_function, absolute_import # Ease the transition to Python 3
+from __future__ import division, unicode_literals, print_function, absolute_import
 
 import os
 import socket

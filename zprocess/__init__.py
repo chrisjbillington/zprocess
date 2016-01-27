@@ -11,6 +11,7 @@
 #                                                                   #
 #####################################################################
 
+from __future__ import division, unicode_literals, print_function, absolute_import
 import os
 import sys
 import subprocess
@@ -21,6 +22,7 @@ from socket import gethostbyname
 import six
 if six.PY2:
     import cPickle as pickle
+    str = unicode
 else:
     # Python 2 compatibility
     import pickle
@@ -57,6 +59,7 @@ def raise_exception_in_thread(exc_info):
 class TimeoutError(zmq.ZMQError):
     pass
 
+
 def _typecheck_or_convert_data(data, send_type):
     """Utility function to check that messages are the valid type to be sent,
     for the send_type (one of 'pyobj', 'multipart', or 'raw'). Returns
@@ -67,27 +70,32 @@ def _typecheck_or_convert_data(data, send_type):
     *decoding* on the other end, because the data may not represent text - it
     might just be bytes. So we prefer symmetry and so don't encode here."""
     # when not using python objects, a null message should be an empty string:
-    if data is None and self.type in ['raw', 'multipart']:
+    if data is None and send_type in ['raw', 'multipart']:
         data = b''
-    if self.type == 'multipart' and isinstance(data, bytes):
+    if send_type == 'multipart' and isinstance(data, bytes):
         # Wrap up a single string into a list so it doesn't get sent
         # as one character per message!
         data = [data]
     # Type error checking:
-    if self.type == 'raw':
-        if not isinstance(response_data, bytes):
-            msg = 'raw sockets can only send bytes, not unencoded strings or other types.'
+    if send_type == 'raw':
+        if not isinstance(data, bytes):
+            msg = 'raw sockets can only send bytes, not {}.'.format(type(data))
             raise TypeError(msg)
-    elif self.type == 'multipart':
-        if not all(isinstance(part, bytes) for part in response_data):
+    elif send_type == 'string':
+        if not isinstance(data, str):
+            msg = 'string sockets can only send strings, not {}.'.format(type(data))
+            raise TypeError(msg)
+    elif send_type == 'multipart':
+        if not all(isinstance(part, bytes) for part in data):
             msg = ('multipart sockets can only send an iterable of bytes objects, ' +
-                   'not unencoded strings or other types.')
+                   ' not {}.'.format(type(data)))
             raise TypeError(msg)
     return data
 
+
 class ZMQServer(object):
 
-    def __init__(self, port, type='pyobj', bind_address='tcp://0.0.0.0', start_thread=True):
+    def __init__(self, port, type='pyobj', bind_address='tcp://0.0.0.0', start_in_thread=True):
         self.type = type
         self.port = port
         self.bind_address = bind_address
@@ -98,19 +106,22 @@ class ZMQServer(object):
         self.sock = self.context.socket(zmq.REP)
         self.sock.bind('%s:%s' % (str(self.bind_address), str(self.port)))
 
-        if self.type == 'pyobj':
-            self.send = self.sock.send_pyobj
-            self.recv = self.sock.recv_pyobj
-        elif self.type == 'raw':
+        if self.type == 'raw':
             self.send = self.sock.send
             self.recv = self.sock.recv
+        elif self.type == 'string':
+            self.send = self.sock.send_string
+            self.recv = self.sock.recv_string
         elif self.type == 'multipart':
             self.send = self.sock.send_multipart
             self.recv = self.sock.recv_multipart
+        elif self.type == 'pyobj':
+            self.send = self.sock.send_pyobj
+            self.recv = self.sock.recv_pyobj
         else:
-            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'" % str(self.type))
+            raise ValueError("invalid protocol %s, must be 'raw', 'string', 'multipart' or 'pyobj'" % str(self.type))
             
-        if start_thread:
+        if start_in_thread:
             self.mainloop_thread = threading.Thread(target=self.mainloop)
             self.mainloop_thread.daemon = True
             self.mainloop_thread.start()
@@ -118,12 +129,20 @@ class ZMQServer(object):
     def setup_auth(self, context):
         pass
             
-    def mainloop(self):
-        while True:
-            self.receive()
-            
-    def receive(self):
+    def serve_forever(self):
         try:
+            while True:
+                self.handle_one_request()
+        except KeyboardInterrupt:
+            sys.stderr.write('Interrupted, shutting down\n')
+        finally:
+            server.shutdown()
+            
+    def handle_one_request(self, timeout=None):
+        try:
+            events = self.sock.poll(timeout)
+            if not events:
+                return
             request_data = self.recv()
         except zmq.ContextTerminated:
             self.sock.close(linger=0)
@@ -174,17 +193,20 @@ class ZMQGet(object):
         self.local.poller.register(self.local.sock, zmq.POLLIN)
         self.local.sock.connect('tcp://%s:%d' % (self.local.host, self.local.port))
         # Different send/recv methods depending on the desired protocol:
-        if self.type == 'pyobj':
-            self.local.send = self.local.sock.send_pyobj
-            self.local.recv = self.local.sock.recv_pyobj
+        if self.type == 'raw':
+            self.local.send = self.local.sock.send
+            self.local.recv = self.local.sock.recv
+        elif self.type == 'string':
+            self.local.send = self.local.sock.send_string
+            self.local.recv = self.local.sock.recv_string
         elif self.type == 'multipart':
             self.local.send = self.local.sock.send_multipart
             self.local.recv = self.local.sock.recv_multipart
-        elif self.type == 'raw':
-            self.local.send = self.local.sock.send
-            self.local.recv = self.local.sock.recv
+        elif self.type == 'pyobj':
+            self.local.send = self.local.sock.send_pyobj
+            self.local.recv = self.local.sock.recv_pyobj
         else:
-            raise ValueError("invalid protocol %s, must be 'raw', 'multipart' or 'pyobj'" % str(self.type))
+            raise ValueError("invalid protocol %s, must be 'raw', 'string', 'multipart' or 'pyobj'" % str(self.type))
 
     def __call__(self, port, host='localhost', data=None, timeout=5):
         """Uses reliable request-reply to send data to a zmq REP socket, and returns the reply"""
@@ -216,6 +238,7 @@ class ZMQGet(object):
 # Instantiate our zmq_get functions:
 zmq_get = ZMQGet('pyobj')
 zmq_get_multipart = ZMQGet('multipart')
+zmq_get_string = ZMQGet('string')
 zmq_get_raw = ZMQGet('raw')
 
 
