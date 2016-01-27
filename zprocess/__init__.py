@@ -83,7 +83,7 @@ def _typecheck_or_convert_data(data, send_type):
 
 class ZMQServer(object):
 
-    def __init__(self, port, type='pyobj', bind_address='tcp://0.0.0.0', start_in_thread=True):
+    def __init__(self, port, type='pyobj', bind_address='tcp://0.0.0.0'):
         self.type = type
         self.port = port
         self.bind_address = bind_address
@@ -111,56 +111,53 @@ class ZMQServer(object):
         else:
             raise ValueError("invalid protocol %s, must be 'raw', 'string', 'multipart' or 'pyobj'" % str(self.type))
             
-        if start_in_thread:
-            self.mainloop_thread = threading.Thread(target=self.serve_forever)
-            self.mainloop_thread.daemon = True
-            self.mainloop_thread.start()
+        self.mainloop_thread = threading.Thread(target=self.mainloop)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
 
     def setup_auth(self, context):
         """To be overridden by subclasses. Setup your ZMQ Context's
         authentication here."""
         pass
             
-    def serve_forever(self):
+    def shutdown_on_interrupt(self):
         try:
             while True:
-                self.handle_one_request()
+                time.sleep(3600)
         except KeyboardInterrupt:
             sys.stderr.write('Interrupted, shutting down\n')
         finally:
             self.shutdown()
             
-    def handle_one_request(self, timeout=None):
-        try:
-            events = self.sock.poll(timeout)
-            if not events:
+    def mainloop(self):
+        while True:
+            try:
+                request_data = self.recv()
+            except zmq.ContextTerminated:
+                self.sock.close(linger=0)
                 return
-            request_data = self.recv()
-        except zmq.ContextTerminated:
-            self.sock.close(linger=0)
-            return
-        try:
-            response_data = self.handler(request_data)
-            response_data = _typecheck_or_convert_data(response_data, self.type)
-        except Exception as e:
-            # Raise the exception in a separate thread so that the
-            # server keeps running:
-            exc_info = sys.exc_info()
-            raise_exception_in_thread(exc_info)
-            exception_string = traceback.format_exc()
-            response_data = zmq.ZMQError(
-                'The server had an unhandled exception whilst processing the request:\n%s' % str(exception_string))
-            if self.type == 'raw':
-                response_data = str(response_data).encode('utf8')
-            elif self.type == 'multipart':
-                response_data = [str(response_data).encode('utf8')]
-            elif self.type == 'string':
-                response_data = str(response_data)
-        self.send(response_data)
+            try:
+                response_data = self.handler(request_data)
+                response_data = _typecheck_or_convert_data(response_data, self.type)
+            except Exception as e:
+                # Raise the exception in a separate thread so that the
+                # server keeps running:
+                exc_info = sys.exc_info()
+                raise_exception_in_thread(exc_info)
+                exception_string = traceback.format_exc()
+                response_data = zmq.ZMQError(
+                    'The server had an unhandled exception whilst processing the request:\n%s' % str(exception_string))
+                if self.type == 'raw':
+                    response_data = str(response_data).encode('utf8')
+                elif self.type == 'multipart':
+                    response_data = [str(response_data).encode('utf8')]
+                elif self.type == 'string':
+                    response_data = str(response_data)
+            self.send(response_data)
 
     def shutdown(self):
-        self.sock.close()
         self.context.term()
+        self.mainloop_thread.join()
 
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example
