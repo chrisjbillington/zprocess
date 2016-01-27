@@ -112,7 +112,7 @@ class ZMQServer(object):
             raise ValueError("invalid protocol %s, must be 'raw', 'string', 'multipart' or 'pyobj'" % str(self.type))
             
         if start_in_thread:
-            self.mainloop_thread = threading.Thread(target=self.mainloop)
+            self.mainloop_thread = threading.Thread(target=self.serve_forever)
             self.mainloop_thread.daemon = True
             self.mainloop_thread.start()
 
