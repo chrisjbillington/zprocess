@@ -16,6 +16,13 @@ def _setup():
     # Clear the namespace of any evidence we were here:
     del globals()['_setup']
     import sys, os
+
+    # Ensure the zprocess we import is the same on as we are running from,
+    # relevant particularly for running the test suite:
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not parent_dir in sys.path:
+        sys.path.insert(0, parent_dir)
+
     from zprocess import setup_connection_with_parent
     to_parent, from_parent, kill_lock = setup_connection_with_parent(lock=True)
     module_name, module_filepath, syspath = from_parent.get()
