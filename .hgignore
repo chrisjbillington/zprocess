@@ -1,0 +1,4 @@
+syntax: glob
+.coverage
+.coverage.*
+coverage_html_report
