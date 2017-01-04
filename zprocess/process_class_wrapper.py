@@ -16,6 +16,13 @@ def _setup():
     # Clear the namespace of any evidence we were here:
     del globals()['_setup']
     import sys, os
+
+    # Ensure the zprocess we import is the same on as we are running from,
+    # relevant particularly for running the test suite:
+    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not parent_dir in sys.path:
+        sys.path.insert(0, parent_dir)
+
     from zprocess import setup_connection_with_parent
     to_parent, from_parent, kill_lock = setup_connection_with_parent(lock=True)
     module_name, module_filepath, syspath = from_parent.get()
@@ -27,7 +34,7 @@ def _setup():
         # Otherwise __main__ will refer to this file, which is not where their class is!
         # Temporarily rename this module so that the user's __main__ block doesn't execute:
         globals()['__name__'] = 'process_class_wrapper'
-        execfile(module_filepath, globals(), globals())
+        exec(compile(open(module_filepath, "rb").read(), module_filepath, 'exec'), globals(), globals())
         # Set __name__ back to normal. Runtime checks of this now cannot
         # distinguish between parent and child processes, but I think
         # wanting to do so without already knowing yourself is probably

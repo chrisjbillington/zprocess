@@ -10,7 +10,7 @@
 # of the project for the full license.                              #
 #                                                                   #
 #####################################################################
-
+from __future__ import division, unicode_literals, print_function, absolute_import
 import os
 import sys
 import traceback
@@ -29,17 +29,17 @@ LOGGING = True
 
 # Protocol description:
 #
-# Clients make requests as multipart zmq messages. To acquire a lock,
-# the request should be:
+# Clients make requests as multipart zmq messages of utf-8 encoded
+# bytestrings. To acquire a lock, the request should be:
 #
 # ['acquire', some_lock_key, client_id, timeout]
 #
-# where some_lock_key is a string uniquely identifying the resource
-# that is being locked, client id is a string uniquely identifying who
-# is acquiring the lock, and timeout is how long (in seconds) the lock
-# should be held for in the event that it is not released, say if the
-# client process dies. So for example a request to lock access to a file
-# might be:
+# where some_lock_key is a string uniquely identifying the resource that is
+# being locked, client id is a string uniquely identifying who is acquiring
+# the lock, and timeout is (a string representation of) how long (in seconds)
+# the lock should be held for in the event that it is not released, say if the
+# client process dies. So for example a request to lock access to a file might
+# be:
 #
 # ['acquire', 'Z:\\some_folder\some_file.h5', 'hostname:process_id:thread-id', '30']
 #
@@ -60,7 +60,7 @@ LOGGING = True
 # to retry there is no need to insert a delay before doing so. Not having
 # a delay will not create tons of network activity as this only happens
 # once every MAX_RESPONSE_TIME in the case of ongoing lock contention.
-
+#
 #
 # Anything else the server replies with will be a single zmq message
 # and should be considered an error and raised in the client code. This
@@ -176,7 +176,7 @@ class ZMQLockServer(object):
                                            'client: %s\n'%client+
                                            'expiry: %d'%expiry + (' [EXPIRED]' if expiry < 0 else ''))
                                            
-        for key, lock in self.held_locks.items():
+        for key, lock in list(self.held_locks.items()):
             lines.append(fmt(key, lock['client_id'], int(lock['expiry']-time.time())))
         lines.append('-------')
         if not self.held_locks:
@@ -191,7 +191,7 @@ class ZMQLockServer(object):
             if clear_all.lower() == 'false':
                 clear_all = False
         if LOGGING: logger.info('Got a request to clear %s locks'%('*all*' if clear_all else 'expired'))
-        for key, lock in self.held_locks.copy().items():
+        for key, lock in list(self.held_locks.copy().items()):
             if clear_all or time.time() > lock['expiry']:
                 del self.held_locks[key]
         return 'ok'
@@ -229,8 +229,9 @@ class ZMQLockServer(object):
             for request_message, expiry in unprocessed_messages[:]:
                 # Unpack the REQ multipart message:
                 prefix, args = request_message[0:2], request_message[2:]
+                decoded_args = [arg.decode('utf8') for arg in args]
                 # Handle the request:
-                response = self.handle_one_request(*args)
+                response = self.handle_one_request(*decoded_args)
                 if response == 'retry' and expiry - time.time() > 0:
                     # Lock contention. Lock acquisition will be retried
                     # after other requests are processed, or once maximum
@@ -243,7 +244,7 @@ class ZMQLockServer(object):
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
-                    self.router.send_multipart(prefix + [response])
+                    self.router.send_multipart(prefix + [message.encode('utf8') for message in response])
                     n_requests_processed += 1
             # Shuffle the waiting requests so as to remove any systematic
             # ordering effects:
@@ -266,7 +267,11 @@ if __name__ == '__main__':
     if LOGGING: logger = setup_logging()
     
     try:
-        import ConfigParser
+        import six
+        if six.PY2:
+            import ConfigParser
+        else:
+            import configparser as ConfigParser
         from labscript_utils.labconfig import LabConfig
         port = LabConfig().get('ports','zlock')
     except (ImportError, IOError, ConfigParser.NoOptionError):
