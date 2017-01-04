@@ -2,3 +2,6 @@ syntax: glob
 .coverage
 .coverage.*
 coverage_html_report
+*.pyc
+__pycache__/*
+zprocess/__version__.py

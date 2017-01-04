@@ -8,76 +8,99 @@ import unittest
 import sys
 import os
 import time
+import threading
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from zprocess import _typecheck_or_convert_data, ZMQServer, Process, TimeoutError, HeartbeatServer
+from zprocess import (_typecheck_or_convert_data, ZMQServer, Process,
+                      TimeoutError, HeartbeatServer, raise_exception_in_thread)
+
+
+class RaiseExceptionInThreadTest(unittest.TestCase):
+
+    def setUp(self):
+        # Mock threading.Thread to just run a function in the main thread:
+        class MockThread(object):
+            used = False
+            def __init__(self, target, args):
+                self.target = target
+                self.args = args
+            def start(self):
+                MockThread.used = True
+                self.target(*self.args)
+        self.mock_thread = MockThread
+        self.orig_thread = threading.Thread
+        threading.Thread = MockThread
+
+    def test_can_raise_exception_in_thread(self):
+        class TestError(Exception):
+            pass
+        try:
+            raise TestError('test')
+        except Exception:
+            exc_info = sys.exc_info()
+            with self.assertRaises(TestError):
+                raise_exception_in_thread(exc_info)
+            self.assertTrue(self.mock_thread.used)
+
+    def tearDown(self):
+        # Restore threading.Thread to what it should be
+        threading.Thread = self.orig_thread
 
 
 class  TypeCheckConvertTests(unittest.TestCase):
     """test the _typecheck_or_convert_data function"""
 
     def test_turns_None_into_empty_bytestring_raw(self):
-        from zprocess import _typecheck_or_convert_data
         result = _typecheck_or_convert_data(None, 'raw')
         self.assertEqual(result, b'')
 
     def test_turns_None_into_empty_bytestring_multipart(self):
-        from zprocess import _typecheck_or_convert_data
         result = _typecheck_or_convert_data(None, 'multipart')
         self.assertEqual(result, [b''])
 
     def test_wraps_bytestring_into_list_multipart(self):
-        from zprocess import _typecheck_or_convert_data
         data = b'spam'
         result = _typecheck_or_convert_data(data, 'multipart')
         self.assertEqual(result, [data])
 
     def test_accepts_bytes_raw(self):
-        from zprocess import _typecheck_or_convert_data
         data = b'spam'
         result = _typecheck_or_convert_data(data, 'raw')
         self.assertEqual(result, data)
 
     def test_accepts_list_of_bytes_multipart(self):
-        from zprocess import _typecheck_or_convert_data
         data = [b'spam', b'ham']
         result = _typecheck_or_convert_data(data, 'multipart')
         self.assertEqual(result, data)
 
     def test_accepts_string_string(self):
-        from zprocess import _typecheck_or_convert_data
         data = 'spam'
         result = _typecheck_or_convert_data(data, 'string')
         self.assertEqual(result, data)
 
     def test_accepts_pyobj_pyobj(self):
-        from zprocess import _typecheck_or_convert_data
         data = {'spam': ['ham'], 'eggs': True}
         result = _typecheck_or_convert_data(data, 'pyobj')
         self.assertEqual(result, data)
 
     def test_rejects_string_raw(self):
-        from zprocess import _typecheck_or_convert_data
         data = 'spam'
         with self.assertRaises(TypeError):
             _typecheck_or_convert_data(data, 'raw')
 
     def test_rejects_string_multipart(self):
-        from zprocess import _typecheck_or_convert_data
         data = [b'spam', 'ham']
         with self.assertRaises(TypeError):
             _typecheck_or_convert_data(data, 'multipart')
 
     def test_rejects_pyobj_string(self):
-        from zprocess import _typecheck_or_convert_data
         data = {'spam': ['ham'], 'eggs': True}
         with self.assertRaises(TypeError):
             _typecheck_or_convert_data(data, 'string')
 
     def test_rejects_bytes_string(self):
-        from zprocess import _typecheck_or_convert_data
         data = b'spam'
         with self.assertRaises(TypeError):
             _typecheck_or_convert_data(data, 'string')
@@ -231,7 +254,7 @@ class HeartbeatTests(unittest.TestCase):
         self.assertIs(self.process.child.poll(), None)
         # After kill lock released, child should be terminated:
         time.sleep(2)
-        # Process should be alive:
+        # Process should be dead:
         self.assertIsNot(self.process.child.poll(), None)
 
     def test_parent_correctly_responds_to_heartbeats(self):

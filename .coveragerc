@@ -1,6 +1,7 @@
 # .coveragerc to control coverage.py
 [run]
 parallel = True
+include = zprocess/*
 
 [report]
 # Regexes for lines to exclude from consideration
@@ -8,11 +9,19 @@ exclude_lines =
     # Have to re-enable the standard pragma
     pragma: no cover
 
-ignore_errors = True
+    # Don't complain about missing debug-only code:
+    def __repr__
+    if self\.debug
 
-[paths]
-source =
-    zprocess/
+    # Don't complain if tests don't hit defensive assertion code:
+    raise AssertionError
+    raise NotImplementedError
+
+    # Don't complain if non-runnable code isn't run:
+    if 0:
+    if __name__ == .__main__.:
+
+ignore_errors = True
 
 [html]
 directory = coverage_html_report
