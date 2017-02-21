@@ -25,7 +25,7 @@ import zprocess.locking as zlock
 
 MAX_RESPONSE_TIME = 1 # sec
 LOGGING = True
-
+DEBUG = False
 
 # Protocol description:
 #
@@ -91,13 +91,18 @@ LOGGING = True
 # currently held locks.
 
 def setup_logging():
+
+    if DEBUG:
+        loglevel = logging.DEBUG
+    else:
+        loglevel = logging.INFO
     logger = logging.getLogger('ZLock')
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(loglevel)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
     if sys.stdout.isatty():
         terminalhandler = logging.StreamHandler(sys.stdout)
         terminalhandler.setFormatter(formatter)
-        terminalhandler.setLevel(logging.DEBUG)
+        terminalhandler.setLevel(loglevel)
         logger.addHandler(terminalhandler)
     else:
         # Prevent bug on windows where writing to stdout without a command
@@ -110,7 +115,7 @@ def setup_logging():
     try:
         handler = logging.handlers.RotatingFileHandler(path, maxBytes=1024*1024*50)
         handler.setFormatter(formatter)
-        handler.setLevel(logging.DEBUG)
+        handler.setLevel(loglevel)
         logger.addHandler(handler)
     except IOError:
         logger.warning('Can\'t open or do not have permission to write to log file %s. '%path + 
@@ -221,7 +226,7 @@ class ZMQLockServer(object):
                 # to their client.
                 new_request_message = self.router.recv_multipart()
                 unprocessed_messages.insert(0, (new_request_message, time.time() + MAX_RESPONSE_TIME))
-                if LOGGING: logger.debug(' '.join(new_request_message[1:]))
+                if LOGGING: logger.debug(new_request_message)
             else:
                 if LOGGING: logger.debug('processing existing requests')
             # Process all waiting request messages:
@@ -229,7 +234,7 @@ class ZMQLockServer(object):
             for request_message, expiry in unprocessed_messages[:]:
                 # Unpack the REQ multipart message:
                 prefix, args = request_message[0:2], request_message[2:]
-                decoded_args = [arg.decode('utf8') for arg in args]
+                decoded_args = [arg.decode('utf8', 'surrogateescape') for arg in args]
                 # Handle the request:
                 response = self.handle_one_request(*decoded_args)
                 if response == 'retry' and expiry - time.time() > 0:
@@ -244,7 +249,7 @@ class ZMQLockServer(object):
                     # MAX_RESPONSE_TIME, forward the 'retry' response
                     # to them.
                     unprocessed_messages.remove((request_message, expiry))
-                    self.router.send_multipart(prefix + [message.encode('utf8') for message in response])
+                    self.router.send_multipart(prefix + [response.encode('utf8')])
                     n_requests_processed += 1
             # Shuffle the waiting requests so as to remove any systematic
             # ordering effects:

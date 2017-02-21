@@ -69,7 +69,7 @@ def _typecheck_or_convert_key(key):
     msg = "Key must be a string or bytes, if bytes, must be utf-8 encoded"
     # Decode to ensure that if it's python2 str or python3 bytes that is
     # is in fact utf8 encoded:
-    if isinstance(data, bytes):
+    if isinstance(key, bytes):
         try:
             key.decode('utf8')
         except UnicodeDecodeError:
@@ -122,6 +122,7 @@ class ZMQLockClient(object):
                 response = self.local.sock.recv().decode('utf8')
                 if response == 'hello':
                     return round((time.time() - start_time)*1000,2)
+                raise zmq.ZMQError('Invalid repsonse from server: ' + response)
             raise zmq.ZMQError('No response from zlock server: timed out')
         except:
             self.local.sock.close(linger=False)
