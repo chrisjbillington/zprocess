@@ -11,7 +11,7 @@
 from distutils.core import setup
 import os
 
-VERSION = '2.1.0'
+VERSION = '2.1.1'
 
 DESCRIPTION = \
 """A set of utilities for multiprocessing using
