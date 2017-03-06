@@ -140,8 +140,8 @@ class ZMQLockServer(object):
         # doesn't have to wait in between polls, the waiting happens on
         # the server.
 
-        context = zmq.Context.instance()
-        self.router = context.socket(zmq.ROUTER)
+        self.context = zmq.Context.instance()
+        self.router = self.context.socket(zmq.ROUTER)
         self.poller = zmq.Poller()
         self.poller.register(self.router, zmq.POLLIN)
         
@@ -289,13 +289,13 @@ if __name__ == '__main__':
             server.run()
         except KeyboardInterrupt:
             if LOGGING: logger.info('KeyboardInterrupt, stopping')
+            server.context.destroy(linger=False)
             break
         except Exception:
             message = traceback.format_exc()
             if LOGGING: logger.critical('unhandled exception, attempting to restart:\n%s'%message)
             # Close all sockets:
-            context = zmq.Context.instance()
-            context.destroy(linger=False)
+            server.context.destroy(linger=False)
             # Re-initialise the server:
             server = ZMQLockServer(port)
             time.sleep(1)
