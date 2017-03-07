@@ -527,7 +527,8 @@ class Event(object):
         if not self.can_post:
             raise ValueError("Instantiate Event with type='post' or 'both' to be able to post events")
         with self.publock:
-            self.pub.send_multipart([self.event_name, str(id), pickle.dumps(data)])
+            self.pub.send_multipart([self.event_name.encode('utf8'),
+                                    str(id).encode('utf8'), pickle.dumps(data)])
 
     def wait(self, id, timeout=None):
         id = str(id)
@@ -540,6 +541,8 @@ class Event(object):
                 if not events:
                     break
                 event_name, event_id, data = self.sub.recv_multipart()
+                event_name = event_name.decode('utf8')
+                event_id = event_id.decode('utf8')
                 data = pickle.loads(data)
                 assert event_name == self.event_name
                 if event_id == id:

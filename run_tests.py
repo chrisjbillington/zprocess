@@ -24,7 +24,8 @@ def mkdir_p(path):
 for python_version in PYTHONS:
     python_executable = PYTHONS[python_version]
     print('doing tests for python version {} with executable {}'.format(python_version, python_executable))
-    user_site = subprocess.check_output([python_executable, '-c', 'import site; print(site.getusersitepackages())']).strip()
+    cmds = [python_executable, '-c', 'import site; print(site.getusersitepackages())']
+    user_site = subprocess.check_output(cmds).decode('utf8').strip()
     if not os.path.exists(user_site):
         mkdir_p(user_site)
 
