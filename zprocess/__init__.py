@@ -568,59 +568,73 @@ class Event(object):
         raise TimeoutError('No event received: timed out')
 
 
+
 def embed():
     """embeds an IPython qt console in the calling scope.
     Intended for debugging. May cause strange interpreter behaviour."""
 
-    # Lots of this code is copied from IPython's internals
+    # Imports, including ones we only need in the qtconsole process,
+    # so that the user gets errors about them rather than just no qtconsole:
+
     from IPython.utils.frame import extract_module_locals
-    from IPython.kernel.zmq.kernelapp import IPKernelApp
-    from zmq.eventloop import ioloop
+    from ipykernel.kernelapp import IPKernelApp
+    from IPython.core.interactiveshell import InteractiveShell
+    import qtconsole.qtconsoleapp
 
     import atexit
+    import sys
 
-    class DummySignalModule(object):
-        def signal(self, *args, **kwargs):
-            pass
-        def __getattr__(self, name):
-            return None
+    from zmq.eventloop import ioloop
 
-    # Don't screw with our signals please:
-    import IPython.kernel.zmq.kernelapp
-    import IPython.kernel.zmq.ipkernel
-    IPython.kernel.zmq.kernelapp.signal = DummySignalModule()
-    IPython.kernel.zmq.ipkernel.signal = lambda *args, **kwargs: None
 
     def launch_qtconsole():
-        subprocess.call(['ipython', 'qtconsole', '--existing', app.connection_file])
+        subprocess.call([sys.executable, '-c',
+                        'from qtconsole.qtconsoleapp import main; main()',
+                        '--existing', app.connection_file])
         if not kernel_has_quit.is_set():
             ioloop.IOLoop.instance().stop()
 
     kernel_has_quit = threading.Event()
-    sys_state = sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook
-    exithandlers = atexit._exithandlers[:]
-    ps1 = getattr(sys, 'ps1', None)
-    ps2 = getattr(sys, 'ps2', None)
     qtconsole_thread = threading.Thread(target=launch_qtconsole)
     qtconsole_thread.daemon = True
-    app = IPKernelApp.instance()
-    app.log_connection_info = lambda: None # Don't print this stuff to the terminal
-    #app.init_signal = lambda: None # Don't change signal handling
-    app.initialize()
+
+
+    # Hack to prevent the kernel app from disabline SIGINT:
+    IPKernelApp.init_signal = lambda self: None
+
+    # Get some interpreter state that will need to be restored after the
+    # kernel quits:
+    sys_state = sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook
+    ps1 = getattr(sys, 'ps1', None)
+    ps2 = getattr(sys, 'ps2', None)
+    ps3 = getattr(sys, 'ps3', None)
+
+    # Some of the below copied from ipykernel.embed.embed_kernel
+    app = IPKernelApp()
+    app.initialize([])
+
+    # Remove the exit handler, we'll run it manually rather than at
+    # interpreter exit:
+    # atexit.unregister(app.kernel.shell.atexit_operations)
+
+    # Undo unnecessary sys module mangling from init_sys_modules.
+    # This would not be necessary if we could prevent it
+    # in the first place by using a different InteractiveShell
+    # subclass, as in the regular embed case.
     main = app.kernel.shell._orig_sys_modules_main_mod
     if main is not None:
         sys.modules[app.kernel.shell._orig_sys_modules_main_name] = main
-    caller_module, caller_locals = extract_module_locals(1)
+
+    # load the calling scope if not given
+    (caller_module, caller_locals) = extract_module_locals(1)
     app.kernel.user_module = caller_module
     app.kernel.user_ns = caller_locals
     app.shell.set_completer_frame()
+
     qtconsole_thread.start()
     try:
         app.start()
     finally:
-        app.kernel.shell.atexit_operations()
-        atexit._exithandlers = exithandlers
-        app.kernel.shell.cleanup()
         sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook = sys_state
         if ps1 is not None:
             sys.ps1 = ps1
@@ -630,6 +644,10 @@ def embed():
             sys.ps2 = ps2
         else:
             del sys.ps2
+        if ps3 is not None:
+            sys.ps3 = ps3
+        else:
+            del sys.ps3
         kernel_has_quit.set()
 
 
