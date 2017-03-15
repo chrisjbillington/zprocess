@@ -20,6 +20,7 @@ import time
 import signal
 from socket import gethostbyname
 from functools import partial
+import traceback
 import six
 if six.PY2:
     import cPickle as pickle
@@ -93,6 +94,9 @@ def _typecheck_or_convert_data(data, send_type):
             msg = 'raw sockets can only send bytes, not {}.'.format(type(data))
             raise TypeError(msg)
     elif send_type == 'string':
+        if six.PY2 and isinstance(data, bytes):
+            # Auto convert assuming UTF8:
+            data = data.decode('utf8')
         if not isinstance(data, str):
             msg = 'string sockets can only send strings, not {}.'.format(type(data))
             raise TypeError(msg)
