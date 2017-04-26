@@ -572,6 +572,29 @@ class Event(object):
         raise TimeoutError('No event received: timed out')
 
 
+def start_daemon(cmd_args):
+    """calls subprocess.Popen configured to detach the subprocess from the
+    parent, such that it keeps running even if the parent exits. Returns None.
+    Note that the child process will have its current working directory set to
+    the value of tempfile.gettempdir(), rather than remaining in the parent's
+    working directory. In Windows this prevents it holding a lock on the
+    current directory, which would prevent it from being deleted, and the
+    behaviour is the same on unix for consistency."""
+    import tempfile
+    if os.name == 'nt':
+        creationflags=0x00000008 # DETACHED_PROCESS from the win32 API
+        subprocess.Popen(cmd_args,
+                         creationflags=creationflags, stdout=None, stderr=None,
+                         close_fds=True, cwd=tempfile.gettempdir())
+    else:
+        devnull = open(os.devnull,'w')
+        if not os.fork():
+            os.setsid()
+            subprocess.Popen(cmd_args,
+                             stdin=devnull, stdout=devnull, stderr=devnull,
+                             close_fds=True, cwd=tempfile.gettempdir())
+            os._exit(0)
+
 
 def embed():
     """embeds an IPython qt console in the calling scope.
