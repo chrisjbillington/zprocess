@@ -297,7 +297,7 @@ class ZMQPush(object):
         # socket. Also if we don't have a socket, we also need a new one:
         if not hasattr(self.local, 'sock') or gethostbyname(host) != self.local.host or int(port) != self.local.port:
             self.new_socket(host, port)
-        data = _typecheck_or_convert_data(data)
+        data = _typecheck_or_convert_data(data, self.type)
         try:
             self.local.send(data, zmq.NOBLOCK)
         except:
