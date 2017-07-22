@@ -452,7 +452,9 @@ class OutputInterceptor(object):
     def write(self, s):
         if not hasattr(self.local, 'sock'):
             self.new_socket()
-        self.local.sock.send_multipart([self.streamname.encode('utf8'), s.encode('utf8')])
+        if isinstance(s, unicode):
+            s = s.encode('utf8')
+        self.local.sock.send_multipart([self.streamname.encode('utf8'), s])
 
     def close(self):
         self.disconnect()
