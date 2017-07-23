@@ -452,7 +452,7 @@ class OutputInterceptor(object):
     def write(self, s):
         if not hasattr(self.local, 'sock'):
             self.new_socket()
-        if isinstance(s, unicode):
+        if isinstance(s, str):
             s = s.encode('utf8')
         self.local.sock.send_multipart([self.streamname.encode('utf8'), s])
 
