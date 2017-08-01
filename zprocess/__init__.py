@@ -21,8 +21,9 @@ import signal
 from socket import gethostbyname
 from functools import partial
 import traceback
-import six
-if six.PY2:
+
+PY2 = sys.version_info[0] == 2
+if PY2:
     import cPickle as pickle
     str = unicode
 else:
@@ -64,7 +65,10 @@ def raise_exception_in_thread(exc_info):
     def f(exc_info):
         type, value, traceback = exc_info
         # handle python2/3 difference in raising exception        
-        six.reraise(type, value, traceback)
+        if PY2:
+            exec('raise type, value, traceback', globals(), locals())
+        else:
+            raise value.with_traceback(traceback)
     threading.Thread(target=f, args=(exc_info,)).start()
 
 
@@ -94,7 +98,7 @@ def _typecheck_or_convert_data(data, send_type):
             msg = 'raw sockets can only send bytes, not {}.'.format(type(data))
             raise TypeError(msg)
     elif send_type == 'string':
-        if six.PY2 and isinstance(data, bytes):
+        if PY2 and isinstance(data, bytes):
             # Auto convert assuming UTF8:
             data = data.decode('utf8')
         if not isinstance(data, str):
