@@ -60,16 +60,18 @@ context = zmq.Context.instance()
 we_are_the_top_process = True
 
 
+def _reraise(exc_info):
+    type, value, traceback = exc_info
+    # handle python2/3 difference in raising exception        
+    if PY2:
+        exec('raise type, value, traceback', globals(), locals())
+    else:
+        raise value.with_traceback(traceback)
+
+
 def raise_exception_in_thread(exc_info):
     """Raises an exception in a thread"""
-    def f(exc_info):
-        type, value, traceback = exc_info
-        # handle python2/3 difference in raising exception        
-        if PY2:
-            exec('raise type, value, traceback', globals(), locals())
-        else:
-            raise value.with_traceback(traceback)
-    threading.Thread(target=f, args=(exc_info,)).start()
+    threading.Thread(target=_reraise, args=(exc_info,)).start()
 
 
 class TimeoutError(zmq.ZMQError):

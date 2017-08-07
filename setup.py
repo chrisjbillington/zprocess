@@ -11,7 +11,7 @@
 from distutils.core import setup
 import os
 
-VERSION = '2.2.3'
+VERSION = '2.2.4'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
