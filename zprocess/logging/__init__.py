@@ -241,8 +241,8 @@ class Logger(logging.Logger):
                 fmt = '[%(asctime)s] %(levelname)s %(message)s'
                 
         self.formatter = Formatter(fmt)
-            
-        if to_terminal is not None and sys.stdout.isatty():
+
+        if to_terminal is not None and sys.stdout is not None and sys.stdout.isatty():
             terminalhandler = logging.StreamHandler(sys.stdout)
             terminalhandler.setFormatter(self.formatter)
             terminalhandler.setLevel(to_terminal)
