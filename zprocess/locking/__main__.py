@@ -99,7 +99,7 @@ def setup_logging():
     logger = logging.getLogger('ZLock')
     logger.setLevel(loglevel)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
-    if sys.stdout.isatty():
+    if sys.stdout is not None and sys.stdout.isatty():
         terminalhandler = logging.StreamHandler(sys.stdout)
         terminalhandler.setFormatter(formatter)
         terminalhandler.setLevel(loglevel)
