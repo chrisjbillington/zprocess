@@ -113,7 +113,7 @@ def setup_logging():
     else:
         path = '/var/log/zlock.log'
     try:
-        handler = logging.handlers.RotatingFileHandler(path, maxBytes=1024*1024*50)
+        handler = logging.handlers.RotatingFileHandler(path, maxBytes=1024*1024*50, backupCount=1)
         handler.setFormatter(formatter)
         handler.setLevel(loglevel)
         logger.addHandler(handler)
