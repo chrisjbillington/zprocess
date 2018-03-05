@@ -204,12 +204,18 @@ class ZProcessEncryption(object):
         return payload
 
     def pack_message(self, plaintext):
+        """Encrypt a plaintext and pack it into an authenticated ZPEM message
+        ready for sending"""
         ciphertext = self.encrypt(plaintext)
         payload = self.HEADER + ciphertext
         mac = self.compute_mac(payload)
         return payload + mac
 
     def unpack_message(self, message):
+        """Verify an encrypted message and decrypt and return the plaintext.
+        Raises UnexpectedPlaintext if the message does not begin with the ZPEM
+        UUID, ProtocolVersionMismatch if the message's version number does not
+        match ours, and AuthenticationFailure if authentication fails."""
         payload = self.verify_message(message)
         header = payload[:len(self.HEADER)]
         ciphertext = payload[len(self.HEADER):]
@@ -222,7 +228,7 @@ BIND_ERROR = ' '.join(
 attacker remote arbitrary code execution if you receive and unpickle Python
 objects, and open your application to other attacks even if you do not. To
 bind only to the local interface for connections between processes on this
-computer, use the endpoint string 'tcp://localhost'. Otherwise, unless your
+computer, use the endpoint string 'tcp://127.0.0.1'. Otherwise, unless your
 network is fully trusted, use a preshared key to secure your connection. To
 proceed insecurely at your own risk, use the keyword argument
 insecure=True to bind()""".splitlines())
