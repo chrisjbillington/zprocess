@@ -8,7 +8,7 @@
 #
 # python setup.py register
 
-from distutils.core import setup
+from setuptools import setup
 import os
 
 VERSION = '2.2.7'
@@ -17,6 +17,14 @@ VERSION = '2.2.7'
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
     f.write("__version__ = '%s'\n"%VERSION)
 
+dependencies = ['pyzmq', 'cryptography']
+
+import sys
+if sys.version_info.major == 2:
+    # The backported module:
+    dependencies.append('ipaddress')
+
+
 setup(name='zprocess',
       version=VERSION,
       description="A set of utilities for multiprocessing using zeromq.",
@@ -24,5 +32,6 @@ setup(name='zprocess',
       author_email='chrisjbillington@gmail.com',
       url='https://bitbucket.org/cbillington/zprocess/',
       license="BSD",
-      packages=['zprocess', 'zprocess.locking', 'zprocess.logging']
+      packages=['zprocess', 'zprocess.locking', 'zprocess.logging'],
+      install_requires=dependencies
      )
