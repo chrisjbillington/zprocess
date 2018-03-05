@@ -39,8 +39,8 @@ class UnexpectedPlaintext(SecurityError):
     pass
 
 class ProtocolVersionMismatch(SecurityError):
-    """An encrypted message was sent by a socket speaking a higher major
-    version of the ZPEM protocol"""
+    """An encrypted message was received with a higher major version of the
+    ZPEM protocol than our version"""
     pass
 
 class InsecureConnection(SecurityError):
@@ -277,27 +277,23 @@ class SecureSocket(zmq.Socket):
         return False
 
     def bind(self, endpoint, *args, **kwargs):
-        print('bind')
         if self.encryption is None and not self._is_local(endpoint):
             if not kwargs.pop('insecure', False):
                 raise InsecureConnection(BIND_ERROR)
         return zmq.Socket.bind(self, endpoint, *args, **kwargs)
 
     def connect(self, endpoint, *args, **kwargs):
-        print('connect')
         if self.encryption is None and not self._is_local(endpoint):
             if not kwargs.pop('insecure', False):
                 raise InsecureConnection(CONNECT_ERROR)
         return zmq.Socket.connect(self, endpoint, *args, **kwargs)
 
     def send(self, data, *args, **kwargs):
-        print('send', args, kwargs)
         if self.encryption:
             data = self.encryption.pack_message(data)
         return zmq.Socket.send(self, data, *args, **kwargs)
 
     def recv(self, *args, **kwargs):
-        print('recv', args, kwargs)
         message = zmq.Socket.recv(self, *args, **kwargs)
         if self.encryption is not None:
             return self.encryption.unpack_message(message)
@@ -335,8 +331,6 @@ if __name__ == '__main__':
         assert result == plaintext
     print(time.time() - start_time)
 
-
-
     ctx = SecureContext(preshared_key=key)
 
     sock1 = ctx.socket(zmq.REQ, preshared_key=key)
@@ -347,6 +341,6 @@ if __name__ == '__main__':
 
     import time
     start_time = time.time()
-    sock1.send(b'test')
-    print(sock2.recv())
+    sock1.send_multipart([b'test', b'foo'])
+    print(sock2.recv_multipart())
     print(time.time() - start_time)
