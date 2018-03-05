@@ -88,8 +88,8 @@ class ZProcessEncryption(object):
     zprocess encrypted message protocol."""
 
     # Message header:
-    VERSION_MAJOR = 0
-    VERSION_MINOR = 1
+    VERSION_MAJOR = 1
+    VERSION_MINOR = 0
 
     HEADER = ZPEM_UUID + bytes(bytearray([VERSION_MAJOR, VERSION_MINOR]))
 
