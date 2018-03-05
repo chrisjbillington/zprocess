@@ -194,7 +194,7 @@ class ZProcessEncryption(object):
         hmac.update(payload)
         try:
             hmac.verify(mac)
-        except InvalidSignature as e:
+        except InvalidSignature:
             msg = "Message failed authentication"
             if PY2:
                 raise AuthenticationFailure(msg)
@@ -217,7 +217,6 @@ class ZProcessEncryption(object):
         UUID, ProtocolVersionMismatch if the message's version number does not
         match ours, and AuthenticationFailure if authentication fails."""
         payload = self.verify_message(message)
-        header = payload[:len(self.HEADER)]
         ciphertext = payload[len(self.HEADER):]
         plaintext = self.decrypt(ciphertext)
         return plaintext
