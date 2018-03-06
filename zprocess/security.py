@@ -59,7 +59,7 @@ def generate_preshared_key():
 class ZProcessEncryption(object):
 
     """Class for symmetric, authenticated encryption with a preshared key.
-    Version 0.1. Message format for version 0.1 is:
+    Version 1.0. Message format for version 1.0 is:
 
     [16:UUID][1:ver_major][1:ver_minor][ciphertext][32:mac]
 
@@ -112,11 +112,11 @@ class ZProcessEncryption(object):
         self.backend = default_backend()
         try:
             preshared_key_bytes = binascii.a2b_hex(preshared_key)
-            if len(preshared_key_bytes) < 8:
+            if len(preshared_key_bytes) < 32:
                 raise TypeError
         except (TypeError, binascii.Error):
             msg = ("preshared key must be a hex string of length at " + 
-                   "least 16 (256 bits). Use " +
+                   "least 64 (= 32 bytes = 256 bits). Use " +
                    "zprocess.security.generate_preshared_key() " +
                    "to generate random keys appropriate for use as " +
                    "preshared keys")
@@ -222,24 +222,24 @@ class ZProcessEncryption(object):
         return plaintext
 
 
-BIND_ERROR = ' '.join(
- """Plaintext socket binding to external network interface. This can allow an
-attacker remote arbitrary code execution if you receive and unpickle Python
-objects, and open your application to other attacks even if you do not. To
-bind only to the local interface for connections between processes on this
-computer, use the endpoint string 'tcp://127.0.0.1'. Otherwise, unless your
-network is fully trusted, use a preshared key to secure your connection. To
+INSECURE_SEND_ERROR = ' '.join(
+"""Plaintext socket send() on external network interface. This data is
+unencrypted. Unless your network is trusted, use a preshared key to secure
+your connection. To proceed insecurely at your own risk, use the keyword
+argument allow_insecure=True to the SecureContext() or its socket()
+method""".splitlines())
+
+
+INSECURE_RECV_ERROR = ' '.join(
+ """Plaintext socket recv() when bound on external network interface. This can
+allow an attacker remote arbitrary code execution if you receive and unpickle
+Python objects, and open your application to other attacks even if you do not.
+Unless your network is fully trusted, use a preshared key to secure your
+connection. To bind only to the local interface for connections between
+processes on this computer, use the endpoint string 'tcp://127.0.0.1'. To
 proceed insecurely at your own risk, use the keyword argument
-insecure=True to bind()""".splitlines())
-
-
-CONNECT_ERROR = ' '.join(
- """Plaintext socket connecting to external network address. This can allow an
-attacker remote arbitrary code execution if you receive and unpickle Python
-objects, and open your application to other attacks even if you do not. Unless
-your network is fully trusted, use a preshared key to secure your connection.
-To proceed insecurely at your own risk, use the keyword argument
-insecure=True to connect()""".splitlines())
+allow_insecure=True to the SecureContext() or its socket()
+method""".splitlines())
 
 
 class SecureSocket(zmq.Socket):
@@ -247,65 +247,104 @@ class SecureSocket(zmq.Socket):
     # options, unless the name exists as a class variable. So we define dummy
     # class variables for any instance variables we want to have:
     encryption = None
+    insecure = False
+    allow_insecure = None
     def __init__(self, *args, **kwargs):
         """A Socket with send() and recv() methods that call
         ZProcessEncryption.pack_message() and
         ZProcessEncryption.unpack_message() to encrypt, decrypt and
         authenticate messages based on a preshared key. Accepts preshared_key
-        as a keyword argument, it should be a hex encoded string of 8 bytes or
-        more of cryptographically random data preshared with peers. If
+        as a keyword argument, it should be a hex encoded string of 32 bytes
+        or more of cryptographically random data preshared with peers. If
         preshared_key is not provided, the preshared_key set on the Context
         will be used. In either case, if the preshared_key is None then
-        unencrypted communication will occur, however bind() and connect()
-        will raise InsecureConnection when connecting/binding on interfaces
+        unencrypted communication will occur, however send() and recv() will
+        raise will raise InsecureConnection when connected/bound on interfaces
         other than localhost, this exception can be suppressed by passing
-        insecure=True to bind() or connect()."""
+        allow_insecure=True to the socket or Context's instantiation
+        kwargs."""
         preshared_key = kwargs.pop('preshared_key', self.context.preshared_key)
+        self.allow_insecure = kwargs.pop('allow_insecure', self.context.allow_insecure)
         if preshared_key is not None:
             self.encryption = ZProcessEncryption(preshared_key)
         zmq.Socket.__init__(self, *args, **kwargs)
 
-    def _is_local(self, endpoint):
+    def _is_loopback(self, endpoint):
         """Return whether a bind or connect endpoint is local"""
         import socket
         if endpoint.startswith('inproc://'):
             return True
         if endpoint.startswith('tcp://'):
-            host = ''.join(''.join(endpoint.split('//')[1:]).split(':')[:-1])
+            host = ''.join(''.join(endpoint.split('//')[1:]).split(':')[0])
             if host == '*':
                 return False
             address = socket.gethostbyname(host)
             if isinstance(address, bytes):
                 address = address.decode()
-
             return ipaddress.ip_address(address).is_loopback
         return False
 
-    def bind(self, endpoint, *args, **kwargs):
-        if self.encryption is None and not self._is_local(endpoint):
-            if not kwargs.pop('insecure', False):
-                raise InsecureConnection(BIND_ERROR)
-        return zmq.Socket.bind(self, endpoint, *args, **kwargs)
+    def bind(self, addr):
+        result = zmq.Socket.bind(self, addr)
+        self.insecure = self.encryption is None and not self._is_loopback(addr)
+        return result
 
-    def connect(self, endpoint, *args, **kwargs):
-        if self.encryption is None and not self._is_local(endpoint):
-            if not kwargs.pop('insecure', False):
-                raise InsecureConnection(CONNECT_ERROR)
-        return zmq.Socket.connect(self, endpoint, *args, **kwargs)
+    def connect(self, addr):
+        result = zmq.Socket.connect(self, addr)
+        self.insecure = self.encryption is None and not self._is_loopback(addr)
+        return result
 
-    def send(self, data, *args, **kwargs):
-        if self.encryption:
+    def send(self, data):
+        if self.encryption is not None:
             data = self.encryption.pack_message(data)
-        return zmq.Socket.send(self, data, *args, **kwargs)
+        elif self.insecure and not self.allow_insecure:
+            raise InsecureConnection(INSECURE_SEND_ERROR)
+        return zmq.Socket.send(self, data)
 
-    def recv(self, *args, **kwargs):
-        message = zmq.Socket.recv(self, *args, **kwargs)
+    def recv(self):
+        message = zmq.Socket.recv(self)
         if self.encryption is not None:
             return self.encryption.unpack_message(message)
+        elif self.insecure and not self.allow_insecure:
+            raise InsecureConnection(INSECURE_RECV_ERROR)
         elif message.startswith(ZPEM_UUID):
             msg = "Encrypted message received on plaintext socket"
             raise UnexpectedCiphertext(msg)
         return message
+
+    def send_multipart(self, parts):
+        for i, data in enumerate(parts):
+            if self.encryption is not None:
+                data = self.encryption.pack_message(data)
+            elif self.insecure and not self.allow_insecure:
+                raise InsecureConnection(INSECURE_SEND_ERROR)
+            if i < len(parts) - 1:
+                zmq.Socket.send(self, data, flags=zmq.SNDMORE)
+            else:
+                zmq.Socket.send(self, data)
+
+    def recv_multipart(self):
+        # Receive them all before decrypting them, so that if
+        # there is a decryption error, there are not messages
+        # left in the buffer:
+        parts = [zmq.Socket.recv(self)]
+        # have first part already, only loop while more to receive
+        while self.getsockopt(zmq.RCVMORE):
+            parts.append(zmq.Socket.recv(self))
+    
+        plaintexts = []
+        for message in parts:
+            if self.encryption is not None:
+                plaintext = self.encryption.unpack_message(message)
+            elif self.insecure and not self.allow_insecure:
+                raise InsecureConnection(INSECURE_RECV_ERROR)
+            elif message.startswith(ZPEM_UUID):
+                msg = "Encrypted message received on plaintext socket"
+                raise UnexpectedCiphertext(msg)
+            else:
+                plaintext = message
+            plaintexts.append(plaintext)
+        return plaintexts
 
 
 class SecureContext(zmq.Context):
@@ -314,11 +353,11 @@ class SecureContext(zmq.Context):
     # options, unless the name exists as a class variable. So we define dummy
     # class variables for any instance variables we want to have:
     preshared_key = None
+    allow_insecure = None
     def __init__(self, *args, **kwargs):
         self.preshared_key = kwargs.pop('preshared_key', None)
+        self.allow_insecure = kwargs.pop('allow_insecure', False)
         zmq.Context.__init__(self, *args, **kwargs)
-
-
 
 
 if __name__ == '__main__':
@@ -339,13 +378,16 @@ if __name__ == '__main__':
     ctx = SecureContext(preshared_key=key)
 
     sock1 = ctx.socket(zmq.REQ, preshared_key=key)
-    sock2 = ctx.socket(zmq.REP)
+    sock2 = ctx.socket(zmq.REP, preshared_key=key)
 
-    port = sock2.bind_to_random_port('tcp://*')
+    port = sock2.bind_to_random_port('tcp://127.0.0.1')
     sock1.connect('tcp://localhost:%d'%port)
 
     import time
     start_time = time.time()
     sock1.send_multipart([b'test', b'foo'])
     print(sock2.recv_multipart())
+    sock2.send(b'test')
+    print(sock1.recv())
+
     print(time.time() - start_time)
