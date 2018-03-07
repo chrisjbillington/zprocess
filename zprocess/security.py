@@ -84,8 +84,6 @@ class SecureSocket(zmq.Socket):
             return not ipaddress.ip_address(address).is_loopback
         return True
 
-        return orig_server, orig_publickey, orig_secretkey, orig_serverkey
-
     def _configure_curve(self, server):
         orig_server = self.curve_server
         if server:
@@ -97,7 +95,8 @@ class SecureSocket(zmq.Socket):
             self.curve_publickey = self.context.publickey
             self.curve_secretkey = self.context.secretkey
             self.curve_serverkey = self.context.publickey
-
+        return orig_server
+        
     def bind(self, addr):
         if self.context.auth is not None:
             prev_setting = self._configure_curve(server=True)
@@ -133,7 +132,6 @@ class SecureSocket(zmq.Socket):
         if self.insecure and not self.allow_insecure:
             raise InsecureConnection(INSECURE_ERROR)
         return zmq.Socket.recv(self, *args, **kwargs)
-
 
 class SecureContext(zmq.Context):
     _socket_class = SecureSocket
