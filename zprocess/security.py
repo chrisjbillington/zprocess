@@ -75,20 +75,9 @@ class SecureSocket(zmq.Socket):
     insecure = None
     allow_insecure = None
 
-    def __new__(cls, context, *args, **kwargs):
-        if context.auth_setup_complete:
-            # The context has finished initialising, use secure sockets for
-            # any sockets requested by the user:
-            return zmq.Socket.__new__(cls, context, *args, **kwargs)
-        else:
-            # Context still initialising. Use ordinary Sockets for the
-            # authenticator itself a it sets itself up:
-            return zmq.Socket.__new__(zmq.Socket, context, *args, **kwargs)
-            
-
     def __init__(self, *args, **kwargs):
-        zmq.Socket.__init__(self, *args, **kwargs)
         self.allow_insecure = kwargs.pop('allow_insecure', False)
+        zmq.Socket.__init__(self, *args, **kwargs)
 
     def _is_external(self, endpoint):
         """Return whether a bind or connect endpoint is on an external
@@ -120,29 +109,29 @@ class SecureSocket(zmq.Socket):
         return orig_server
         
     def bind(self, addr):
-        if self.context.auth is not None:
+        if self.context.publickey is not None:
             prev_setting = self._configure_curve(server=True)
         try:
             result = zmq.Socket.bind(self, addr)
         except:
-            if self.context.auth is not None:
+            if self.context.publickey is not None:
                 # Roll back configuration:
                 self._configure_curve(server=prev_setting)
             raise
-        self.insecure = self.context.auth is None and self._is_external(addr)
+        self.insecure = self.context.publickey is None and self._is_external(addr)
         return result
 
     def connect(self, addr):
-        if self.context.auth is not None:
+        if self.context.publickey is not None:
             prev_setting = self._configure_curve(server=False)
         try:
             result = zmq.Socket.connect(self, addr)
         except:
-            if self.context.auth is not None:
+            if self.context.publickey is not None:
                 # Roll back configuration.
                 self._configure_curve(server=prev_setting)
             raise
-        self.insecure = self.context.auth is None and self._is_external(addr)
+        self.insecure = self.context.publickey is None and self._is_external(addr)
         return result
 
     def send(self, *args, **kwargs):
@@ -155,15 +144,14 @@ class SecureSocket(zmq.Socket):
             raise InsecureConnection(INSECURE_ERROR)
         return zmq.Socket.recv(self, *args, **kwargs)
 
+
 class SecureContext(zmq.Context):
-    _socket_class = SecureSocket
     # zmq.Context overrides __setattr__ and __getattr to set and get ZMQ
     # options, unless the name exists as a class variable. So we define dummy
     # class variables for any instance variables we want to have:
-    auth = None
     publickey = None
     secretkey = None
-    auth_setup_complete = False
+    _init_complete = False
 
     def __init__(self, *args, **kwargs):
         shared_secret = kwargs.pop('shared_secret', None)
@@ -171,30 +159,41 @@ class SecureContext(zmq.Context):
         if shared_secret is not None:
             self.publickey, self.secretkey = _unpack_shared_secret(shared_secret)
             # Start an authenticator for this context.
-            self.auth = zmq.auth.thread.ThreadAuthenticator(self)
-            self.auth.start()
-            self.auth.thread.authenticator.allow_any = False
-            self.auth.thread.authenticator.certs['*'] = {self.publickey: True}
-        self.auth_setup_complete = True
+            auth = zmq.auth.thread.ThreadAuthenticator(self)
+            auth.start()
+            auth.thread.authenticator.allow_any = False
+            auth.thread.authenticator.certs['*'] = {self.publickey: True}
+        self._init_complete = True
 
+    def socket(self, *args, **kwargs):
+        if self._init_complete:
+            return SecureSocket(self, *args, **kwargs)
+        else:
+            return zmq.Context.socket(self, *args, **kwargs)
 
 if __name__ == '__main__':
-    shared_secret = generate_shared_secret()
-    context = SecureContext(shared_secret=shared_secret)
 
-    server = context.socket(zmq.PULL)
+    print('Python Version: %s' % ' | '.join(sys.version.splitlines()))
+    print('Platform: %s' % sys.platform)
+    print('pyzmq version: %s'%zmq.__version__)
+    print('zmq version: %s'%zmq.zmq_version())
+
+    shared_secret = generate_shared_secret()
+
+    server_context = SecureContext(shared_secret=shared_secret)
+    server = server_context.socket(zmq.PULL)
     port = server.bind_to_random_port('tcp://*')
 
-    context2 = SecureContext(shared_secret=shared_secret)
-    client = context2.socket(zmq.PUSH)
+    client_context = SecureContext(shared_secret=shared_secret)
+    client = client_context.socket(zmq.PUSH)
     client.connect('tcp://localhost:%d' % port)
 
-    plaintext = os.urandom(10*1024**2)
+    # server_context.auth.stop()
+    plaintext = os.urandom(100*1024**2)
     import time
-    for i in range(10):
-        start_time = time.time()
-        client.send(plaintext)
-        assert server.recv() == plaintext
-        print(time.time() - start_time)
+    start_time = time.time()
+    client.send(plaintext)
+    assert server.recv() == plaintext
+    print("time to encrypt 100MB:", time.time() - start_time, 's')
 
 
