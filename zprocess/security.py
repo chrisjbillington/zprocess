@@ -9,7 +9,8 @@ import ipaddress
 import zmq
 import zmq.auth
 import zmq.auth.thread
-
+from zmq.utils.z85 import encode as z85encode, decode as z85decode
+import base64
 
 class InsecureConnection(RuntimeError):
     """A plaintext socket attempted to send or receive on an external
@@ -32,8 +33,29 @@ method""".splitlines())
 
 
 def generate_shared_secret():
-    public_key, secret_key = zmq.curve_keypair()
-    return public_key + secret_key
+    """Our shared secret is a zmq curve keypair, decoded from z85 encoding,
+    concatenated together and stored as base64."""
+    publickey, secretkey = zmq.curve_keypair()
+    return _pack_shared_secret(publickey, secretkey)
+
+
+def _pack_shared_secret(publickey, secretkey):
+    """z85 decode the keys, concatenate them together and encode the result as
+    base64. This is more compatible with Python config files than z85, since
+    z85 contains percent symbols and parentheses, which could trigger string
+    interpolation in Python's configparser."""
+    return base64.b64encode(z85decode(publickey) + z85decode(secretkey))
+
+
+def _unpack_shared_secret(shared_secret):
+    """Base64 decode, split and z85 encode the shared secret to produce the
+    public key and private key separately"""
+    binary_secret = base64.b64decode(shared_secret)
+    if not len(binary_secret) == 64:
+        msg = 'Shared secret should be 64 bytes, got %d' % len(binary_secret)
+        raise ValueError(msg)
+    publickey, secretkey = binary_secret[:32], binary_secret[32:]
+    return z85encode(publickey), z85encode(secretkey)
 
 
 class SecureSocket(zmq.Socket):
@@ -147,7 +169,7 @@ class SecureContext(zmq.Context):
         shared_secret = kwargs.pop('shared_secret', None)
         zmq.Context.__init__(self, *args, **kwargs)
         if shared_secret is not None:
-            self.publickey, self.secretkey = shared_secret[:40], shared_secret[40:]
+            self.publickey, self.secretkey = _unpack_shared_secret(shared_secret)
             # Start an authenticator for this context.
             self.auth = zmq.auth.thread.ThreadAuthenticator(self)
             self.auth.start()
