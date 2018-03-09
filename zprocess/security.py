@@ -1,7 +1,6 @@
 from __future__ import print_function, unicode_literals, division
 import sys
-PY2 = sys.version_info[0] == 2
-if PY2:
+if sys.version_info[0] == 2:
     str = unicode
 import os
 import ctypes
@@ -9,14 +8,13 @@ import base64
 
 import ipaddress
 import zmq
-import zmq.auth
 import zmq.auth.thread
-from zmq.utils.z85 import encode as z85encode, decode as z85decode
 
-_libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
+
 if not zmq.zmq_version_info() >= (4, 2, 0):
     raise ImportError('Require libzmq >= 4.2')
 
+_libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
 if not hasattr(_libzmq, 'sodium_init'):
     msg = ('zprocess warning: libzmq not built with libsodium. ' +
            'Encryption/decryption will be slow. If on Windows, ' +
@@ -33,11 +31,8 @@ if not hasattr(zmq, 'curve_public'):
 
 
 class InsecureConnection(RuntimeError):
-    """A plaintext socket attempted to send or receive on an external
-    interface without allow_insecure=True"""
     pass
 
-#TODO: module level docs
 
 INSECURE_ERROR = ' '.join(
 """Plaintext socket send() or recv() on external interface. This can allow an
@@ -51,29 +46,29 @@ allow_insecure=True)""".splitlines())
 
 
 def generate_shared_secret():
-    """Compute a new pair of random curveZMQ secret keys, decode them from z85
+    """Compute a new pair of random CurveZMQ secret keys, decode them from z85
     encoding, and return the result encoded as as base64 as suitable for
     passing to SecureContext() or storing on disk. We use base64 because it is
-    more compatible with Python config files than z85"""
-    _, client_secretkey = zmq.curve_keypair()
-    _, server_secretkey = zmq.curve_keypair()
-    return base64.b64encode(z85decode(client_secretkey) + 
-                            z85decode(server_secretkey))
+    more compatible with Python config files than z85."""
+    _, client_secret = zmq.curve_keypair()
+    _, server_secret = zmq.curve_keypair()
+    return base64.b64encode(zmq.utils.z85.decode(client_secret) + 
+                            zmq.utils.z85.decode(server_secret))
 
 def _unpack_shared_secret(shared_secret):
     """Base64 decode, split and z85 encode the shared secret to produce the
-    client and server curveZMQ secret keys."""
+    client and server CurveZMQ secret keys."""
     binary_secret = base64.b64decode(shared_secret)
     if not len(binary_secret) == 64:
         msg = 'Shared secret should be 64 bytes, got %d' % len(binary_secret)
         raise ValueError(msg)
-    client_secretkey, server_secretkey = binary_secret[:32], binary_secret[32:]
-    return z85encode(client_secretkey), z85encode(server_secretkey)
+    client_secret, server_secret = binary_secret[:32], binary_secret[32:]
+    return zmq.utils.z85.encode(client_secret), zmq.utils.z85.encode(server_secret)
 
 
 class SecureSocket(zmq.Socket):
-    """A Socket that configures as a zmq curve server upon bind() and as a
-    curve client upon connect(), using the keys held by the parent
+    """A Socket that configures as a CurveZMQ server upon bind() and as a
+    CurveZMQ client upon connect(), using the keys held by the parent
     SecureContext to authenticate and be authenticated by its peer. If the
     shared_secret passed to the parent SecureContext() was None, then
     plaintext sockets will be used, but InsecureConnection will be raised if
@@ -81,9 +76,7 @@ class SecureSocket(zmq.Socket):
     interface. This can be suppressed by passing allow_insecure=True to the
     Context.socket() call. inproc:// connections are not secured."""
 
-    # zmq.Socket overrides __setattr__ and __getattr to set and get ZMQ
-    # options, unless the name exists as a class variable. So we define dummy
-    # class variables for any instance variables we want to have:
+    # Dummy class attrs to distinguish from zmq options:
     secure = None
     allow_insecure = None
 
@@ -166,10 +159,8 @@ class SecureContext(zmq.Context):
     shared_secret as returned by generate_shared_secret() and distributed
     securely to all authorised peers."""
 
-    # zmq.Context overrides __setattr__ and __getattr to set and get ZMQ
-    # options, unless the name exists as a class variable. So we define dummy
-    # class variables for any instance variables we want to have:
     _socket_class = SecureSocket
+    # Dummy class attrs to distinguish from zmq options:
     secure = False
     client_publickey = None
     client_secretkey = None
@@ -194,6 +185,7 @@ class SecureContext(zmq.Context):
 
 
 if __name__ == '__main__':
+    import time
     shared_secret = generate_shared_secret()
 
     server_context = SecureContext(shared_secret=shared_secret)
@@ -205,7 +197,6 @@ if __name__ == '__main__':
     client.connect('tcp://localhost:%d' % port)
 
     plaintext = os.urandom(100*1024**2)
-    import time
     start_time = time.time()
     client.send(plaintext)
     assert server.recv() == plaintext
