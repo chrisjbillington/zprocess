@@ -12,6 +12,7 @@ import zmq
 import zmq.auth
 import zmq.auth.thread
 from zmq.utils.z85 import encode as z85encode, decode as z85decode
+from zmq.utils.monitor import recv_monitor_message
 
 if not zmq.zmq_version_info() >= (4, 2, 0):
     raise ImportError('Require libzmq >= 4.2')
@@ -101,7 +102,10 @@ class SecureSocket(zmq.Socket):
     then plain sockets will be used, but InsecureConnection will be raised if
     send() or recv() are called when bound or connected to an external network
     interface. This can be suppressed by passing allow_insecure=True to the
-    Context.socket() call."""
+    Context.socket() call. SecureSocket.connect() can optionally block until
+    it successfully connects, rather than connecting asynchronously, in order
+    to be notified of authentication handshake failures. inproc:// connections
+    are not secured."""
 
     # zmq.Socket overrides __setattr__ and __getattr to set and get ZMQ
     # options, unless the name exists as a class variable. So we define dummy
@@ -130,6 +134,8 @@ class SecureSocket(zmq.Socket):
         return False
 
     def _configure_curve(self, server):
+        """Set the curve configuration of the socket depending on whether we
+        are a server or not"""
         orig_server = self.curve_server
         if server:
             # We are a server with the server keypair. The authenticator in
@@ -147,42 +153,75 @@ class SecureSocket(zmq.Socket):
             self.curve_serverkey = self.context.server_publickey
         return orig_server
         
-    def bind(self, addr):
+    def _bind_or_connect(self, addr, bind=False, connect=False):
+        assert bool(bind) != bool(connect)
+        method = zmq.Socket.bind if bind else zmq.Socket.connect
+        if addr.startswith('inproc://'):
+            # No crypto/auth on inproc:
+            self.secure = True
+            return method(self, addr)
         if self.context.secure:
-            prev_setting = self._configure_curve(server=True)
+            prev_setting = self._configure_curve(server=bind)
         try:
-            result = zmq.Socket.bind(self, addr)
+            return method(self, addr)
         except:
             if self.context.secure:
                 # Roll back configuration:
                 self._configure_curve(server=prev_setting)
             raise
-        self.secure = self.context.secure or self._is_internal(addr)
-        return result
+        finally:
+            self.secure = self.context.secure or self._is_internal(addr)
+
+    def bind(self, addr):
+        return self._bind_or_connect(addr, bind=True)
 
     def connect(self, addr):
-        if self.context.secure:
-            prev_setting = self._configure_curve(server=False)
-        try:
-            result = zmq.Socket.connect(self, addr)
-        except:
-            if self.context.secure:
-                # Roll back configuration.
-                self._configure_curve(server=prev_setting)
-            raise
-        self.secure = self.context.secure or self._is_internal(addr)
-        return result
+        return self._bind_or_connect(addr, connect=True)
+
+    def _checkinsecure(self, method, *args, **kwargs):
+        if not (self.secure or self.allow_insecure):
+            raise InsecureConnection(INSECURE_ERROR)
+        return method(self, *args, **kwargs)
 
     def send(self, *args, **kwargs):
-        if not (self.secure or self.allow_insecure):
-            raise InsecureConnection(INSECURE_ERROR)
-        return zmq.Socket.send(self, *args, **kwargs)
+        return self._checkinsecure(zmq.Socket.send, *args, **kwargs)
 
     def recv(self, *args, **kwargs):
-        if not (self.secure or self.allow_insecure):
-            raise InsecureConnection(INSECURE_ERROR)
-        return zmq.Socket.recv(self, *args, **kwargs)
+        return self._checkinsecure(zmq.Socket.recv, *args, **kwargs)
 
+    # TODO: once DRAFT monitor events are stable for monitoring
+    # authentication, finish implementing the below connect() function to
+    # optionally block and raise the events as exceptions in the case of
+    # failed auth:
+
+    # def connect(self, addr, block=True, timeout=5):
+    #     """Connect and optionally block for up to timeout seconds waiting for
+    #     a successful connection, raising an exception if there is an
+    #     authentication failure or the connection does not complete before the
+    #     timeout. If block=False, connecting happens asynchronously as usual
+    #     with ZeroMQ, but then authentication errors are silent unless you read
+    #     socket monitor events yourself. These arguments have no effect for
+    #     inproc:// connections"""
+    #     result = self._bind_or_connect(addr, connect=True)
+    #     if not block or addr.startswith('inproc://'):
+    #         return result
+    #     monitor = self.get_monitor_socket()
+    #     EVENT_MAP = {}
+    #     print("Event names:")
+    #     for name in dir(zmq):
+    #         if name.startswith('EVENT_'):
+    #             value = getattr(zmq, name)
+    #             print("%21s : %4i" % (name, value))
+    #             EVENT_MAP[value] = name
+    #     #TODO: return on sucessful connection and handshake, raise error on
+    #     # handshake failed, take into account timeout: 
+    #     while monitor.poll():
+    #         evt = recv_monitor_message(monitor)
+    #         evt.update({'description': EVENT_MAP[evt['event']]})
+    #         print("Event: {}".format(evt))
+    #     return result
+
+    
 
 class SecureContext(zmq.Context):
     """A ZeroMQ Context with SecureContext.socket() returning sockets that
@@ -204,17 +243,18 @@ class SecureContext(zmq.Context):
     encryption or authentication will be used, but sockets will raise an
     exception if send() or recv() is called while connected or bound on an
     external interface. This can be suppressed with the allow_insecure=True
-    keyword argument to SecureContext.socket()"""
+    keyword argument to SecureContext.socket(). inproc:// connections are not
+    encrypted or authenticated."""
 
     # zmq.Context overrides __setattr__ and __getattr to set and get ZMQ
     # options, unless the name exists as a class variable. So we define dummy
     # class variables for any instance variables we want to have:
-    secure = None
+    _socket_class = SecureSocket
+    secure = False
     client_publickey = None
     client_secretkey = None
     server_publickey = None
     server_secretkey = None
-    _init_complete = False
 
     def __init__(self, *args, **kwargs):
         shared_secret = kwargs.pop('shared_secret', None)
@@ -233,17 +273,6 @@ class SecureContext(zmq.Context):
             auth.thread.authenticator.allow_any = False
             auth.thread.authenticator.certs['*'] = {self.client_publickey: True}
             self.secure = True
-        else:
-            self.secure = False
-        self._init_complete = True
-
-    def socket(self, *args, **kwargs):
-        if self._init_complete:
-            return SecureSocket(self, *args, **kwargs)
-        else:
-            # The sockets for the authenticator, which are instantiated during
-            # __init__, should be ordinary sockets:
-            return zmq.Context.socket(self, *args, **kwargs)
 
 
 if __name__ == '__main__':
