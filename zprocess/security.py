@@ -4,13 +4,34 @@ PY2 = sys.version_info[0] == 2
 if PY2:
     str = unicode
 import os
-import ipaddress
+import ctypes
+import base64
 
+import ipaddress
 import zmq
 import zmq.auth
 import zmq.auth.thread
 from zmq.utils.z85 import encode as z85encode, decode as z85decode
-import base64
+
+if not zmq.zmq_version_info() >= (4, 2, 0):
+    raise ImportError('Require libzmq >= 4.2')
+
+_libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
+
+if not hasattr(_libzmq, 'sodium_init'):
+    msg = ('zprocess warning: libzmq not built with libsodium. ' +
+           'Encryption/decryption will be slow. If on Windows, ' +
+           'use conda zeromq/pyzmq packages for fast crypto.\n')
+    sys.stderr.write(msg)
+
+if not hasattr(zmq, 'curve_public'):
+    # Access the function via ctypes if not in pyzmq:
+    def _curve_public(secret_key):
+        public_key = b'0' * 40
+        zmq.error._check_rc(_libzmq.zmq_curve_public(public_key, secret_key))
+        return public_key
+    zmq.curve_public = _curve_public
+
 
 class InsecureConnection(RuntimeError):
     """A plaintext socket attempted to send or receive on an external
@@ -33,143 +54,197 @@ method""".splitlines())
 
 
 def generate_shared_secret():
-    """Our shared secret is a zmq curve keypair, decoded from z85 encoding,
-    concatenated together and stored as base64."""
-    publickey, secretkey = zmq.curve_keypair()
-    return _pack_shared_secret(publickey, secretkey)
+    """Our shared secret comprises two zmq curve secret keys, decoded from
+    z85 encoding, concatenated together and stored as base64. In any
+    connection the server will use one key and the client the other. We could
+    have had them use the same key as each other, but I have not found
+    confirmation that this is safe, so we err on the side of caution and make
+    sure the two participants in any connection are using different keys. We
+    could decide in advance who is going to be the client and who the server
+    and only store the relevant key, but since the same computer may act as
+    client and server in different circumstances, we simply distribute both
+    keys to all computers that we want to be able to talk to each other, and
+    treat the pair of secret keys as a shared secret. We don't store the
+    public keys because they can be derived from the secretv keys at
+    runtime."""
+    _, client_secretkey = zmq.curve_keypair()
+    _, server_secretkey = zmq.curve_keypair()
+    return _pack_shared_secret(client_secretkey, server_secretkey)
 
 
-def _pack_shared_secret(publickey, secretkey):
+def _pack_shared_secret(client_secretkey, server_secretkey):
     """z85 decode the keys, concatenate them together and encode the result as
     base64. This is more compatible with Python config files than z85, since
     z85 contains percent symbols and parentheses, which could trigger string
     interpolation in Python's configparser."""
-    return base64.b64encode(z85decode(publickey) + z85decode(secretkey))
+    return base64.b64encode(z85decode(client_secretkey) + 
+                            z85decode(server_secretkey))
 
 
 def _unpack_shared_secret(shared_secret):
     """Base64 decode, split and z85 encode the shared secret to produce the
-    public key and private key separately"""
+    two secret keys."""
     binary_secret = base64.b64decode(shared_secret)
     if not len(binary_secret) == 64:
         msg = 'Shared secret should be 64 bytes, got %d' % len(binary_secret)
         raise ValueError(msg)
-    publickey, secretkey = binary_secret[:32], binary_secret[32:]
-    return z85encode(publickey), z85encode(secretkey)
+    client_secretkey, server_secretkey = binary_secret[:32], binary_secret[32:]
+    return z85encode(client_secretkey), z85encode(server_secretkey)
 
 
 class SecureSocket(zmq.Socket):
     """A Socket with that configures as a zmq curve server upon bind() and as
-    a curve client upon connect(), using the keys held by the parent
-    Context(). Presently a single keypair is used by all clients and servers
-    to authenticate each other and secure communication, and is stored as the
-    concatenation of the two keys. If the keypair passed to the parent
-    Context() was None, then plain sockets will be used, but
-    InsecureConnection will be raised if send() or recv() are called when
-    bound or connected to an external network interface. This can be supressed
-    by passing allow_insecure=True to the Context.socket() call."""
+    a curve client upon connect(), using the keys held by the parent Context()
+    to authenticate the server upon connect(), or to authenticate a connecting
+    client after bind(), and to secure communication thereafter using
+    CurveZMQ. If the shared_secret passed to the parent Context() was None,
+    then plain sockets will be used, but InsecureConnection will be raised if
+    send() or recv() are called when bound or connected to an external network
+    interface. This can be suppressed by passing allow_insecure=True to the
+    Context.socket() call."""
 
     # zmq.Socket overrides __setattr__ and __getattr to set and get ZMQ
     # options, unless the name exists as a class variable. So we define dummy
     # class variables for any instance variables we want to have:
-    insecure = None
+    secure = None
     allow_insecure = None
 
     def __init__(self, *args, **kwargs):
         self.allow_insecure = kwargs.pop('allow_insecure', False)
         zmq.Socket.__init__(self, *args, **kwargs)
 
-    def _is_external(self, endpoint):
-        """Return whether a bind or connect endpoint is on an external
+    def _is_internal(self, endpoint):
+        """Return whether a bind or connect endpoint is on an internal
         interface"""
         import socket
         if endpoint.startswith('inproc://'):
-            return False
+            return True
         if endpoint.startswith('tcp://'):
             host = ''.join(''.join(endpoint.split('//')[1:]).split(':')[0])
             if host == '*':
-                return True
+                return False
             address = socket.gethostbyname(host)
             if isinstance(address, bytes):
                 address = address.decode()
-            return not ipaddress.ip_address(address).is_loopback
-        return True
+            return ipaddress.ip_address(address).is_loopback
+        return False
 
     def _configure_curve(self, server):
         orig_server = self.curve_server
         if server:
-            self.curve_publickey = self.context.publickey
-            self.curve_secretkey = self.context.secretkey
+            # We are a server with the server keypair. The authenticator in
+            # the parent context is configured to only allow clients with the
+            # client public key to connect to us.
+            self.curve_publickey = self.context.server_publickey
+            self.curve_secretkey = self.context.server_secretkey
             self.curve_server = True
         else:
+            # We are a client with the client keypair, connecting to a server
+            # with the server public key.
             self.curve_server = False
-            self.curve_publickey = self.context.publickey
-            self.curve_secretkey = self.context.secretkey
-            self.curve_serverkey = self.context.publickey
+            self.curve_publickey = self.context.client_publickey
+            self.curve_secretkey = self.context.client_secretkey
+            self.curve_serverkey = self.context.server_publickey
         return orig_server
         
     def bind(self, addr):
-        if self.context.publickey is not None:
+        if self.context.secure:
             prev_setting = self._configure_curve(server=True)
         try:
             result = zmq.Socket.bind(self, addr)
         except:
-            if self.context.publickey is not None:
+            if self.context.secure:
                 # Roll back configuration:
                 self._configure_curve(server=prev_setting)
             raise
-        self.insecure = self.context.publickey is None and self._is_external(addr)
+        self.secure = self.context.secure or self._is_internal(addr)
         return result
 
     def connect(self, addr):
-        if self.context.publickey is not None:
+        if self.context.secure:
             prev_setting = self._configure_curve(server=False)
         try:
             result = zmq.Socket.connect(self, addr)
         except:
-            if self.context.publickey is not None:
+            if self.context.secure:
                 # Roll back configuration.
                 self._configure_curve(server=prev_setting)
             raise
-        self.insecure = self.context.publickey is None and self._is_external(addr)
+        self.secure = self.context.secure or self._is_internal(addr)
         return result
 
     def send(self, *args, **kwargs):
-        if self.insecure and not self.allow_insecure:
+        if not (self.secure or self.allow_insecure):
             raise InsecureConnection(INSECURE_ERROR)
         return zmq.Socket.send(self, *args, **kwargs)
 
     def recv(self, *args, **kwargs):
-        if self.insecure and not self.allow_insecure:
+        if not (self.secure or self.allow_insecure):
             raise InsecureConnection(INSECURE_ERROR)
         return zmq.Socket.recv(self, *args, **kwargs)
 
 
 class SecureContext(zmq.Context):
+    """A ZeroMQ Context with SecureContext.socket() returning sockets that
+    configure as a CurveZMQ client or server depending on whether they call
+    connect() or bind() respectively. Client sockets are assigned the client
+    public and secret keys and told they are connecting to a server with the
+    server public key, server sockets are assigned the server public and
+    secret keys, and an authenticator configured on the Context only allows
+    clients with the client public key to connect. The client and server
+    keypairs are derived from the shared_secret keyword argument, which should
+    be as returned by generate_shared_secret(), and is the base64 encoded
+    concatenation of the client and server secret keys (the corresponding
+    public keys are derived at runtime). In this way, both peers have both
+    secret keys, but choose which to use based on whether they are the client
+    or server in any particular connection. This allows a single shared secret
+    (the two secret keys) to play the role of a master key that allows
+    everyone who has it to talk to everyone else who has it, but compromises
+    everyone if it is leaked. If shared_secret is absent or None, no
+    encryption or authentication will be used, but sockets will raise an
+    exception if send() or recv() is called while connected or bound on an
+    external interface. This can be suppressed with the allow_insecure=True
+    keyword argument to SecureContext.socket()"""
+
     # zmq.Context overrides __setattr__ and __getattr to set and get ZMQ
     # options, unless the name exists as a class variable. So we define dummy
     # class variables for any instance variables we want to have:
-    publickey = None
-    secretkey = None
+    secure = None
+    client_publickey = None
+    client_secretkey = None
+    server_publickey = None
+    server_secretkey = None
     _init_complete = False
 
     def __init__(self, *args, **kwargs):
         shared_secret = kwargs.pop('shared_secret', None)
         zmq.Context.__init__(self, *args, **kwargs)
         if shared_secret is not None:
-            self.publickey, self.secretkey = _unpack_shared_secret(shared_secret)
-            # Start an authenticator for this context.
+            keys = _unpack_shared_secret(shared_secret)
+            self.client_secretkey, self.server_secretkey = keys
+            self.client_publickey = zmq.curve_public(self.client_secretkey)
+            self.server_publickey = zmq.curve_public(self.server_secretkey)
+            # Start an authenticator for this context. Don't hold a reference
+            # to it: this is important for it to be cleaned up automatically
+            # at interpreter shutdown.
             auth = zmq.auth.thread.ThreadAuthenticator(self)
             auth.start()
+            # Allow only clients who have the client public key:
             auth.thread.authenticator.allow_any = False
-            auth.thread.authenticator.certs['*'] = {self.publickey: True}
+            auth.thread.authenticator.certs['*'] = {self.client_publickey: True}
+            self.secure = True
+        else:
+            self.secure = False
         self._init_complete = True
 
     def socket(self, *args, **kwargs):
         if self._init_complete:
             return SecureSocket(self, *args, **kwargs)
         else:
+            # The sockets for the authenticator, which are instantiated during
+            # __init__, should be ordinary sockets:
             return zmq.Context.socket(self, *args, **kwargs)
+
 
 if __name__ == '__main__':
 
