@@ -51,17 +51,29 @@ allow_insecure=True)""".splitlines())
 
 
 def generate_shared_secret():
-    """Compute a new random curveZMQ secret key, decode it from z85 encoding,
-    and return it encoded as as base64 as suitable for passing to
-    SecureContext() or storing on disk. We use base64 because it is more
-    compatible with Python config files than z85"""
-    _, secretkey = zmq.curve_keypair()
-    return base64.b64encode(z85decode(secretkey))
+    """Compute a new pair of random curveZMQ secret keys, decode them from z85
+    encoding, and return the result encoded as as base64 as suitable for
+    passing to SecureContext() or storing on disk. We use base64 because it is
+    more compatible with Python config files than z85"""
+    _, client_secretkey = zmq.curve_keypair()
+    _, server_secretkey = zmq.curve_keypair()
+    return base64.b64encode(z85decode(client_secretkey) + 
+                            z85decode(server_secretkey))
+
+def _unpack_shared_secret(shared_secret):
+    """Base64 decode, split and z85 encode the shared secret to produce the
+    client and server curveZMQ secret keys."""
+    binary_secret = base64.b64decode(shared_secret)
+    if not len(binary_secret) == 64:
+        msg = 'Shared secret should be 64 bytes, got %d' % len(binary_secret)
+        raise ValueError(msg)
+    client_secretkey, server_secretkey = binary_secret[:32], binary_secret[32:]
+    return z85encode(client_secretkey), z85encode(server_secretkey)
 
 
 class SecureSocket(zmq.Socket):
     """A Socket that configures as a zmq curve server upon bind() and as a
-    curve client upon connect(), using the keypair held by the parent
+    curve client upon connect(), using the keys held by the parent
     SecureContext to authenticate and be authenticated by its peer. If the
     shared_secret passed to the parent SecureContext() was None, then
     plaintext sockets will be used, but InsecureConnection will be raised if
@@ -100,14 +112,14 @@ class SecureSocket(zmq.Socket):
         are a server or not"""
         orig_server = self.curve_server
         if server:
-            self.curve_publickey = self.context.publickey
-            self.curve_secretkey = self.context.secretkey
+            self.curve_publickey = self.context.server_publickey
+            self.curve_secretkey = self.context.server_secretkey
             self.curve_server = True
         else:
             self.curve_server = False
-            self.curve_publickey = self.context.publickey
-            self.curve_secretkey = self.context.secretkey
-            self.curve_serverkey = self.context.publickey
+            self.curve_publickey = self.context.client_publickey
+            self.curve_secretkey = self.context.client_secretkey
+            self.curve_serverkey = self.context.server_publickey
         return orig_server
         
     def _bind_or_connect(self, addr, bind=False, connect=False):
@@ -159,20 +171,25 @@ class SecureContext(zmq.Context):
     # class variables for any instance variables we want to have:
     _socket_class = SecureSocket
     secure = False
-    publickey = None
-    secretkey = None
+    client_publickey = None
+    client_secretkey = None
+    server_publickey = None
+    server_secretkey = None
+
     def __init__(self, *args, **kwargs):
         shared_secret = kwargs.pop('shared_secret', None)
         zmq.Context.__init__(self, *args, **kwargs)
         if shared_secret is not None:
-            self.secretkey = z85encode(base64.b64decode(shared_secret))
-            self.publickey = zmq.curve_public(self.secretkey)
+            keys = _unpack_shared_secret(shared_secret)
+            self.client_secretkey, self.server_secretkey = keys
+            self.client_publickey = zmq.curve_public(self.client_secretkey)
+            self.server_publickey = zmq.curve_public(self.server_secretkey)
             # Don't hold ref to auth: needed for auto cleanup at shutdown:
             auth = zmq.auth.thread.ThreadAuthenticator(self)
             auth.start()
             # Allow only clients who have the client public key:
             auth.thread.authenticator.allow_any = False
-            auth.thread.authenticator.certs['*'] = {self.publickey: True}
+            auth.thread.authenticator.certs['*'] = {self.client_publickey: True}
             self.secure = True
 
 
