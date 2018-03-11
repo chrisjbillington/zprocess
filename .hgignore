@@ -5,3 +5,5 @@ coverage_html_report
 *.pyc
 __pycache__/*
 zprocess/__version__.py
+build/*
+dist/*
