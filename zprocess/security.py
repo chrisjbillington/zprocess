@@ -1,15 +1,16 @@
 from __future__ import print_function, unicode_literals, division
 import sys
-if sys.version_info[0] == 2:
-    str = unicode
 import os
 import ctypes
 import base64
+import weakref
 
 import ipaddress
 import zmq
 import zmq.auth.thread
 
+if sys.version_info[0] == 2:
+    str = unicode
 
 if not zmq.zmq_version_info() >= (4, 2, 0):
     raise ImportError('Require libzmq >= 4.2')
@@ -160,6 +161,7 @@ class SecureContext(zmq.Context):
     securely to all authorised peers."""
 
     _socket_class = SecureSocket
+    _instances = weakref.WeakValueDictionary()
     # Dummy class attrs to distinguish from zmq options:
     secure = False
     client_publickey = None
@@ -167,9 +169,8 @@ class SecureContext(zmq.Context):
     server_publickey = None
     server_secretkey = None
 
-    def __init__(self, *args, **kwargs):
-        shared_secret = kwargs.pop('shared_secret', None)
-        zmq.Context.__init__(self, *args, **kwargs)
+    def __init__(self, io_threads=1, shared_secret=None):
+        zmq.Context.__init__(self, io_threads)
         if shared_secret is not None:
             keys = _unpack_shared_secret(shared_secret)
             self.client_secretkey, self.server_secretkey = keys
@@ -183,16 +184,28 @@ class SecureContext(zmq.Context):
             auth.thread.authenticator.certs['*'] = {self.client_publickey: True}
             self.secure = True
 
+    @classmethod
+    def instance(cls, io_threads=1, shared_secret=None):
+        """Returns a shared instance with the same shared secret, if there is
+        one, otherwise creates it. If an instance already exists, io_threads
+        will be ignored, otherwise it will be used in the new instance"""
+        try:
+            return cls._instances[shared_secret]
+        except KeyError:
+            instance = cls(io_threads, shared_secret=shared_secret)
+            cls._instances[shared_secret] = instance
+            return instance
+
 
 if __name__ == '__main__':
     import time
     shared_secret = generate_shared_secret()
 
-    server_context = SecureContext(shared_secret=shared_secret)
+    server_context = SecureContext.instance(shared_secret=shared_secret)
     server = server_context.socket(zmq.PULL)
     port = server.bind_to_random_port('tcp://*')
 
-    client_context = SecureContext(shared_secret=shared_secret)
+    client_context = SecureContext.instance(shared_secret=shared_secret)
     client = client_context.socket(zmq.PUSH)
     client.connect('tcp://localhost:%d' % port)
 
