@@ -91,7 +91,8 @@ class ZMQServer(object):
         self.context = SecureContext(shared_secret=shared_secret)
         
         if self.pull_only:
-            self.sock = self.context.socket(zmq.PULL, allow_insecure=allow_insecure)
+            self.sock = self.context.socket(zmq.PULL,
+                                            allow_insecure=allow_insecure)
         else:
             self.sock = self.context.socket(zmq.REP, allow_insecure=allow_insecure)
 
@@ -271,43 +272,35 @@ class ZMQClient(object):
 
 
 
-default_client = ZMQClient()
+# Backwards compatability follows:
 
-# Backward compat:
-zmq_get = default_client.get
-zmq_get_multipart = default_client.get_multipart
-zmq_get_string = default_client.get_string
-zmq_get_raw = default_client.get_raw
-zmq_push = default_client.push
-zmq_push_multipart = default_client.push_multipart
-zmq_push_string = default_client.push_string
-zmq_push_raw = default_client.push_raw
+# Default to on all interfaces and allow insecure connections.
+_ZMQServer = ZMQServer
+class ZMQServer(_ZMQServer):
+    """Wrapper around a zmq.REP or zmq.PULL socket"""
+    def __init__(self, port, dtype='pyobj', pull_only=False, 
+                 bind_address='tcp://0.0.0.0', shared_secret=None,
+                 allow_insecure=True):
+        _ZMQServer.__init__(self, port, dtype=dtype, pull_only=pull_only,
+                            bind_address=bind_address,
+                            shared_secret=shared_secret,
+                            allow_insecure=allow_insecure)
+
+
+# methods for a default insecure client
+_default_client = ZMQClient(allow_insecure=True)
+
+zmq_get = _default_client.get
+zmq_get_multipart = _default_client.get_multipart
+zmq_get_string = _default_client.get_string
+zmq_get_raw = _default_client.get_raw
+zmq_push = _default_client.push
+zmq_push_multipart = _default_client.push_multipart
+zmq_push_string = _default_client.push_string
+zmq_push_raw = _default_client.push_raw
 
 
 __all__ = ['ZMQServer', 'ZMQClient',
            'zmq_get', 'zmq_get_multipart', 'zmq_get_string', 'zmq_get_raw',
            'zmq_push', 'zmq_push_multipart', 'zmq_push_string', 'zmq_push_raw']
 
-if __name__ == '__main__':
-
-    class MyServer(ZMQServer):
-        def handler(self, data):
-            print('got data:', repr(data))
-            return data
-
-    server = MyServer(8000, bind_address='tcp://127.0.0.1')
-    response = zmq_get(8000, data='hello!')
-    print('got response:', repr(response))
-    server.shutdown()
-
-    class MyPullServer(ZMQServer):
-        def handler(self, data):
-            print('got data:', repr(data))
-            return data
-
-    server = MyPullServer(8000, bind_address='tcp://127.0.0.1')
-    response = zmq_push(8000, data='hello!')
-    print('got response:', repr(response))
-    import time
-    time.sleep(0.1)
-    server.shutdown()

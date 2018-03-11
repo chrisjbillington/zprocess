@@ -306,7 +306,7 @@ class Process(object):
         kwargs to the run() method"""
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             'process_class_wrapper.py')
-        child_details = self.process_tree.subprocess_with_queues(path,
+        child_details = self.process_tree.subprocess(path,
                             output_redirection_port=self._redirection_port)
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
@@ -380,7 +380,7 @@ class ProcessTree(object):
         self._check_broker()
         return Event(self, event_name, role=role)
 
-    def subprocess_with_queues(self, path, output_redirection_port=None):
+    def subprocess(self, path, output_redirection_port=None):
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
@@ -424,7 +424,7 @@ class ProcessTree(object):
 
         return to_child, from_child, child
 
-    def _setup_connection_with_parent(self, 
+    def _connect_to_parent(self, 
         lock, port_to_parent, port_to_heartbeat_server, output_redirection_port,
         broker_sub_port, broker_pub_port, zlock_process_identifier_prefix):
 
@@ -477,7 +477,7 @@ class ProcessTree(object):
         self.kill_lock = self.heartbeat_client.lock
 
     @classmethod
-    def setup_connection_with_parent(cls, lock=False):
+    def connect_to_parent(cls, lock=False):
         port_to_parent = int(sys.argv[1])
         port_to_heartbeat_server = int(sys.argv[2])
         output_redirection_port = ast.literal_eval(sys.argv[3])
@@ -490,7 +490,7 @@ class ProcessTree(object):
         process_tree = cls(shared_secret=shared_secret,
                            allow_insecure=allow_insecure)
 
-        process_tree._setup_connection_with_parent(
+        process_tree._connect_to_parent(
             lock, port_to_parent, port_to_heartbeat_server,
             output_redirection_port, broker_sub_port, broker_pub_port,
             zlock_process_identifier_prefix)
@@ -527,11 +527,11 @@ class Process(_Process):
             args = (_default_process_tree,) + args
         _Process.__init__(self, *args, **kwargs)
 
-# New way is to call ProcessTree.setup_connection_with_parent(lock) and get
-# back a ProcessTree. This is the old way, returning queues and a lock
+# New way is to call ProcessTree.connect_to_parent(lock) and get back a
+# ProcessTree. This is the old way, returning queues and (optionally) a lock
 # instead:
 def setup_connection_with_parent(lock=False):
-    process_tree = ProcessTree.setup_connection_with_parent(lock)
+    process_tree = ProcessTree.connect_to_parent(lock)
     if lock:
         return (process_tree.to_parent,
                 process_tree.from_parent,
@@ -540,13 +540,11 @@ def setup_connection_with_parent(lock=False):
         return process_tree.to_parent, process_tree.from_parent
 
 # New way is to instantiate a ProcessTree and call
-# process_tree.subprocess_with_queues(). Old way is:
+# process_tree.subprocess(). Old way is:
 def subprocess_with_queues(path, output_redirection_port=None):
     if output_redirection_port == 0: # This used to mean no redirection
         output_redirection_port = None
-    return _default_process_tree.subprocess_with_queues(path,
-                                                        output_redirection_port)
-
+    return _default_process_tree.subprocess(path, output_redirection_port)
 
 
 
