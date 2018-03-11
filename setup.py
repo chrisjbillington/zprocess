@@ -11,13 +11,13 @@
 from setuptools import setup
 import os
 
-VERSION = '2.2.7'
+VERSION = '2.3.0'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
     f.write("__version__ = '%s'\n"%VERSION)
 
-dependencies = ['pyzmq', 'cryptography']
+dependencies = ['pyzmq', 'ipaddress']
 
 import sys
 if sys.version_info.major == 2:
@@ -32,6 +32,6 @@ setup(name='zprocess',
       author_email='chrisjbillington@gmail.com',
       url='https://bitbucket.org/cbillington/zprocess/',
       license="BSD",
-      packages=['zprocess', 'zprocess.locking', 'zprocess.logging'],
+      packages=['zprocess', 'zprocess.locking', 'zprocess.zlog'],
       install_requires=dependencies
      )
