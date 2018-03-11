@@ -10,11 +10,13 @@ import os
 import time
 import threading
 
+import zmq
+
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from zprocess import (ZMQServer, Process, TimeoutError,
-                      raise_exception_in_thread)
+                      raise_exception_in_thread, zmq_get, zmq_push)
 from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import _default_process_tree
 from zprocess.security import SecureContext
@@ -116,13 +118,13 @@ class TestProcess(Process):
         sys.stdout.write(repr(x))
         sys.stderr.write(y)
         self.to_parent.put(item)
+        time.sleep(1)
 
 
 class ProcessClassTests(unittest.TestCase):
 
     def setUp(self):
         """Create a subprocess with output redirection to a zmq port"""
-        import zmq
         self.redirection_sock = SecureContext.instance().socket(zmq.PULL)
         redirection_port = self.redirection_sock.bind_to_random_port(
                                'tcp://127.0.0.1')
@@ -147,16 +149,17 @@ class ProcessClassTests(unittest.TestCase):
         with self.assertRaises(TimeoutError):
             from_child.get(timeout=0.1)
 
-        subproc_output = []
-
-        while self.redirection_sock.poll(100):
-            subproc_output.append(self.redirection_sock.recv_multipart())
-        self.assertEqual(subproc_output, [[b'stdout', repr(x).encode('utf8')], [b'stderr', y.encode('utf8')]])
+        # Check we recieved its stdout and stderr:
+        self.assertEqual(self.redirection_sock.recv_multipart(),
+                         [b'stdout', repr(x).encode('utf8')])
+        self.assertEqual(self.redirection_sock.recv_multipart(),
+                         [b'stderr', y.encode('utf8')])
+        # And no more...
+        self.assertEqual(self.redirection_sock.poll(100), 0)
 
     def tearDown(self):
         self.process.terminate()
         self.redirection_sock.close()
-
 
 
 class HeartbeatClientTestProcess(Process):
@@ -274,7 +277,6 @@ class HeartbeatTests(unittest.TestCase):
 class TestEventProcess(Process):
     def run(self):
         event = self.process_tree.event('hello', role='post')
-        import time
         time.sleep(0.1)
         event.post('1')
         time.sleep(0.1)
@@ -286,6 +288,36 @@ class EventTests(unittest.TestCase):
         event = _default_process_tree.event('hello', role='wait')
         proc.start()
         event.wait('1', timeout=1)
+
+
+class ClientServerTests(unittest.TestCase):
+
+    def test_rep_server(self):
+        class MyServer(ZMQServer):
+            def handler(self, data):
+                return data
+
+        server = MyServer(8000, bind_address='tcp://127.0.0.1')
+        response = zmq_get(8000, data='hello!')
+        self.assertEqual(response, 'hello!')
+        server.shutdown()
+
+    def test_pull_server(self):
+
+        testcase = self
+        got_data = threading.Event()
+
+        class MyPullServer(ZMQServer):
+            def handler(self, data):
+                testcase.assertEqual(data, 'hello!')
+                got_data.set()
+
+        server = MyPullServer(8000, bind_address='tcp://127.0.0.1')
+        response = zmq_push(8000, data='hello!')
+        self.assertEqual(response, None)
+        self.assertEqual(got_data.wait(timeout=1), True) 
+        server.shutdown()
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=3)
