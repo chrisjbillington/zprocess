@@ -13,8 +13,9 @@ import threading
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from zprocess import (_typecheck_or_convert_data, ZMQServer, Process,
-                      TimeoutError, HeartbeatServer, raise_exception_in_thread)
+from zprocess import (ZMQServer, Process, TimeoutError,
+                      HeartbeatServer, raise_exception_in_thread)
+from zprocess.clientserver import _typecheck_or_convert_data
 
 
 class RaiseExceptionInThreadTest(unittest.TestCase):
@@ -100,11 +101,6 @@ class  TypeCheckConvertTests(unittest.TestCase):
         with self.assertRaises(TypeError):
             _typecheck_or_convert_data(data, 'string')
 
-    def test_rejects_bytes_string(self):
-        data = b'spam'
-        with self.assertRaises(TypeError):
-            _typecheck_or_convert_data(data, 'string')
-
     def test_rejects_invalid_send_type(self):
         data = {'spam': ['ham'], 'eggs': True}
         with self.assertRaises(ValueError):
@@ -113,7 +109,6 @@ class  TypeCheckConvertTests(unittest.TestCase):
 
 class TestProcess(Process):
     def run(self):
-        import sys
         item = self.from_parent.get()
         x, y = item
         sys.stdout.write(repr(x))
@@ -126,7 +121,8 @@ class ProcessClassTests(unittest.TestCase):
     def setUp(self):
         """Create a subprocess with output redirection to a zmq port"""
         import zmq
-        self.redirection_sock = zmq.Context.instance().socket(zmq.PULL)
+        import zprocess
+        self.redirection_sock = zprocess.context.socket(zmq.PULL)
         redirection_port = self.redirection_sock.bind_to_random_port('tcp://127.0.0.1')
         self.process = TestProcess(redirection_port)
 
