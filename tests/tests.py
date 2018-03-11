@@ -271,6 +271,21 @@ class HeartbeatTests(unittest.TestCase):
         except Exception:
             pass # already dead
 
+class TestEventProcess(Process):
+    def run(self):
+        event = self.process_tree.event('hello', role='post')
+        import time
+        time.sleep(0.1)
+        event.post('1')
+        time.sleep(0.1)
+
+
+class EventTests(unittest.TestCase):
+    def test_subproc_lives_with_heartbeats(self):
+        proc = TestEventProcess()
+        event = _default_process_tree.event('hello', role='wait')
+        proc.start()
+        event.wait('1', timeout=1)
 
 if __name__ == '__main__':
     unittest.main(verbosity=3)

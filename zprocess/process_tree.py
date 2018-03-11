@@ -210,35 +210,31 @@ class OutputInterceptor(object):
 
 class Event(object):
 
-    def __init__(self, process_tree, event_name, mode='wait'):
+    def __init__(self, process_tree, event_name, role='wait'):
         # Ensure we have a broker, whether it's in this process or a parent one:
         self.event_name = event_name
-        self.mode = mode
-        if not mode in ['wait', 'post', 'both']:
-            raise ValueError("mode must be 'wait', 'post', or 'both'")
-        self.can_wait = self.mode in ['wait', 'both']
-        self.can_post = self.mode in ['post', 'both']
+        self.role = role
+        if not role in ['wait', 'post', 'both']:
+            raise ValueError("role must be 'wait', 'post', or 'both'")
+        self.can_wait = self.role in ['wait', 'both']
+        self.can_post = self.role in ['post', 'both']
         context = SecureContext.instance(shared_secret=process_tree.shared_secret)
         if self.can_wait:
             self.sub = context.socket(zmq.SUB,
                                       allow_insecure=process_tree.allow_insecure)
             self.sub.set_hwm(1000)
             self.sub.setsockopt(zmq.SUBSCRIBE, self.event_name.encode('utf8'))
-            self.sub.connect('tcp://%s:%s' %
-                             (process_tree.broker_ip,
-                              process_tree.broker_pub_port))
+            self.sub.connect('tcp://127.0.0.1:%s' % process_tree.broker_pub_port)
             self.sublock = threading.Lock()
         if self.can_post:
             self.pub = context.socket(zmq.PUB,
                                       allow_insecure=process_tree.allow_insecure)
-            self.pub.connect('tcp://%s:%s' %
-                             (process_tree.broker_ip,
-                              process_tree.broker_sub_port))
+            self.pub.connect('tcp://127.0.0.1:%s' % process_tree.broker_sub_port)
             self.publock = threading.Lock()
 
     def post(self, identifier, data=None):
         if not self.can_post:
-            msg = ("Instantiate Event with type='post' " +
+            msg = ("Instantiate Event with role='post' " +
                    "or 'both' to be able to post events")
             raise ValueError(msg)
         with self.publock:
@@ -249,7 +245,7 @@ class Event(object):
     def wait(self, identifier, timeout=None):
         identifier = str(identifier)
         if not self.can_wait:
-            msg = ("Instantiate Event with type='wait' " +
+            msg = ("Instantiate Event with role='wait' " +
                    "or 'both' to be able to wait for events")
             raise ValueError(msg)
         # First check through events that are already in the buffer:
@@ -372,8 +368,17 @@ class ProcessTree(object):
         self.from_parent = None
         self.kill_lock = None
 
-    def event(self, event_name, mode='wait'):
-        return Event(self, event_name, mode=mode)
+    def _check_broker(self):
+        if self.broker_pub_port is None:
+            # We don't have a parent with a broker: it is our responsibility to
+            # make a broker:
+            self.broker = Broker(shared_secret=self.shared_secret)
+            self.broker_pub_port = self.broker.pub_port
+            self.broker_sub_port = self.broker.sub_port
+
+    def event(self, event_name, role='wait'):
+        self._check_broker()
+        return Event(self, event_name, role=role)
 
     def subprocess_with_queues(self, path, output_redirection_port=None):
         context = SecureContext.instance(shared_secret=self.shared_secret)
@@ -383,12 +388,7 @@ class ProcessTree(object):
 
         port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
         to_self.connect('tcp://127.0.0.1:%s' % port_from_child)
-        if self.broker_pub_port is None:
-            # We don't have a parent with a broker: it is our responsibility to
-            # make a broker:
-            self.broker = Broker(shared_secret=self.shared_secret)
-            self.broker_pub_port = self.broker.pub_port
-            self.broker_sub_port = self.broker.sub_port
+        self._check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
             self.heartbeat_server = HeartbeatServer(
@@ -510,6 +510,10 @@ _default_process_tree = ProcessTree()
 _Event = Event
 class Event(_Event):
     def __init__(self, *args, **kwargs):
+        # Convert the keyword argument renaming:
+        if 'type' in kwargs:
+            kwargs['role'] = kwargs['type']
+            del kwargs['type']
         if not args or not isinstance(args[0], ProcessTree):
             args = (_default_process_tree,) + args
         _Event.__init__(self, *args, **kwargs)
