@@ -14,8 +14,10 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from zprocess import (ZMQServer, Process, TimeoutError,
-                      HeartbeatServer, raise_exception_in_thread)
+                      raise_exception_in_thread)
 from zprocess.clientserver import _typecheck_or_convert_data
+from zprocess.process_tree import _default_process_tree
+from zprocess.security import SecureContext
 
 
 class RaiseExceptionInThreadTest(unittest.TestCase):
@@ -121,9 +123,9 @@ class ProcessClassTests(unittest.TestCase):
     def setUp(self):
         """Create a subprocess with output redirection to a zmq port"""
         import zmq
-        import zprocess
-        self.redirection_sock = zprocess.context.socket(zmq.PULL)
-        redirection_port = self.redirection_sock.bind_to_random_port('tcp://127.0.0.1')
+        self.redirection_sock = SecureContext.instance().socket(zmq.PULL)
+        redirection_port = self.redirection_sock.bind_to_random_port(
+                               'tcp://127.0.0.1')
         self.process = TestProcess(redirection_port)
 
     def test_process(self):
@@ -204,7 +206,7 @@ class HeartbeatTests(unittest.TestCase):
         self.mock_heartbeat_server = mock_heartbeat_server
 
     def test_subproc_lives_with_heartbeats(self):
-        HeartbeatServer.instance = self.mock_heartbeat_server
+        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
         self.process = HeartbeatClientTestProcess()
         self.process.start()
         for i in range(3):
@@ -214,7 +216,7 @@ class HeartbeatTests(unittest.TestCase):
             self.heartbeat_sock.send(self.heartbeat_sock.recv())
 
     def test_subproc_dies_without_heartbeats(self):
-        HeartbeatServer.instance = self.mock_heartbeat_server
+        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
         self.process = HeartbeatClientTestProcess()
         self.process.start()
         # Wait for a heartbeat request:
@@ -225,7 +227,7 @@ class HeartbeatTests(unittest.TestCase):
         self.assertIsNot(self.process.child.poll(), None)
 
     def test_subproc_dies_on_incorrect_response(self):
-        HeartbeatServer.instance = self.mock_heartbeat_server
+        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
         self.process = HeartbeatClientTestProcess()
         self.process.start()
         # Wait for a heartbeat request:
@@ -237,7 +239,7 @@ class HeartbeatTests(unittest.TestCase):
         self.assertIsNot(self.process.child.poll(), None)
 
     def test_subproc_survives_until_kill_lock_released(self):
-        HeartbeatServer.instance = self.mock_heartbeat_server
+        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
         self.process = HeartbeatClientTestProcess()
         to_child, from_child = self.process.start()
         # Wait for a heartbeat request:
@@ -255,10 +257,10 @@ class HeartbeatTests(unittest.TestCase):
 
     def test_parent_correctly_responds_to_heartbeats(self):
         # No mock server this time, we're testing the real one:
-        HeartbeatServer.instance = None
+        _default_process_tree.heartbeat_server = None
         self.process = HeartbeatServerTestProcess()
         to_child, from_child = self.process.start()
-        to_child.put(HeartbeatServer.instance.port)
+        to_child.put(_default_process_tree.heartbeat_server.port)
         self.assertTrue(from_child.sock.poll(1000))
         self.assertTrue(from_child.get())
 

@@ -1,6 +1,6 @@
 #####################################################################
 #                                                                   #
-# __init__.py                                                       #
+# clientserver.py                                                   #
 #                                                                   #
 # Copyright 2013 - 2018, Chris Billington                           #
 #                                                                   #
@@ -219,7 +219,7 @@ class _Sender(object):
                    "'multipart' or 'pyobj'" % str(self.dtype))
             raise ValueError(msg)
 
-    def __call__(self, port, host='localhost', data=None, timeout=5):
+    def __call__(self, port, host='127.0.0.1', data=None, timeout=5):
         """If self.push_only, send data on the push socket, ignoring timeout.
         Otherwise, uses reliable request-reply to send data to a zmq REP
         socket, and return the reply"""
