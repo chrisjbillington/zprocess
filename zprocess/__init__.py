@@ -58,7 +58,8 @@ from zprocess.clientserver import (ZMQServer, ZMQClient,
            zmq_push, zmq_push_multipart, zmq_push_string, zmq_push_raw)
 
 from zprocess.process_tree import (Process, ProcessTree,
-                                  setup_connection_with_parent)
+                                  setup_connection_with_parent,
+                                  subprocess_with_queues, Event)
 
 
 
