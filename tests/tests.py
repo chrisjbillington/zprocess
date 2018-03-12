@@ -291,7 +291,10 @@ class EventTests(unittest.TestCase):
         proc = TestEventProcess()
         event = _default_process_tree.event('hello', role='wait')
         proc.start()
-        event.wait('1', timeout=1)
+        try:
+            event.wait('1', timeout=1)
+        finally:
+            proc.terminate()
 
 
 class ClientServerTests(unittest.TestCase):

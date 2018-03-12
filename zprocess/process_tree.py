@@ -79,7 +79,7 @@ class HeartbeatClient(object):
             msg = self.sock.recv()
             if not msg == pid:
                 break
-        sys.stderr.write('Heartbeat failure\n')
+        # sys.stderr.write('Heartbeat failure\n')
         if self.lock is not None:
             with self.lock:
                 os.kill(os.getpid(), signal.SIGTERM)
@@ -346,6 +346,7 @@ class Process(object):
     def terminate(self):
         try:
             self.child.terminate()
+            self.child.wait()
         except WindowsError if os.name == 'nt' else None:
             pass  # process is already dead
 
