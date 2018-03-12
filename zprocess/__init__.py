@@ -38,14 +38,11 @@ except ImportError:
 # are a high enough version.
 PICKLE_PROTOCOL = 2
 
-we_are_the_top_process = True
-
 if 'zprocess' in  os.getenv('COVERAGE_PROCESS_START', ''):
     # We're running with coverage.py, likely running the test suite. Add
     # sigterm handler so that atexit handlers run even when terminated and
     # coverage data is saved:
     def sigterm_handler(_signo, _stack_frame):
-        sys.stderr.write('Terminated\n')
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, sigterm_handler)
 
