@@ -89,7 +89,7 @@ class ZMQServer(object):
         self.pull_only = pull_only
         self.bind_address = bind_address
 
-        if self.__class__.setup_auth is not ZMQServer.setup_auth:
+        if 'setup_auth' in self.__class__.__dict__:
             # Backward compatibility for subclasses implementing their own
             # authentication:
             self.context = zmq.Context()
@@ -215,8 +215,12 @@ class _Sender(object):
         self.local.host = gethostbyname(host)
         self.local.port = int(port)
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        self.local.sock = context.socket(zmq.REQ,
-                                         allow_insecure=self.allow_insecure)
+        if self.push_only:
+            self.local.sock = context.socket(zmq.PUSH,
+                                             allow_insecure=self.allow_insecure)
+        else:
+            self.local.sock = context.socket(zmq.REQ,
+                                             allow_insecure=self.allow_insecure)
         self.local.sock.setsockopt(zmq.LINGER, 0)
         self.local.sock.connect('tcp://%s:%d' % (self.local.host, self.local.port))
         # Different send/recv methods depending on the desired protocol:
