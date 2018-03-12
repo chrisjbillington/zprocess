@@ -88,13 +88,25 @@ class ZMQServer(object):
         self.dtype = dtype
         self.pull_only = pull_only
         self.bind_address = bind_address
-        self.context = SecureContext(shared_secret=shared_secret)
-        
-        if self.pull_only:
-            self.sock = self.context.socket(zmq.PULL,
-                                            allow_insecure=allow_insecure)
+
+        if self.__class__.setup_auth is not ZMQServer.setup_auth:
+            # Backward compatibility for subclasses implementing their own
+            # authentication:
+            self.context = zmq.Context()
+            self.auth = self.setup_auth(self.context)
+            if self.pull_only:
+                self.sock = self.context.socket(zmq.PULL)
+            else:
+                self.sock = self.context.socket(zmq.REP)
         else:
-            self.sock = self.context.socket(zmq.REP, allow_insecure=allow_insecure)
+            # Our shared secret authentication:
+            self.context = SecureContext(shared_secret=shared_secret)
+            if self.pull_only:
+                self.sock = self.context.socket(zmq.PULL,
+                                                allow_insecure=allow_insecure)
+            else:
+                self.sock = self.context.socket(zmq.REP,
+                                                allow_insecure=allow_insecure)
 
         self.sock.setsockopt(zmq.LINGER, 0)
 
@@ -121,6 +133,12 @@ class ZMQServer(object):
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
+
+    def setup_auth(self, context):
+        """Deprecated. To be overridden by subclasses setting up their
+        own authentication. If present in a subclass, this will be called
+        and no shared secret authentication will be used."""
+        pass
 
     def shutdown_on_interrupt(self):
         try:

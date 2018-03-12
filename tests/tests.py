@@ -298,6 +298,7 @@ class ClientServerTests(unittest.TestCase):
                 return data
 
         server = MyServer(8000, bind_address='tcp://127.0.0.1')
+        self.assertIsInstance(server.context, SecureContext)
         response = zmq_get(8000, data='hello!')
         self.assertEqual(response, 'hello!')
         server.shutdown()
@@ -313,23 +314,25 @@ class ClientServerTests(unittest.TestCase):
                 got_data.set()
 
         server = MyPullServer(8000, bind_address='tcp://127.0.0.1')
+        self.assertIsInstance(server.context, SecureContext)
         response = zmq_push(8000, data='hello!')
         self.assertEqual(response, None)
         self.assertEqual(got_data.wait(timeout=1), True) 
         server.shutdown()
 
+    def test_customauth_backcompat(self):
+        class MyCustomAuthServer(ZMQServer):
+            def setup_auth(self, context):
+                pass
+
+        server = MyCustomAuthServer(8000, bind_address='tcp://127.0.0.1')
+        try:
+            self.assertNotIsInstance(server.context, SecureContext)
+        finally:
+            server.shutdown()
 
 if __name__ == '__main__':
     unittest.main(verbosity=3)
 
-# TODO:
-# ZMQServer, all four types, zmq_get all four types, zmq_push, all four types
-# Process class
-#   test an RPC call
-#   with output redirection
-#   Test unicode output
-#
-# subprocess_with_queues
-#   with output redirection
-# Test heartbeating
-# How?
+
+    
