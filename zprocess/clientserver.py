@@ -160,8 +160,10 @@ class ZMQServer(object):
                 response_data = self.handler(request_data)
                 if self.pull_only and response_data is not None:
                     msg = ("Pull-only server hander() method returned " +
-                           "non-None value. Ignoring.")
+                           "non-None value %s. Ignoring." % str(response_data))
                     raise ValueError(msg)
+                response_data = _typecheck_or_convert_data(response_data,
+                                                           self.dtype)
             except Exception:
                 # Raise the exception in a separate thread so that the
                 # server keeps running:
@@ -171,7 +173,7 @@ class ZMQServer(object):
                 if not self.pull_only:
                     # Send the error to the client:
                     msg = ("The server had an unhandled exception whilst " + 
-                       "processing the request:\n%s" % str(exception_string))
+                           "processing the request:\n%s" % str(exception_string))
                     response_data = zmq.ZMQError(msg)
                     if self.dtype == 'raw':
                         response_data = str(response_data).encode('utf8')
@@ -179,8 +181,8 @@ class ZMQServer(object):
                         response_data = [str(response_data).encode('utf8')]
                     elif self.dtype == 'string':
                         response_data = str(response_data)
-                response_data = _typecheck_or_convert_data(response_data,
-                                                           self.dtype)
+                    response_data = _typecheck_or_convert_data(response_data,
+                                                               self.dtype)
             if not self.pull_only:
                 self.send(response_data)
 
