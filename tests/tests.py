@@ -311,14 +311,18 @@ class ClientServerTests(unittest.TestCase):
         class MyPullServer(ZMQServer):
             def handler(self, data):
                 testcase.assertEqual(data, 'hello!')
+                print('here!')
                 got_data.set()
 
-        server = MyPullServer(8000, bind_address='tcp://127.0.0.1')
-        self.assertIsInstance(server.context, SecureContext)
-        response = zmq_push(8000, data='hello!')
-        self.assertEqual(response, None)
-        self.assertEqual(got_data.wait(timeout=1), True) 
-        server.shutdown()
+        server = MyPullServer(8000, bind_address='tcp://127.0.0.1',
+                              pull_only=True)
+        try:
+            self.assertIsInstance(server.context, SecureContext)
+            response = zmq_push(8000, data='hello!')
+            self.assertEqual(response, None)
+            self.assertEqual(got_data.wait(timeout=1), True)
+        finally:
+            server.shutdown()
 
     def test_customauth_backcompat(self):
         class MyCustomAuthServer(ZMQServer):
