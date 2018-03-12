@@ -17,9 +17,14 @@ sys.path.insert(0, parent_dir)
 
 from zprocess import (ZMQServer, Process, TimeoutError,
                       raise_exception_in_thread, zmq_get, zmq_push)
+import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import _default_process_tree
 from zprocess.security import SecureContext
+
+
+class TestError(Exception):
+            pass
 
 
 class RaiseExceptionInThreadTest(unittest.TestCase):
@@ -39,8 +44,6 @@ class RaiseExceptionInThreadTest(unittest.TestCase):
         threading.Thread = MockThread
 
     def test_can_raise_exception_in_thread(self):
-        class TestError(Exception):
-            pass
         try:
             raise TestError('test')
         except Exception:
@@ -198,7 +201,8 @@ class HeartbeatServerTestProcess(Process):
 
 class HeartbeatTests(unittest.TestCase):
     def setUp(self):
-        """Create a sock for output redirection and a zmq port to mock a heartbeat server"""
+        """Create a sock for output redirection and a zmq port to mock a heartbeat
+        server"""
         import zmq
         self.heartbeat_sock = zmq.Context.instance().socket(zmq.REP)
         heartbeat_port = self.heartbeat_sock.bind_to_random_port('tcp://127.0.0.1')
@@ -295,13 +299,25 @@ class ClientServerTests(unittest.TestCase):
     def test_rep_server(self):
         class MyServer(ZMQServer):
             def handler(self, data):
+                if data == 'error':
+                    raise TestError
                 return data
 
         server = MyServer(8000, bind_address='tcp://127.0.0.1')
-        self.assertIsInstance(server.context, SecureContext)
-        response = zmq_get(8000, data='hello!')
-        self.assertEqual(response, 'hello!')
-        server.shutdown()
+        try:
+            self.assertIsInstance(server.context, SecureContext)
+            response = zmq_get(8000, data='hello!')
+            self.assertEqual(response, 'hello!')
+
+            # Ignore the exception in the other thread:
+            clientserver.raise_exception_in_thread =  lambda *args: None
+            try:
+                with self.assertRaises(zmq.error.ZMQError):
+                    zmq_get(8000, data='error')
+            finally:
+                clientserver.raise_exception_in_thread = raise_exception_in_thread
+        finally:
+            server.shutdown()
 
     def test_pull_server(self):
 
@@ -310,17 +326,48 @@ class ClientServerTests(unittest.TestCase):
 
         class MyPullServer(ZMQServer):
             def handler(self, data):
+                if data == 'error!':
+                    return "not None!"
                 testcase.assertEqual(data, 'hello!')
-                print('here!')
                 got_data.set()
 
         server = MyPullServer(8000, bind_address='tcp://127.0.0.1',
                               pull_only=True)
+
+        # So we can catch errors raised by raise_exception_in_thread
+
         try:
             self.assertIsInstance(server.context, SecureContext)
             response = zmq_push(8000, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
+            got_data.clear()
+
+            # Confirm you get an error when the handler returns something:
+            got_error = threading.Event()
+            class MockThread(object):
+                def __init__(self, target, args):
+                    self.target = target
+                    self.args = args
+                def start(self):
+                    try:
+                        self.target(*self.args)
+                    except ValueError:
+                        got_error.set()
+
+            orig_thread = threading.Thread
+            try:
+                threading.Thread = MockThread
+                response = zmq_push(8000, data='error!')
+                self.assertEqual(got_error.wait(timeout=1), True)
+            finally:
+                threading.Thread = orig_thread
+
+            # Confirm the server still works:
+            response = zmq_push(8000, data='hello!')
+            self.assertEqual(response, None)
+            self.assertEqual(got_data.wait(timeout=1), True)
+            got_data.clear()
         finally:
             server.shutdown()
 
