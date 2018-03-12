@@ -279,6 +279,7 @@ class _Sender(object):
 
 
 class ZMQClient(object):
+    """Wrapper around zmq REQ or PUSH socket"""
     def __init__(self, shared_secret=None, allow_insecure=False):
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
