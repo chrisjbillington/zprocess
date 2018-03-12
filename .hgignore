@@ -7,3 +7,4 @@ __pycache__/*
 zprocess/__version__.py
 build/*
 dist/*
+zprocess.egg-info/*
