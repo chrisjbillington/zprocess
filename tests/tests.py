@@ -287,7 +287,7 @@ class TestEventProcess(Process):
 
 
 class EventTests(unittest.TestCase):
-    def test_subproc_lives_with_heartbeats(self):
+    def test_events(self):
         proc = TestEventProcess()
         event = _default_process_tree.event('hello', role='wait')
         proc.start()
@@ -387,6 +387,3 @@ class ClientServerTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=3)
-
-
-    
