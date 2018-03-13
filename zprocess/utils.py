@@ -3,7 +3,10 @@ import sys
 import os
 import threading
 import subprocess
+import time
+
 import zmq
+from zmq.utils.monitor import recv_monitor_message
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -12,6 +15,23 @@ if PY2:
 
 class TimeoutError(zmq.ZMQError):
     pass
+
+def blocking_connect(sock, addr, timeout=None):
+    """Connect and block until the connection has completed or times out (timeout
+    in seconds)"""
+    monitor = sock.get_monitor_socket()
+    sock.connect(addr)
+    start_time = time.time()
+    while timeout is None or (time.time() < start_time + timeout):
+        if timeout is not None:
+            remaining = (start_time + timeout - time.time())
+            poll_timeout = max(0, remaining)
+            events = monitor.poll(1000 * poll_timeout, flags=zmq.POLLIN)
+            if not events:
+                raise TimeoutError
+        if recv_monitor_message(monitor)['event'] == zmq.EVENT_CONNECTED:
+            sock.disable_monitor()
+            break
 
 
 def _reraise(exc_info):
