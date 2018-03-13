@@ -386,4 +386,6 @@ class ClientServerTests(unittest.TestCase):
             server.shutdown()
 
 if __name__ == '__main__':
-    unittest.main(verbosity=3)
+    import xmlrunner
+    unittest.main(verbosity=3,
+                  testRunner=xmlrunner.XMLTestRunner(output='test-reports'))
