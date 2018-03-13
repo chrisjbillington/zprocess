@@ -12,8 +12,8 @@ import zmq.auth.thread
 if sys.version_info[0] == 2:
     str = unicode
 
-if not zmq.zmq_version_info() >= (4, 2, 0):
-    raise ImportError('Require libzmq >= 4.2')
+if not zmq.zmq_version_info() >= (4, 0, 0):
+    raise ImportError('Require libzmq >= 4.0')
 
 _libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
 if not hasattr(_libzmq, 'sodium_init'):
@@ -24,10 +24,20 @@ if not hasattr(_libzmq, 'sodium_init'):
 
 if not hasattr(zmq, 'curve_public'):
     # Access the function via ctypes if not in pyzmq:
-    def _curve_public(secret_key):
-        public_key = b'0' * 40
-        zmq.error._check_rc(_libzmq.zmq_curve_public(public_key, secret_key))
-        return public_key
+    if hasattr(_libzmq, 'zmq_curve_public'):
+        # Use the zeromq function
+        def _curve_public(secret_key):
+            public_key = b'0' * 40
+            zmq.error._check_rc(_libzmq.zmq_curve_public(public_key, secret_key))
+            return public_key
+    else:
+        # Old zeromq, use its crypto library function directly:
+        def _curve_public(secret_key):
+            public_key_bytes = b'0' * 40
+            secret_key_bytes = zmq.utils.z85.decode(secret_key)
+            _libzmq.crypto_scalarmult_base(public_key_bytes, secret_key_bytes)
+            return zmq.utils.z85.encode(public_key_bytes[:32])
+
     zmq.curve_public = _curve_public
 
 
