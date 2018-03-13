@@ -281,7 +281,6 @@ class HeartbeatTests(unittest.TestCase):
 class TestEventProcess(Process):
     def run(self):
         event = self.process_tree.event('hello', role='post')
-        time.sleep(0.1)
         event.post('1')
         time.sleep(0.1)
 

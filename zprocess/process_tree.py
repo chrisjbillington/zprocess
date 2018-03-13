@@ -19,7 +19,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
 
 import zprocess
 from zprocess.security import SecureContext
-from zprocess.utils import TimeoutError
+from zprocess.utils import TimeoutError, blocking_connect
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -45,7 +45,7 @@ class HeartbeatServer(object):
 
     def mainloop(self):
         try:
-            zmq.device(zmq.FORWARDER, self.sock, self.sock)
+            zmq.proxy(self.sock, self.sock)
         except Exception:
             # Shutting down:
             return
@@ -95,18 +95,19 @@ class Broker(object):
 
     def __init__(self, bind_address='tcp://127.0.0.1', shared_secret=None):
         context = SecureContext.instance(shared_secret=shared_secret)
-        self.sub = context.socket(zmq.SUB)
-        self.sub.setsockopt(zmq.SUBSCRIBE, b'')
-        self.pub = context.socket(zmq.PUB)
-        self.sub_port = self.sub.bind_to_random_port(bind_address)
-        self.pub_port = self.pub.bind_to_random_port(bind_address)
+        self.frontend = context.socket(zmq.PULL)
+        self.backend = context.socket(zmq.PUB)
+
+        self.in_port = self.frontend.bind_to_random_port(bind_address)
+        self.out_port = self.backend.bind_to_random_port(bind_address)
+
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
 
     def mainloop(self):
         try:
-            zmq.device(zmq.FORWARDER, self.sub, self.pub)
+            zmq.proxy(self.frontend, self.backend)
         except Exception:
             # Shutting down:
             return
@@ -224,12 +225,16 @@ class Event(object):
                                       allow_insecure=process_tree.allow_insecure)
             self.sub.set_hwm(1000)
             self.sub.setsockopt(zmq.SUBSCRIBE, self.event_name.encode('utf8'))
-            self.sub.connect('tcp://127.0.0.1:%s' % process_tree.broker_pub_port)
+            # Do a blocking connect so that by the time it returns we know our
+            # subscription was received:
+            blocking_connect(self.sub,
+                             'tcp://127.0.0.1:%s' % process_tree.broker_out_port,
+                             timeout=5)
             self.sublock = threading.Lock()
         if self.can_post:
-            self.pub = context.socket(zmq.PUB,
-                                      allow_insecure=process_tree.allow_insecure)
-            self.pub.connect('tcp://127.0.0.1:%s' % process_tree.broker_sub_port)
+            self.push = context.socket(zmq.PUSH,
+                                       allow_insecure=process_tree.allow_insecure)
+            self.push.connect('tcp://127.0.0.1:%s' % process_tree.broker_in_port)
             self.publock = threading.Lock()
 
     def post(self, identifier, data=None):
@@ -238,7 +243,7 @@ class Event(object):
                    "or 'both' to be able to post events")
             raise ValueError(msg)
         with self.publock:
-            self.pub.send_multipart([self.event_name.encode('utf8'),
+            self.push.send_multipart([self.event_name.encode('utf8'),
                                     str(identifier).encode('utf8'),
                                     pickle.dumps(data)])
 
@@ -361,8 +366,8 @@ class ProcessTree(object):
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
         self.broker = None
-        self.broker_sub_port = None
-        self.broker_pub_port = None
+        self.broker_in_port = None
+        self.broker_out_port = None
         self.heartbeat_server = None
         self.heartbeat_client = None
         self.to_parent = None
@@ -370,12 +375,12 @@ class ProcessTree(object):
         self.kill_lock = None
 
     def _check_broker(self):
-        if self.broker_pub_port is None:
+        if self.broker_in_port is None:
             # We don't have a parent with a broker: it is our responsibility to
             # make a broker:
             self.broker = Broker(shared_secret=self.shared_secret)
-            self.broker_pub_port = self.broker.pub_port
-            self.broker_sub_port = self.broker.sub_port
+            self.broker_in_port = self.broker.in_port
+            self.broker_out_port = self.broker.out_port
 
     def event(self, event_name, role='wait'):
         self._check_broker()
@@ -408,8 +413,8 @@ class ProcessTree(object):
                                   str(port_from_child),
                                   str(self.heartbeat_server.port),
                                   repr(output_redirection_port),
-                                  str(self.broker_sub_port),
-                                  str(self.broker_pub_port),
+                                  str(self.broker_in_port),
+                                  str(self.broker_out_port),
                                   zlock_process_identifier_prefix,
                                   repr(self.shared_secret),
                                   str(self.allow_insecure)])
@@ -427,7 +432,7 @@ class ProcessTree(object):
 
     def _connect_to_parent(self, 
         lock, port_to_parent, port_to_heartbeat_server, output_redirection_port,
-        broker_sub_port, broker_pub_port, zlock_process_identifier_prefix):
+        broker_in_port, broker_out_port, zlock_process_identifier_prefix):
 
         # If a custom process identifier has been set in zlock, ensure we
         # inherit it:
@@ -473,8 +478,8 @@ class ProcessTree(object):
                                                 allow_insecure=self.allow_insecure,
                                                 lock=lock)
 
-        self.broker_sub_port = broker_sub_port
-        self.broker_pub_port = broker_pub_port
+        self.broker_in_port = broker_in_port
+        self.broker_out_port = broker_out_port
         self.kill_lock = self.heartbeat_client.lock
 
     @classmethod
@@ -482,8 +487,8 @@ class ProcessTree(object):
         port_to_parent = int(sys.argv[1])
         port_to_heartbeat_server = int(sys.argv[2])
         output_redirection_port = ast.literal_eval(sys.argv[3])
-        broker_sub_port = int(sys.argv[4])
-        broker_pub_port = int(sys.argv[5])
+        broker_in_port = int(sys.argv[4])
+        broker_out_port = int(sys.argv[5])
         zlock_process_identifier_prefix = sys.argv[6]
         shared_secret = ast.literal_eval(sys.argv[7])
         allow_insecure = ast.literal_eval(sys.argv[8])
@@ -493,7 +498,7 @@ class ProcessTree(object):
 
         process_tree._connect_to_parent(
             lock, port_to_parent, port_to_heartbeat_server,
-            output_redirection_port, broker_sub_port, broker_pub_port,
+            output_redirection_port, broker_in_port, broker_out_port,
             zlock_process_identifier_prefix)
 
         return process_tree
