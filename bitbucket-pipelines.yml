@@ -12,3 +12,5 @@ pipelines:
           - pip
         script: # Modify the commands below to build your repository.
           - pip install -e .
+          - pip install xmlrunner
+          - python tests/tests.py
