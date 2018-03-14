@@ -281,7 +281,7 @@ class HeartbeatTests(unittest.TestCase):
 class TestEventProcess(Process):
     def run(self):
         event = self.process_tree.event('hello', role='post')
-        event.post('1')
+        event.post('1', data=u'boo')
         time.sleep(0.1)
 
 
@@ -291,7 +291,8 @@ class EventTests(unittest.TestCase):
         event = _default_process_tree.event('hello', role='wait')
         proc.start()
         try:
-            event.wait('1', timeout=1)
+            data = event.wait('1', timeout=1)
+            self.assertEqual(data, u'boo')
         finally:
             proc.terminate()
 
@@ -385,6 +386,9 @@ class ClientServerTests(unittest.TestCase):
             server.shutdown()
 
 if __name__ == '__main__':
-    import xmlrunner
-    unittest.main(verbosity=3,
-                  testRunner=xmlrunner.XMLTestRunner(output='test-reports'))
+    if os.getenv('BITBUCKET_BUILD_NUMBER') is not None:
+        import xmlrunner
+        unittest.main(verbosity=3,
+                      testRunner=xmlrunner.XMLTestRunner(output='test-reports'))
+    else:
+        unittest.main(verbosity=2)
