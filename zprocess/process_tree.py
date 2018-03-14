@@ -19,7 +19,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
 
 import zprocess
 from zprocess.security import SecureContext
-from zprocess.utils import TimeoutError, blocking_connect
+from zprocess.utils import TimeoutError
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -46,8 +46,9 @@ class HeartbeatServer(object):
     def mainloop(self):
         try:
             zmq.proxy(self.sock, self.sock)
-        except Exception:
+        except zmq.ContextTerminated:
             # Shutting down:
+            self.sock.close(linger=0)
             return
 
 
@@ -70,33 +71,45 @@ class HeartbeatClient(object):
         self.mainloop_thread.start()
 
     def mainloop(self):
-        pid = str(os.getpid()).encode('utf8')
-        while True:
-            time.sleep(1)
-            self.sock.send(pid, zmq.NOBLOCK)
-            if not self.sock.poll(1000):
-                break
-            msg = self.sock.recv()
-            if not msg == pid:
-                break
-        # sys.stderr.write('Heartbeat failure\n')
-        if self.lock is not None:
-            with self.lock:
+        try:
+            pid = str(os.getpid()).encode('utf8')
+            while True:
+                time.sleep(1)
+                self.sock.send(pid, zmq.NOBLOCK)
+                if not self.sock.poll(1000):
+                    break
+                msg = self.sock.recv()
+                if not msg == pid:
+                    break
+            # sys.stderr.write('Heartbeat failure\n')
+            if self.lock is not None:
+                with self.lock:
+                    os.kill(os.getpid(), signal.SIGTERM)
+            else:
                 os.kill(os.getpid(), signal.SIGTERM)
-        else:
-            os.kill(os.getpid(), signal.SIGTERM)
+        except zmq.ContextTerminated:
+            # Shutting down:
+            self.sock.close(linger=0)
+            return
 
 
 class Broker(object):
-    """A broker to collect Event.posts() events from anywhere in the process
-    tree and broadcast them to subscribers. There is only one of these, at the
-    top level process in the ProcessTree."""
-    instance = None
+    """A broker to collect Event.post() messages from anywhere in the process tree
+    and broadcast them to subscribers calling event.wait(). There is only one of
+    these, at the top level process in the ProcessTree."""
+
+    # A message subscribers can use to confirm their connection
+    # (and any subscriptions) have been processed.
+    WELCOME_MESSAGE = b'_zprocess_broker_hello\0'
 
     def __init__(self, bind_address='tcp://127.0.0.1', shared_secret=None):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.frontend = context.socket(zmq.PULL)
-        self.backend = context.socket(zmq.PUB)
+        self.backend = context.socket(zmq.XPUB)
+
+        self.poller = zmq.Poller()
+        self.poller.register(self.frontend, zmq.POLLIN)
+        self.poller.register(self.backend, zmq.POLLIN)
 
         self.in_port = self.frontend.bind_to_random_port(bind_address)
         self.out_port = self.backend.bind_to_random_port(bind_address)
@@ -106,11 +119,26 @@ class Broker(object):
         self.mainloop_thread.start()
 
     def mainloop(self):
-        try:
-            zmq.proxy(self.frontend, self.backend)
-        except Exception:
-            # Shutting down:
-            return
+        while True:
+            try:
+                events = dict(self.poller.poll())
+                if self.backend in events:
+                    msg = self.backend.recv()
+                    is_subscription, topic = ord(msg[0:1]), msg[1:]
+                    if is_subscription and topic.startswith(self.WELCOME_MESSAGE):
+                        # A new subscriber asking for a welcome message to confirm
+                        # that we have received all subscriptions made prior to
+                        # this request. Send the topic back (it includes a unique
+                        # random number to ensure only the recipient gets it)
+                        self.backend.send(topic)
+                if self.frontend in events:
+                    # Forward messages to subscribers:
+                    self.backend.send_multipart(self.frontend.recv_multipart())
+            except zmq.ContextTerminated:
+                # Shutting down:
+                self.frontend.close(linger=0)
+                self.backend.close(linger=0)
+                return
 
 
 class WriteQueue(object):
@@ -214,6 +242,10 @@ class Event(object):
     def __init__(self, process_tree, event_name, role='wait'):
         # Ensure we have a broker, whether it's in this process or a parent one:
         self.event_name = event_name
+        # We null terminate the event name otherwise any subscriber subscribing to
+        # and event *starting* with our event name will also receive it, which
+        # we do not want:
+        self._encoded_event_name = self.event_name.encode('utf8') + b'\0'
         self.role = role
         if not role in ['wait', 'post', 'both']:
             raise ValueError("role must be 'wait', 'post', or 'both'")
@@ -224,28 +256,51 @@ class Event(object):
             self.sub = context.socket(zmq.SUB,
                                       allow_insecure=process_tree.allow_insecure)
             self.sub.set_hwm(1000)
-            self.sub.setsockopt(zmq.SUBSCRIBE, self.event_name.encode('utf8'))
-            # Do a blocking connect so that by the time it returns we know our
-            # subscription was received:
-            blocking_connect(self.sub,
-                             'tcp://127.0.0.1:%s' % process_tree.broker_out_port,
-                             timeout=5)
+            self.sub.setsockopt(zmq.SUBSCRIBE, self._encoded_event_name)
+            self.sub.connect('tcp://127.0.0.1:%s' % process_tree.broker_out_port)
+            # Request a welcome message from the broker confirming it receives this
+            # subscription request. This is important so that by the time this
+            # __init__ method returns, the caller can know for sure that if the
+            # broker receives a message, it will definitely be forwarded to the
+            # subscribers and not discarded. It is important that this come after
+            # connect() and after the other setsockopt for our event subscription,
+            # otherwise the two subscription requests may be sent in the opposite
+            # order, preventing us from relying on the receipt of a welcome message
+            # as confirmation that the other subscription was received. We use a
+            # unique random number to prevent treating *other* subscribers' welcome
+            # messages as our own. This is a lot of hoops to jump through when it
+            # would be really nice if zeroMQ could just have a way of saying "block
+            # until all subscription messages processed", which is all we're really
+            # doing.
+            unique_id = os.urandom(32)
+            self.sub.setsockopt(zmq.SUBSCRIBE, Broker.WELCOME_MESSAGE + unique_id)
+            # Allow 5 seconds to connect to the Broker:
+            events = self.sub.poll(flags=zmq.POLLIN, timeout=5000)
+            if not events:
+                raise TimeoutError("Could not connect to event broker")
+            assert self.sub.recv() == Broker.WELCOME_MESSAGE + unique_id
+            # Great, we're definitely connected to the broker now, and it has
+            # processed our subscription. Remove the welcome event subscription
+            # and proceed:
+            self.sub.setsockopt(zmq.UNSUBSCRIBE,
+                                Broker.WELCOME_MESSAGE + unique_id)
             self.sublock = threading.Lock()
         if self.can_post:
             self.push = context.socket(zmq.PUSH,
                                        allow_insecure=process_tree.allow_insecure)
             self.push.connect('tcp://127.0.0.1:%s' % process_tree.broker_in_port)
-            self.publock = threading.Lock()
+            self.pushlock = threading.Lock()
 
     def post(self, identifier, data=None):
         if not self.can_post:
             msg = ("Instantiate Event with role='post' " +
                    "or 'both' to be able to post events")
             raise ValueError(msg)
-        with self.publock:
-            self.push.send_multipart([self.event_name.encode('utf8'),
+        with self.pushlock:
+            self.push.send_multipart([self._encoded_event_name,
                                     str(identifier).encode('utf8'),
-                                    pickle.dumps(data)])
+                                    pickle.dumps(data,
+                                        protocol=zprocess.PICKLE_PROTOCOL)])
 
     def wait(self, identifier, timeout=None):
         identifier = str(identifier)
@@ -259,11 +314,10 @@ class Event(object):
                 events = self.sub.poll(0, flags=zmq.POLLIN)
                 if not events:
                     break
-                event_name, event_id, data = self.sub.recv_multipart()
-                event_name = event_name.decode('utf8')
+                encoded_event_name, event_id, data = self.sub.recv_multipart()
                 event_id = event_id.decode('utf8')
                 data = pickle.loads(data)
-                assert event_name == self.event_name
+                assert encoded_event_name == self._encoded_event_name
                 if event_id == identifier:
                     return data
         # Since we might have to make several recv() calls before we get the
@@ -279,11 +333,10 @@ class Event(object):
                     events = self.sub.poll(1000 * poll_timeout, flags=zmq.POLLIN)
                     if not events:
                         break
-                event_name, event_id, data = self.sub.recv_multipart()
-                event_name = event_name.decode('utf8')
+                encoded_event_name, event_id, data = self.sub.recv_multipart()
                 event_id = event_id.decode('utf8')
                 data = pickle.loads(data)
-                assert event_name == self.event_name
+                assert encoded_event_name == self._encoded_event_name
                 if event_id == identifier:
                     return data
         raise TimeoutError('No event received: timed out')
