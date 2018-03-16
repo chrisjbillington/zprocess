@@ -58,13 +58,13 @@ allow_insecure=True)""".splitlines())
 
 def generate_shared_secret():
     """Compute a new pair of random CurveZMQ secret keys, decode them from z85
-    encoding, and return the result encoded as as base64 as suitable for
-    passing to SecureContext() or storing on disk. We use base64 because it is
+    encoding, and return the result as a base64 encoded unicode string as suitable
+    for passing to SecureContext() or storing on disk. We use base64 because it is
     more compatible with Python config files than z85."""
     _, client_secret = zmq.curve_keypair()
     _, server_secret = zmq.curve_keypair()
     return base64.b64encode(zmq.utils.z85.decode(client_secret) + 
-                            zmq.utils.z85.decode(server_secret))
+                            zmq.utils.z85.decode(server_secret)).decode('utf8')
 
 def _unpack_shared_secret(shared_secret):
     """Base64 decode, split and z85 encode the shared secret to produce the
@@ -205,22 +205,4 @@ class SecureContext(zmq.Context):
             instance = cls(io_threads, shared_secret=shared_secret)
             cls._instances[shared_secret] = instance
             return instance
-
-
-if __name__ == '__main__':
-    import time
-    shared_secret = generate_shared_secret()
-
-    server_context = SecureContext.instance(shared_secret=shared_secret)
-    server = server_context.socket(zmq.PULL)
-    port = server.bind_to_random_port('tcp://*')
-
-    client_context = SecureContext.instance(shared_secret=shared_secret)
-    client = client_context.socket(zmq.PUSH)
-    client.connect('tcp://localhost:%d' % port)
-
-    plaintext = os.urandom(100*1024**2)
-    start_time = time.time()
-    client.send(plaintext)
-    assert server.recv() == plaintext
-    print("time to encrypt/send/decrypt 100MB:", time.time() - start_time, 's')
+            

@@ -20,6 +20,7 @@ from zprocess import (ZMQServer, Process, TimeoutError,
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import _default_process_tree
+shared_secret = _default_process_tree.shared_secret
 from zprocess.security import SecureContext
 
 
@@ -128,7 +129,8 @@ class ProcessClassTests(unittest.TestCase):
 
     def setUp(self):
         """Create a subprocess with output redirection to a zmq port"""
-        self.redirection_sock = SecureContext.instance().socket(zmq.PULL)
+        context = SecureContext.instance(shared_secret=shared_secret)
+        self.redirection_sock = context.socket(zmq.PULL)
         redirection_port = self.redirection_sock.bind_to_random_port(
                                'tcp://127.0.0.1')
         self.process = TestProcess(redirection_port)
@@ -180,8 +182,9 @@ class HeartbeatServerTestProcess(Process):
     def run(self):
         # We'll send heartbeats of our own, independent of the HeartbeatClient
         # already running in this process:
-        import zmq
-        sock = zmq.Context.instance().socket(zmq.REQ)
+        shared_secret = self.process_tree.shared_secret
+        context = SecureContext.instance(shared_secret=shared_secret)
+        sock = context.socket(zmq.REQ)
         sock.setsockopt(zmq.LINGER, 0)
         server_port = self.from_parent.get()
         sock.connect('tcp://127.0.0.1:%s' % server_port)
@@ -204,7 +207,8 @@ class HeartbeatTests(unittest.TestCase):
         """Create a sock for output redirection and a zmq port to mock a heartbeat
         server"""
         import zmq
-        self.heartbeat_sock = zmq.Context.instance().socket(zmq.REP)
+        context = SecureContext.instance(shared_secret=shared_secret)
+        self.heartbeat_sock = context.socket(zmq.REP)
         heartbeat_port = self.heartbeat_sock.bind_to_random_port('tcp://127.0.0.1')
 
         class mock_heartbeat_server(object):
