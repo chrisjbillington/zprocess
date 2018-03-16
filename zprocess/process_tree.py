@@ -447,6 +447,7 @@ class ProcessTree(object):
 
         port_from_child = from_child.bind_to_random_port('tcp://127.0.0.1')
         to_self.connect('tcp://127.0.0.1:%s' % port_from_child)
+        port_to_child = to_child.bind_to_random_port('tcp://127.0.0.1')
         self._check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
@@ -464,6 +465,7 @@ class ProcessTree(object):
 
         child = subprocess.Popen([sys.executable, '-u', path,
                                   str(port_from_child),
+                                  str(port_to_child),
                                   str(self.heartbeat_server.port),
                                   repr(output_redirection_port),
                                   str(self.broker_in_port),
@@ -475,8 +477,7 @@ class ProcessTree(object):
         events = from_child.poll(15000)
         if not events:
             raise RuntimeError('child process did not connect within the timeout.')
-        port_to_child = from_child.recv().decode('utf8')
-        to_child.connect('tcp://127.0.0.1:%s' % port_to_child)
+        assert from_child.recv() == b'hello'
 
         to_child = WriteQueue(to_child)
         from_child = ReadQueue(from_child, to_self)
@@ -484,8 +485,9 @@ class ProcessTree(object):
         return to_child, from_child, child
 
     def _connect_to_parent(self, 
-        lock, port_to_parent, port_to_heartbeat_server, output_redirection_port,
-        broker_in_port, broker_out_port, zlock_process_identifier_prefix):
+        lock, port_to_parent, port_from_parent, port_to_heartbeat_server,
+        output_redirection_port, broker_in_port, broker_out_port,
+        zlock_process_identifier_prefix):
 
         # If a custom process identifier has been set in zlock, ensure we
         # inherit it:
@@ -506,11 +508,11 @@ class ProcessTree(object):
         from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
         to_self = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
 
-        port_from_parent = from_parent.bind_to_random_port('tcp://127.0.0.1')
-        to_self.connect('tcp://127.0.0.1:%s' % port_from_parent)
-
+        port_to_self = to_self.bind_to_random_port('tcp://127.0.0.1')
+        from_parent.connect('tcp://127.0.0.1:%d' % port_from_parent)
+        from_parent.connect('tcp://127.0.0.1:%d' % port_to_self)
         to_parent.connect("tcp://127.0.0.1:%s" % port_to_parent)
-        to_parent.send(str(port_from_parent).encode('utf8'))
+        to_parent.send(b'hello')
 
         self.from_parent = ReadQueue(from_parent, to_self)
         self.to_parent = WriteQueue(to_parent)
@@ -538,19 +540,20 @@ class ProcessTree(object):
     @classmethod
     def connect_to_parent(cls, lock=False):
         port_to_parent = int(sys.argv[1])
-        port_to_heartbeat_server = int(sys.argv[2])
-        output_redirection_port = ast.literal_eval(sys.argv[3])
-        broker_in_port = int(sys.argv[4])
-        broker_out_port = int(sys.argv[5])
-        zlock_process_identifier_prefix = sys.argv[6]
-        shared_secret = ast.literal_eval(sys.argv[7])
-        allow_insecure = ast.literal_eval(sys.argv[8])
+        port_from_parent = int(sys.argv[2])
+        port_to_heartbeat_server = int(sys.argv[3])
+        output_redirection_port = ast.literal_eval(sys.argv[4])
+        broker_in_port = int(sys.argv[5])
+        broker_out_port = int(sys.argv[6])
+        zlock_process_identifier_prefix = sys.argv[7]
+        shared_secret = ast.literal_eval(sys.argv[8])
+        allow_insecure = ast.literal_eval(sys.argv[9])
 
         process_tree = cls(shared_secret=shared_secret,
                            allow_insecure=allow_insecure)
 
         process_tree._connect_to_parent(
-            lock, port_to_parent, port_to_heartbeat_server,
+            lock, port_to_parent, port_from_parent, port_to_heartbeat_server,
             output_redirection_port, broker_in_port, broker_out_port,
             zlock_process_identifier_prefix)
 
