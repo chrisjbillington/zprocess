@@ -409,7 +409,7 @@ class Process(object):
         try:
             self.child.terminate()
             self.child.wait()
-        except WindowsError if os.name == 'nt' else None:
+        except OSError:
             pass  # process is already dead
 
     def run(self, *args, **kwargs):
