@@ -32,12 +32,17 @@ if not hasattr(zmq, 'curve_public'):
             return public_key
     else:
         # Old zeromq, use its crypto library function directly:
-        def _curve_public(secret_key):
-            public_key_bytes = b'0' * 40
-            secret_key_bytes = zmq.utils.z85.decode(secret_key)
-            _libzmq.crypto_scalarmult_base(public_key_bytes, secret_key_bytes)
-            return zmq.utils.z85.encode(public_key_bytes[:32])
-
+        if hasattr(_libzmq, 'crypto_scalarmult_base'):
+            def _curve_public(secret_key):
+                public_key_bytes = b'0' * 40
+                secret_key_bytes = zmq.utils.z85.decode(secret_key)
+                _libzmq.crypto_scalarmult_base(public_key_bytes, secret_key_bytes)
+                return zmq.utils.z85.encode(public_key_bytes[:32])
+        else:
+            # Old zeromq, and not built with libsodium. We can't proceed.
+            msg = ("Require zeromq >= 4.2.0, " +
+                   "or zeromq >= 4.0.0 built with libsodium")
+            raise ImportError(msg)
     zmq.curve_public = _curve_public
 
 
@@ -205,4 +210,3 @@ class SecureContext(zmq.Context):
             instance = cls(io_threads, shared_secret=shared_secret)
             cls._instances[shared_secret] = instance
             return instance
-            
