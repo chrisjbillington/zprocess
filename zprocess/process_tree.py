@@ -486,7 +486,7 @@ class ProcessTree(object):
                           zlock_process_identifier_prefix,
                       }
 
-        child = subprocess.Popen([sys.executable, '-u', path,
+        child = subprocess.Popen([sys.executable, path,
                                   '--zprocess-parentinfo', json.dumps(parentinfo)])
         # The child has 15 seconds to connect to us:
         events = from_child.poll(15000)
