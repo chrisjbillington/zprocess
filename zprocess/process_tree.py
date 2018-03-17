@@ -580,10 +580,8 @@ class ProcessTree(object):
 
 # Backwards compatability follows:
 
-# A default process tree for all out backward compat functions to work with. We
-# generate a random shared secret, which will be inherited by child processes.
-_default_process_tree = ProcessTree(zprocess.security.generate_shared_secret(),
-                                    allow_insecure=False)
+# A default process tree for all out backward compat functions to work with:
+_default_process_tree = ProcessTree(allow_insecure=True)
 
 # Allow instantiating an Event without a ProcessTree as the first argument,
 # insert a default ProcessTree:
