@@ -4,7 +4,6 @@
 from __future__ import unicode_literals, print_function, division
 
 import unittest
-import pytest
 
 import sys
 import os
