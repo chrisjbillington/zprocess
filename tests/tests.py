@@ -4,6 +4,7 @@
 from __future__ import unicode_literals, print_function, division
 
 import unittest
+import pytest
 
 import sys
 import os
@@ -16,7 +17,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from zprocess import (ZMQServer, Process, TimeoutError,
-                      raise_exception_in_thread, zmq_get, zmq_push)
+                      raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import _default_process_tree
@@ -25,7 +26,7 @@ from zprocess.security import SecureContext
 
 
 class TestError(Exception):
-            pass
+    pass
 
 
 class RaiseExceptionInThreadTest(unittest.TestCase):
@@ -325,6 +326,38 @@ class ClientServerTests(unittest.TestCase):
                 clientserver.raise_exception_in_thread = raise_exception_in_thread
         finally:
             server.shutdown()
+
+    def test_raw_server(self):
+        class MyServer(ZMQServer):
+            def handler(self, data):
+                if data == b'error':
+                    raise TestError
+                return data
+
+        for argname in ["dtype", "type", "positional"]:
+            if argname == 'dtype':
+                server = MyServer(8000, dtype='raw',
+                                  bind_address='tcp://127.0.0.1')
+            elif argname == 'type':
+                server = MyServer(8000, type='raw',
+                                  bind_address='tcp://127.0.0.1')
+            elif argname == 'positional':
+                server = MyServer(8000, 'raw',
+                                  bind_address='tcp://127.0.0.1')
+            try:
+                self.assertIsInstance(server.context, SecureContext)
+                response = zmq_get_raw(8000, data=b'hello!')
+                self.assertEqual(response, b'hello!')
+
+                # Ignore the exception in the other thread:
+                clientserver.raise_exception_in_thread =  lambda *args: None
+                try:
+                    self.assertIn(b'TestError', zmq_get_raw(8000, data=b'error'))
+                finally:
+                    clientserver.raise_exception_in_thread = \
+                        raise_exception_in_thread
+            finally:
+                server.shutdown()
 
     def test_pull_server(self):
 
