@@ -38,15 +38,14 @@ if PY2:
 
 
 def _typecheck_or_convert_data(data, dtype):
-    """Utility function to check that messages are the valid type to be sent,
-    for the send_type (one of 'pyobj', 'multipart', 'string', or 'raw').
-    Returns converted data or raises TypeError. Only conversion done is to
-    wrap single bytes objects into a single-element list for multipart
-    messages. We *do not* do auto encoding of strings here. Strings can't be
-    sent by raw and multipart sends, so yes, they need to be encoded, but we
-    can't to auto *decoding* on the other end, because the data may not
-    represent text - it might just be bytes. So we prefer symmetry and so
-    don't encode here."""
+    """Utility function to check that messages are the valid type to be sent, for
+    the dtype (one of 'pyobj', 'multipart', 'string', or 'raw'). Returns converted
+    data or raises TypeError. Only conversion done is to wrap single bytes objects
+    into a single-element list for multipart messages. We *do not* do auto encoding
+    of strings here. Strings can't be sent by raw and multipart sends, so yes, they
+    need to be encoded, but we can't to auto *decoding* on the other end, because
+    the data may not represent text - it might just be bytes. So we prefer symmetry
+    and so don't encode here."""
     # when not using python objects, a null message should be an empty string:
     if data is None and dtype in ['raw', 'multipart']:
         data = b''
@@ -303,9 +302,16 @@ class ZMQClient(object):
 _ZMQServer = ZMQServer
 class ZMQServer(_ZMQServer):
     """Wrapper around a zmq.REP or zmq.PULL socket"""
-    def __init__(self, port, dtype='pyobj', pull_only=False, 
+    def __init__(self, port, dtype=None, pull_only=False, 
                  bind_address='tcp://0.0.0.0', shared_secret=None,
-                 allow_insecure=True):
+                 allow_insecure=True, **kwargs):
+        # Allow old kwarg "type" instead of "dtype":
+        if 'type' in kwargs:
+            dtype = kwargs.pop('type')
+            if kwargs:
+                raise ValueError('too many keyword arguments')
+        elif dtype is None:
+            dtype = 'pyobj'
         _ZMQServer.__init__(self, port, dtype=dtype, pull_only=pull_only,
                             bind_address=bind_address,
                             shared_secret=shared_secret,
