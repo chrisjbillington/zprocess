@@ -1,5 +1,6 @@
 from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
+PY2 = sys.version_info.major == 2
 import os
 import threading
 import subprocess
@@ -19,6 +20,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
     sys.path.insert(0, _path)
 
 import zprocess
+from zprocess.clientserver import ZMQClient
 from zprocess.security import SecureContext
 from zprocess.utils import TimeoutError
 
@@ -181,7 +183,8 @@ class Event(object):
             # until all subscription messages processed", which is all we're really
             # doing.
             unique_id = os.urandom(32)
-            self.sub.setsockopt(zmq.SUBSCRIBE, EventBroker.WELCOME_MESSAGE + unique_id)
+            self.sub.setsockopt(zmq.SUBSCRIBE,
+                                EventBroker.WELCOME_MESSAGE + unique_id)
             # Allow 5 seconds to connect to the Broker:
             events = self.sub.poll(flags=zmq.POLLIN, timeout=5000)
             if not events:
@@ -352,7 +355,8 @@ class Process(object):
     rather than by forking (or imitation forking as in Windows). Do not override
     its methods other than run()."""
 
-    def __init__(self, process_tree, output_redirection_port=None):
+    def __init__(self, process_tree, output_redirection_port=None,
+                 remote_process_client=None):
         self._redirection_port = output_redirection_port
         self.process_tree = process_tree
         self.to_child = None
@@ -361,7 +365,7 @@ class Process(object):
         self.to_parent = None
         self.from_parent = None
         self.kill_lock = None
-        
+        self.remote_process_client = remote_process_client
 
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and
@@ -369,7 +373,8 @@ class Process(object):
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             'process_class_wrapper.py')
         child_details = self.process_tree.subprocess(path,
-                            output_redirection_port=self._redirection_port)
+                            output_redirection_port=self._redirection_port,
+                            remote_process_client=self.remote_process_client)
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
@@ -418,6 +423,64 @@ class Process(object):
         pass
 
 
+class RemoteChildProxy(object):
+    def __init__(self, remote_process_client, pid):
+        """Class to wrap operations on a remote subprocess"""
+        self.client = remote_process_client
+        self.pid = pid
+
+    def terminate(self):
+        return self.client.request('terminate', self.pid)
+
+    def kill(self):
+        return self.client.request('kill', self.pid)
+
+    def wait(self, timeout=None):
+        # The server will only do 0.01 second timeouts at a time to not be blocked
+        # from other requests, so we will make requests at 0.1 second intervals to
+        # reach whatever the requested timeout was:
+        if timeout is not None:
+            end_time = time.time() + timeout
+        while True:
+            try:
+                return self.client.request('wait', self.pid)
+            except TimeoutError:
+                if timeout is not None and time.time() > end_time:
+                    raise
+                else:
+                    time.sleep(0.1)
+
+    def poll(self):
+        return self.client.request('poll', self.pid)
+
+    @property
+    def returncode(self):
+        return self.client.request('returncode', self.pid)
+
+    def __del__(self):
+        print('del!')
+        self.client.request('__del__', self.pid)
+
+
+class RemoteProcessClient(zprocess.clientserver.ZMQClient):
+    """A class to represent communication with a RemoteProcessServer"""
+    def __init__(self, host, port=7340, shared_secret=None, allow_insecure=False):
+        zprocess.clientserver.ZMQClient.__init__(self, shared_secret=shared_secret,
+                                                 allow_insecure=allow_insecure)
+        self.host = host
+        self.port = port
+        self.shared_secret = shared_secret
+
+    def request(self, command, *args, **kwargs):
+        return self.get(self.port, host=self.host,
+                        data=[command, args, kwargs],
+                        timeout=5)
+
+    def Popen(self, command):
+        pid = self.request('Popen', command)
+        return RemoteChildProxy(self, pid)
+
+
 class ProcessTree(object):
     def __init__(self, shared_secret=None, allow_insecure=False):
         self.shared_secret = shared_secret
@@ -446,7 +509,8 @@ class ProcessTree(object):
         self._check_broker()
         return Event(self, event_name, role=role)
 
-    def subprocess(self, path, output_redirection_port=None):
+    def subprocess(self, path, output_redirection_port=None,
+                   remote_process_client=None):
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
@@ -486,8 +550,14 @@ class ProcessTree(object):
                           zlock_process_identifier_prefix,
                       }
 
-        child = subprocess.Popen([sys.executable, path,
-                                  '--zprocess-parentinfo', json.dumps(parentinfo)])
+        command = [sys.executable, os.path.abspath(path),
+                   '--zprocess-parentinfo', json.dumps(parentinfo)]
+
+        if remote_process_client is None:
+            child = subprocess.Popen(command)
+        else:
+            child = remote_process_client.Popen(command)
+
         # The child has 15 seconds to connect to us:
         events = from_child.poll(15000)
         if not events:
@@ -631,3 +701,11 @@ def subprocess_with_queues(path, output_redirection_port=None):
 
 __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
            'subprocess_with_queues', 'Event']
+
+
+if __name__ == '__main__':
+    def foo():
+        remote_client = RemoteProcessClient('localhost', allow_insecure=True)
+        to_child, from_child, child = _default_process_tree.subprocess(
+            'test_remote.py', remote_process_client=remote_client)
+    foo()
