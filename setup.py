@@ -17,13 +17,13 @@ VERSION = '2.4.5'
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
     f.write("__version__ = '%s'\n"%VERSION)
 
-dependencies = ['pyzmq', 'ipaddress']
+dependencies = ['pyzmq']
 
 import sys
 if sys.version_info.major == 2:
-    # The backported module:
+    # Backported modules:
     dependencies.append('ipaddress')
-
+    dependencies.append('subprocess32')
 
 setup(name='zprocess',
       version=VERSION,
