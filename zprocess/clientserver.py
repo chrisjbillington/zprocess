@@ -173,7 +173,7 @@ class ZMQServer(object):
                     # Send the error to the client:
                     msg = ("The server had an unhandled exception whilst " + 
                            "processing the request:\n%s" % str(exception_string))
-                    response_data = zmq.ZMQError(msg)
+                    response_data = exc_info[0](msg)
                     if self.dtype == 'raw':
                         response_data = str(response_data).encode('utf8')
                     elif self.dtype == 'multipart':
