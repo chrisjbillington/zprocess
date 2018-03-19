@@ -319,7 +319,7 @@ class ClientServerTests(unittest.TestCase):
             # Ignore the exception in the other thread:
             clientserver.raise_exception_in_thread =  lambda *args: None
             try:
-                with self.assertRaises(zmq.error.ZMQError):
+                with self.assertRaises(TestError):
                     zmq_get(8000, data='error')
             finally:
                 clientserver.raise_exception_in_thread = raise_exception_in_thread
