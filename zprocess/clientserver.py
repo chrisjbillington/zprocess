@@ -47,7 +47,7 @@ def _typecheck_or_convert_data(data, dtype):
     the data may not represent text - it might just be bytes. So we prefer symmetry
     and so don't encode here."""
     # when not using python objects, a null message should be an empty string:
-    if data is None and dtype in ['raw', 'multipart']:
+    if data is None and dtype in ['raw', 'multipart', 'string']:
         data = b''
     if dtype == 'multipart' and isinstance(data, bytes):
         # Wrap up a single string into a list so it doesn't get sent
