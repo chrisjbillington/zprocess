@@ -6,16 +6,16 @@
 pipelines:
   default:
     - step:
-      name: py2_tests
-      image: python:2.7.12
+        name: py2_tests
+        image: python:2.7.12
         caches:
           - pip
         script:
           - pip install -e .
           - python tests/tests.py
     - step:
-      name: py3_tests
-      image: python:3.6.4
+        name: py3_tests
+        image: python:3.6.4
         caches:
           - pip
         script:
