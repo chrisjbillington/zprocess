@@ -13,13 +13,14 @@
 
 from __future__ import division, unicode_literals, print_function, absolute_import
 
+import sys
 import os
 import socket
 import threading
 import time
 import weakref
-import six
-if six.PY2:
+PY2 = sys.version_info.major == 2
+if PY2:
     str = unicode
 import zmq
 
