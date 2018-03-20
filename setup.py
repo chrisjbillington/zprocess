@@ -11,7 +11,7 @@
 from setuptools import setup
 import os
 
-VERSION = '2.4.5'
+VERSION = '2.4.6'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
