@@ -556,6 +556,7 @@ class ProcessTree(object):
         if remote_process_client is None:
             child = subprocess.Popen(command)
         else:
+            raise NotImplementedError("This feature is not yet complete")
             child = remote_process_client.Popen(command)
 
         # The child has 15 seconds to connect to us:

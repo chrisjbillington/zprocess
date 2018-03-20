@@ -12,38 +12,41 @@ import zmq.auth.thread
 if sys.version_info[0] == 2:
     str = unicode
 
-if not zmq.zmq_version_info() >= (4, 0, 0):
-    raise ImportError('Require libzmq >= 4.0')
+def _check_versions():
+    if not zmq.zmq_version_info() >= (4, 0, 0):
+        raise ImportError('Require libzmq >= 4.0')
 
-_libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
-if not hasattr(_libzmq, 'sodium_init'):
-    msg = ('zprocess warning: libzmq not built with libsodium. ' +
-           'Encryption/decryption will be slow. If on Windows, ' +
-           'use conda zeromq/pyzmq packages for fast crypto.\n')
-    sys.stderr.write(msg)
+    _libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
+    if not hasattr(_libzmq, 'sodium_init'):
+        msg = ('zprocess warning: libzmq not built with libsodium. ' +
+               'Encryption/decryption will be slow. If on Windows, ' +
+               'use conda zeromq/pyzmq packages for fast crypto.\n')
+        sys.stderr.write(msg)
 
-if not hasattr(zmq, 'curve_public'):
-    # Access the function via ctypes if not in pyzmq:
-    if hasattr(_libzmq, 'zmq_curve_public'):
-        # Use the zeromq function
-        def _curve_public(secret_key):
-            public_key = b'0' * 40
-            zmq.error._check_rc(_libzmq.zmq_curve_public(public_key, secret_key))
-            return public_key
-    else:
-        # Old zeromq, use its crypto library function directly:
-        if hasattr(_libzmq, 'crypto_scalarmult_base'):
+    if not hasattr(zmq, 'curve_public'):
+        # Access the function via ctypes if not in pyzmq:
+        if hasattr(_libzmq, 'zmq_curve_public'):
+            # Use the zeromq function
             def _curve_public(secret_key):
-                public_key_bytes = b'0' * 40
-                secret_key_bytes = zmq.utils.z85.decode(secret_key)
-                _libzmq.crypto_scalarmult_base(public_key_bytes, secret_key_bytes)
-                return zmq.utils.z85.encode(public_key_bytes[:32])
+                public_key = b'0' * 40
+                zmq.error._check_rc(_libzmq.zmq_curve_public(public_key,
+                                                             secret_key))
+                return public_key
         else:
-            # Old zeromq, and not built with libsodium. We can't proceed.
-            msg = ("Require zeromq >= 4.2.0, " +
-                   "or zeromq >= 4.0.0 built with libsodium")
-            raise ImportError(msg)
-    zmq.curve_public = _curve_public
+            # Old zeromq, use its crypto library function directly:
+            if hasattr(_libzmq, 'crypto_scalarmult_base'):
+                def _curve_public(secret_key):
+                    public_key_bytes = b'0' * 40
+                    secret_key_bytes = zmq.utils.z85.decode(secret_key)
+                    _libzmq.crypto_scalarmult_base(public_key_bytes,
+                                                   secret_key_bytes)
+                    return zmq.utils.z85.encode(public_key_bytes[:32])
+            else:
+                # Old zeromq, and not built with libsodium. We can't proceed.
+                msg = ("Require zeromq >= 4.2.0, " +
+                       "or zeromq >= 4.0.0 built with libsodium")
+                raise ImportError(msg)
+        zmq.curve_public = _curve_public
 
 
 class InsecureConnection(RuntimeError):
@@ -66,6 +69,7 @@ def generate_shared_secret():
     encoding, and return the result as a base64 encoded unicode string as suitable
     for passing to SecureContext() or storing on disk. We use base64 because it is
     more compatible with Python config files than z85."""
+    _check_versions()
     _, client_secret = zmq.curve_keypair()
     _, server_secret = zmq.curve_keypair()
     return base64.b64encode(zmq.utils.z85.decode(client_secret) + 
@@ -187,6 +191,7 @@ class SecureContext(zmq.Context):
     def __init__(self, io_threads=1, shared_secret=None):
         zmq.Context.__init__(self, io_threads)
         if shared_secret is not None:
+            _check_versions()
             keys = _unpack_shared_secret(shared_secret)
             self.client_secretkey, self.server_secretkey = keys
             self.client_publickey = zmq.curve_public(self.client_secretkey)
