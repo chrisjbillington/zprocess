@@ -6,11 +6,14 @@ from __future__ import unicode_literals, print_function, division
 import unittest
 
 import sys
+PY2 = sys.version_info.major == 2
 import os
 import time
 import threading
 
 import zmq
+
+import xmlrunner
 
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
@@ -422,9 +425,7 @@ class ClientServerTests(unittest.TestCase):
             server.shutdown()
 
 if __name__ == '__main__':
-    if os.getenv('BITBUCKET_BUILD_NUMBER') is not None:
-        import xmlrunner
-        unittest.main(verbosity=3,
-                      testRunner=xmlrunner.XMLTestRunner(output='test-reports'))
-    else:
-        unittest.main(verbosity=2)
+    output = 'test-reports'
+    if PY2:
+        output = output.encode('utf8')
+    unittest.main(verbosity=3, testRunner=xmlrunner.XMLTestRunner(output=output))
