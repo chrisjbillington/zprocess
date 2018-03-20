@@ -2,15 +2,22 @@
 # Check our guides at https://confluence.atlassian.com/x/x4UWN for more examples.
 # Only use spaces to indent your .yml configuration.
 # -----
-# You can specify a custom docker image from Docker Hub as your build environment.
-image: python:3.5.1
 
 pipelines:
   default:
     - step:
+      name: py2_tests
+      image: python:2.7.12
         caches:
           - pip
-        script: # Modify the commands below to build your repository.
+        script:
           - pip install -e .
-          - pip install xmlrunner
+          - python tests/tests.py
+    - step:
+      name: py3_tests
+      image: python:3.6.4
+        caches:
+          - pip
+        script:
+          - pip install -e .
           - python tests/tests.py

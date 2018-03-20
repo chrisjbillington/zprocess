@@ -17,7 +17,7 @@ VERSION = '2.4.6'
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
     f.write("__version__ = '%s'\n"%VERSION)
 
-dependencies = ['pyzmq']
+dependencies = ['pyzmq', 'xmlrunner']
 
 import sys
 if sys.version_info.major == 2:
