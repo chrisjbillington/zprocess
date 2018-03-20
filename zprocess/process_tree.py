@@ -160,12 +160,12 @@ class Event(object):
         self.can_wait = self.role in ['wait', 'both']
         self.can_post = self.role in ['post', 'both']
         context = SecureContext.instance(shared_secret=process_tree.shared_secret)
+        broker_ip = gethostbyname(process_tree.broker_host)
         if self.can_wait:
             self.sub = context.socket(zmq.SUB,
                                       allow_insecure=process_tree.allow_insecure)
             self.sub.set_hwm(1000)
             self.sub.setsockopt(zmq.SUBSCRIBE, self._encoded_event_name)
-            broker_ip = gethostbyname(process_tree.broker_host)
             self.sub.connect(
                 'tcp://{}:{}'.format(broker_ip, process_tree.broker_out_port))
             # Request a welcome message from the broker confirming it receives this
@@ -199,7 +199,8 @@ class Event(object):
         if self.can_post:
             self.push = context.socket(zmq.PUSH,
                                        allow_insecure=process_tree.allow_insecure)
-            self.push.connect('tcp://127.0.0.1:%s' % process_tree.broker_in_port)
+            self.push.connect(
+                'tcp://{}:{}'.format(broker_ip, process_tree.broker_in_port))
             self.pushlock = threading.Lock()
 
     def post(self, identifier, data=None):
@@ -675,6 +676,12 @@ class Process(_Process):
         if not args or not isinstance(args[0], ProcessTree):
             args = (_default_process_tree,) + args
         _Process.__init__(self, *args, **kwargs)
+        
+    def _run(self):
+        # Set the process tree as the default for this process:
+        global _default_process_tree
+        _default_process_tree = self.process_tree
+        _Process._run(self)
 
 # New way is to call ProcessTree.connect_to_parent(lock) and get back a
 # ProcessTree. This is the old way, returning queues and (optionally) a lock
