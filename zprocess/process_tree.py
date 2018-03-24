@@ -296,9 +296,35 @@ class ReadQueue(object):
             self.to_self_sock.send_pyobj(obj, protocol=zprocess.PICKLE_PROTOCOL)
 
 
+class StreamProxy(object):
+    def __init__(self, fd):
+        self.fd = fd
+
+    def write(self, s):
+        if isinstance(s, str):
+            s = s.encode('utf8')
+        os.write(self.fd, s)
+
+    def close(self):
+        os.close(self.fd)
+
+    def fileno(self):
+        return self.fd
+
+    def isatty(self):
+        return False
+
+
 class OutputInterceptor(object):
-    """Redirect stderr or stdout to a zmq PUSH socket"""
-    threadlocals_by_server = weakref.WeakValueDictionary()
+    """Redirect stderr and stdout to a zmq PUSH socket"""
+
+    # TODO: singleton, ignore streamname.
+    #    on Windows, use pipes instead of fifos
+    #    and a single socket per thread as before to
+    #    send data. Send data directly on write() calls,
+    #    leaving the mainloop for C and other stuff
+    #    which will just have to be unsynced.
+
 
     def __init__(self, host, port, streamname='stdout',
                  shared_secret=None, allow_insecure=False):
@@ -306,49 +332,101 @@ class OutputInterceptor(object):
         self.ip = gethostbyname(host)
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
-        self.streamname = streamname
-        self.real_stream = getattr(sys, streamname)
-        self.fileno = self.real_stream.fileno
         self.context = SecureContext.instance(shared_secret=shared_secret)
-        # All instances connected to the same server will share a threadlocal
-        # object. This way two (or more) instances called from the same thread
-        # will be using the same zmq socket, and hence, their messages will
-        # arrive in order.
-        if (self.ip, port) not in self.threadlocals_by_server:
-            self.local = threading.local()
-            self.threadlocals_by_server[(self.ip, port)] = self.local
-        self.local = self.threadlocals_by_server[(self.ip, port)]
 
-    def new_socket(self):
-        # One socket per thread, so we don't have to acquire a lock to send:
-        self.local.sock = self.context.socket(zmq.PUSH,
-                                              allow_insecure=self.allow_insecure)
-        self.local.sock.setsockopt(zmq.LINGER, 0)
-        self.local.sock.connect('tcp://%s:%d' % (self.ip, self.port))
+        self.orig_stdout_fd = None
+        self.orig_stderr_fd = None
+        self.stdout_read_pipe_fd = None
+        self.stderr_read_pipe_fd = None
+        self.stdout_write_pipe_fd = None
+        self.stderr_write_pipe_fd = None
+        self.mainloop_thread = None
+
+    def _flush_all(self):
+        """Flush the C level file pointers for stdout and stdin. This should be
+        done before closing their file descriptors"""
+        import ctypes
+        if os.name == 'nt':
+            libc = ctypes.cdll.msvcrt
+            # In windows you flush all output streams by calling flush on NULL:
+            c_stdout_ptr = c_stderr_ptr = ctypes.c_void_p()
+        else:
+            libc = ctypes.CDLL(None)
+            try:
+                c_stdout_ptr = ctypes.c_void_p.in_dll(libc, 'stdout')
+                c_stderr_ptr = ctypes.c_void_p.in_dll(libc, 'stderr')
+            except ValueError:
+                c_stdout_ptr = ctypes.c_void_p.in_dll(libc, '__stdoutp')
+                c_stderr_ptr = ctypes.c_void_p.in_dll(libc, '__stderrp')
+        libc.fflush(c_stdout_ptr)
+        libc.fflush(c_stderr_ptr)
 
     def connect(self):
-        setattr(sys, self.streamname, self)
+        if sys.stdout is not None:
+            self.orig_stdout_fd = os.dup(sys.stdout.fileno())
+            self.orig_stderr_fd = os.dup(sys.stderr.fileno())
+        if sys.stdout is None:
+            stdout_fd = 1
+        else:
+            stdout_fd = sys.stdout.fileno()
+        if sys.stderr is None:
+            stderr_fd = 2
+        else:
+            stderr_fd = sys.stderr.fileno()
+        # self.read_pipe_fd, self.write_pipe_fd = os.pipe()
+        try:
+            os.mkfifo('test.stdout.fifo')
+        except OSError:
+            pass
+        try:
+            os.mkfifo('test.stderr.fifo')
+        except OSError:
+            pass
+        self.mainloop_thread = threading.Thread(target=self.mainloop)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
+        self.stdout_write_pipe_fd = os.open('test.stdout.fifo', os.O_WRONLY)
+        self.stderr_write_pipe_fd = os.open('test.stderr.fifo', os.O_WRONLY)
+        self._flush_all()
+        os.dup2(self.stdout_write_pipe_fd, stdout_fd)
+        os.dup2(self.stderr_write_pipe_fd, stderr_fd)
+        sys.stdout = StreamProxy(self.stdout_write_pipe_fd)
+        sys.stderr = StreamProxy(self.stderr_write_pipe_fd)
 
     def disconnect(self):
-        setattr(sys, self.streamname, self.real_stream)
-
-    def write(self, s):
-        if not hasattr(self.local, 'sock'):
-            self.new_socket()
-        if isinstance(s, str):
-            s = s.encode('utf8')
-        self.local.sock.send_multipart([self.streamname.encode('utf8'), s])
-
-    def close(self):
-        self.disconnect()
-        self.real_stream.close()
-
-    def flush(self):
-        pass
-
-    def isatty(self):
-        return False
-
+        if self.orig_stdout_fd is not None:
+            os.dup2(self.orig_stdout_fd, sys.__stdout__.fileno())
+        if self.orig_stderr_fd is not None:
+            os.dup2(self.orig_stderr_fd, sys.__stderr__.fileno())
+        self._flush_all()
+        sys.stdout.close()
+        sys.stderr.close()
+        self.mainloop_thread.join()
+        sys.stdout = os.fdopen(self.orig_stdout_fd, 'w')
+        sys.stderr = os.fdopen(self.orig_stderr_fd, 'w')
+        
+    def mainloop(self):
+        stdout_read_pipe_fd = os.open('test.stdout.fifo', os.O_RDONLY)
+        stderr_read_pipe_fd = os.open('test.stderr.fifo', os.O_RDONLY)
+        sock = self.context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
+        sock.setsockopt(zmq.LINGER, 0)
+        sock.connect('tcp://%s:%d' % (self.ip, self.port))
+        import select
+        open_fds = [stdout_read_pipe_fd, stderr_read_pipe_fd]
+        while open_fds:
+            ready, _, _ = select.select(open_fds, [], [])
+            for fd in ready:
+                if fd == stdout_read_pipe_fd:
+                    streamname = b'stdout'
+                else:
+                    streamname = b'stderr'
+                s = os.read(fd, 4096)
+                sock.send_multipart([streamname, s])
+                if not s:
+                    os.close(fd)
+                    open_fds.remove(fd)
+        sock.close()
+            
 
 class Process(object):
     """A class providing similar functionality to multiprocessing.Process, but
@@ -712,8 +790,34 @@ __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
 
 
 if __name__ == '__main__':
-    def foo():
-        remote_client = RemoteProcessClient('localhost', allow_insecure=True)
-        to_child, from_child, child = _default_process_tree.subprocess(
-            'test_remote.py', remote_process_client=remote_client)
-    foo()
+    # def foo():
+    #     remote_client = RemoteProcessClient('localhost', allow_insecure=True)
+    #     to_child, from_child, child = _default_process_tree.subprocess(
+    #         'test_remote.py', remote_process_client=remote_client)
+    # foo()
+
+    context = SecureContext()
+    sock = context.socket(zmq.PULL)
+    port = sock.bind_to_random_port('tcp://127.0.0.1')
+    # print('1. hello!')
+    interceptor = OutputInterceptor('localhost', port, 'stdout')
+    # interceptor2 = OutputInterceptor('localhost', port, 'stderr')
+    interceptor.connect()
+    # interceptor2.connect()
+    for i in range(10):
+        sys.stdout.write('1\n')
+        sys.stderr.write('2\n')
+        os.system('echo hello')
+
+    # print('2. hello')
+    # os.system('echo hello')
+    interceptor.disconnect()
+    # interceptor2.disconnect()
+    print('3. hello')
+
+    while True:
+        data = sock.recv_multipart()
+        if data[0] == b'stdout':
+            sys.stdout.write(data[1])
+        else:
+            sys.stderr.write(data[1])
