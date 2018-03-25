@@ -389,9 +389,20 @@ class OutputInterceptor(object):
             stderr_fd = sys.stderr.fileno()
         self.stdout_read_pipe_fd, self.stdout_write_pipe_fd = os.pipe()
         self.stderr_read_pipe_fd, self.stderr_write_pipe_fd = os.pipe()
-        self.mainloop_thread = threading.Thread(target=self.mainloop)
-        self.mainloop_thread.daemon = True
-        self.mainloop_thread.start()
+        # self.mainloop_thread = threading.Thread(target=self.mainloop)
+        # self.mainloop_thread.daemon = True
+        # self.mainloop_thread.start()
+
+        self.stdout_mainloop_thread = threading.Thread(target=self.mainloop2,
+                                          args=(self.stdout_read_pipe_fd,))
+        self.stdout_mainloop_thread.daemon = True
+        self.stdout_mainloop_thread.start()
+        self.stderr_mainloop_thread = threading.Thread(target=self.mainloop2,
+                                          args=(self.stderr_read_pipe_fd,))
+        self.stderr_mainloop_thread.daemon = True
+        self.stderr_mainloop_thread.start()
+
+
         self._flush_all()
         os.dup2(self.stdout_write_pipe_fd, stdout_fd)
         os.dup2(self.stderr_write_pipe_fd, stderr_fd)
@@ -408,7 +419,9 @@ class OutputInterceptor(object):
         self._flush_all()
         sys.stdout.close()
         sys.stderr.close()
-        self.mainloop_thread.join()
+        # self.mainloop_thread.join()
+        self.stdout_mainloop_thread.join()
+        self.stderr_mainloop_thread.join()
         sys.stdout = os.fdopen(self.orig_stdout_fd, 'w')
         sys.stderr = os.fdopen(self.orig_stderr_fd, 'w')
         
@@ -429,7 +442,28 @@ class OutputInterceptor(object):
                         open_fds.remove(fd)
                         break
                     self.sock.send_multipart([streamname, s])
-            
+
+    def mainloop2(self, fd):
+        self._print(str(fd) + '1')
+        if fd == self.stdout_read_pipe_fd:
+            streamname = b'stdout'
+        else:
+            streamname = b'stderr'
+        self._print(str(fd) + ' 2')
+        while True:
+            self._print(str(fd) + '3')
+            s = os.read(fd, 4096)
+            self._print(str(fd) + '4')
+            with self.socklock:
+                if not s:
+                    os.close(fd)
+                    break
+                self.sock.send_multipart([streamname, s])
+
+    def _print(self, s):
+        if isinstance(s, str):
+            s = s.encode('utf8')
+        os.write(self.orig_stdout_fd, s + b'\n')
 
 class Process(object):
     """A class providing similar functionality to multiprocessing.Process, but
