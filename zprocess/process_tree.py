@@ -306,12 +306,17 @@ class StreamProxy(object):
     def write(self, s):
         if isinstance(s, str):
             s = s.encode('utf8')
-        if 1: #os.name == 'nt':
+            # This increases the odds that previous output from C or a subprocess
+            # will have been processed by OutputInterceptor.mainloop(), preserving
+            # the order of output. This is no guarantee, but is the best we can do
+            # if we want to be able to capture output from C and subprocesses
+            # whilst distinguishing between stdout and stderr without doing
+            # LD_PRELOAD tricks.
             time.sleep(0.001)
-            with self.socklock:
-                self.sock.send_multipart([self.streamname, s])
-        else:
-            os.write(self.fd, s)
+        with self.socklock:
+            self.sock.send_multipart([self.streamname, s])
+        # else:
+        #     os.write(self.fd, s)
 
     def close(self):
         os.close(self.fd)
@@ -322,18 +327,12 @@ class StreamProxy(object):
     def isatty(self):
         return False
 
+# TODO: Socks and locks by server. Do not allow multiple instances active at once
+# for the same stream. Error check the connect and disconnect methods so that they
+# have to occur in order. Then test on Windows, then done!
 
 class OutputInterceptor(object):
     """Redirect stderr and stdout to a zmq PUSH socket"""
-
-    # TODO: singleton, ignore streamname.
-    #    on Windows, use pipes instead of fifos
-    #    and a single socket per thread as before to
-    #    send data. Send data directly on write() calls,
-    #    leaving the mainloop for C and other stuff
-    #    which will just have to be unsynced.
-
-
     def __init__(self, host, port, streamname='stdout',
                  shared_secret=None, allow_insecure=False):
         self.port = port
@@ -348,7 +347,8 @@ class OutputInterceptor(object):
         self.stderr_read_pipe_fd = None
         self.stdout_write_pipe_fd = None
         self.stderr_write_pipe_fd = None
-        self.mainloop_thread = None
+        self.stdout_mainloop_thread = None
+        self.stderr_mainloop_thread = None
 
         self.sock = self.context.socket(zmq.PUSH,
                                         allow_insecure=self.allow_insecure)
@@ -361,15 +361,18 @@ class OutputInterceptor(object):
         done before closing their file descriptors"""
         import ctypes
         if os.name == 'nt':
+            # Windows:
             libc = ctypes.cdll.msvcrt
             # In windows you flush all output streams by calling flush on NULL:
             c_stdout_ptr = c_stderr_ptr = ctypes.c_void_p()
         else:
             libc = ctypes.CDLL(None)
             try:
+                # Linux:
                 c_stdout_ptr = ctypes.c_void_p.in_dll(libc, 'stdout')
                 c_stderr_ptr = ctypes.c_void_p.in_dll(libc, 'stderr')
             except ValueError:
+                # MacOS:
                 c_stdout_ptr = ctypes.c_void_p.in_dll(libc, '__stdoutp')
                 c_stderr_ptr = ctypes.c_void_p.in_dll(libc, '__stderrp')
         libc.fflush(c_stdout_ptr)
@@ -389,15 +392,12 @@ class OutputInterceptor(object):
             stderr_fd = sys.stderr.fileno()
         self.stdout_read_pipe_fd, self.stdout_write_pipe_fd = os.pipe()
         self.stderr_read_pipe_fd, self.stderr_write_pipe_fd = os.pipe()
-        # self.mainloop_thread = threading.Thread(target=self.mainloop)
-        # self.mainloop_thread.daemon = True
-        # self.mainloop_thread.start()
 
-        self.stdout_mainloop_thread = threading.Thread(target=self.mainloop2,
+        self.stdout_mainloop_thread = threading.Thread(target=self.mainloop,
                                           args=(self.stdout_read_pipe_fd,))
         self.stdout_mainloop_thread.daemon = True
         self.stdout_mainloop_thread.start()
-        self.stderr_mainloop_thread = threading.Thread(target=self.mainloop2,
+        self.stderr_mainloop_thread = threading.Thread(target=self.mainloop,
                                           args=(self.stderr_read_pipe_fd,))
         self.stderr_mainloop_thread.daemon = True
         self.stderr_mainloop_thread.start()
@@ -412,58 +412,31 @@ class OutputInterceptor(object):
                                  self.socklock, b'stderr')
 
     def disconnect(self):
+        self._flush_all()
         if self.orig_stdout_fd is not None:
             os.dup2(self.orig_stdout_fd, sys.__stdout__.fileno())
         if self.orig_stderr_fd is not None:
             os.dup2(self.orig_stderr_fd, sys.__stderr__.fileno())
-        self._flush_all()
         sys.stdout.close()
         sys.stderr.close()
-        # self.mainloop_thread.join()
         self.stdout_mainloop_thread.join()
         self.stderr_mainloop_thread.join()
-        sys.stdout = os.fdopen(self.orig_stdout_fd, 'w')
-        sys.stderr = os.fdopen(self.orig_stderr_fd, 'w')
+        sys.stdout = sys.__stdout__
+        sys.stderr = sys.__stderr__
         
-    def mainloop(self):
-        import select
-        open_fds = [self.stdout_read_pipe_fd, self.stderr_read_pipe_fd]
-        while open_fds:
-            ready, _, _ = select.select(open_fds, [], [])
-            with self.socklock:
-                for fd in ready:
-                    if fd == self.stdout_read_pipe_fd:
-                        streamname = b'stdout'
-                    else:
-                        streamname = b'stderr'
-                    s = os.read(fd, 4096)
-                    if not s:
-                        os.close(fd)
-                        open_fds.remove(fd)
-                        break
-                    self.sock.send_multipart([streamname, s])
-
-    def mainloop2(self, fd):
-        self._print(str(fd) + '1')
+    def mainloop(self, fd):
         if fd == self.stdout_read_pipe_fd:
             streamname = b'stdout'
         else:
             streamname = b'stderr'
-        self._print(str(fd) + ' 2')
         while True:
-            self._print(str(fd) + '3')
             s = os.read(fd, 4096)
-            self._print(str(fd) + '4')
             with self.socklock:
                 if not s:
                     os.close(fd)
                     break
                 self.sock.send_multipart([streamname, s])
 
-    def _print(self, s):
-        if isinstance(s, str):
-            s = s.encode('utf8')
-        os.write(self.orig_stdout_fd, s + b'\n')
 
 class Process(object):
     """A class providing similar functionality to multiprocessing.Process, but
@@ -855,6 +828,6 @@ if __name__ == '__main__':
     while True:
         data = sock.recv_multipart()
         if data[0] == b'stdout':
-            sys.stdout.write(repr(data[1]) + '\n')
+            sys.stdout.write(data[1].decode())
         else:
-            sys.stderr.write(repr(data[1]) + '\n')
+            sys.stderr.write(data[1].decode())
