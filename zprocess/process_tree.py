@@ -297,13 +297,21 @@ class ReadQueue(object):
 
 
 class StreamProxy(object):
-    def __init__(self, fd):
+    def __init__(self, fd, sock, socklock, streamname):
         self.fd = fd
+        self.sock = sock
+        self.socklock = socklock
+        self.streamname = streamname
 
     def write(self, s):
         if isinstance(s, str):
             s = s.encode('utf8')
-        os.write(self.fd, s)
+        if 1: #os.name == 'nt':
+            time.sleep(0.001)
+            with self.socklock:
+                self.sock.send_multipart([self.streamname, s])
+        else:
+            os.write(self.fd, s)
 
     def close(self):
         os.close(self.fd)
@@ -341,6 +349,12 @@ class OutputInterceptor(object):
         self.stdout_write_pipe_fd = None
         self.stderr_write_pipe_fd = None
         self.mainloop_thread = None
+
+        self.sock = self.context.socket(zmq.PUSH,
+                                        allow_insecure=self.allow_insecure)
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.sock.connect('tcp://%s:%d' % (self.ip, self.port))
+        self.socklock = threading.Lock()
 
     def _flush_all(self):
         """Flush the C level file pointers for stdout and stdin. This should be
@@ -381,8 +395,10 @@ class OutputInterceptor(object):
         self._flush_all()
         os.dup2(self.stdout_write_pipe_fd, stdout_fd)
         os.dup2(self.stderr_write_pipe_fd, stderr_fd)
-        sys.stdout = StreamProxy(self.stdout_write_pipe_fd)
-        sys.stderr = StreamProxy(self.stderr_write_pipe_fd)
+        sys.stdout = StreamProxy(self.stdout_write_pipe_fd, self.sock, 
+                                 self.socklock, b'stdout')
+        sys.stderr = StreamProxy(self.stderr_write_pipe_fd, self.sock, 
+                                 self.socklock, b'stderr')
 
     def disconnect(self):
         if self.orig_stdout_fd is not None:
@@ -397,24 +413,22 @@ class OutputInterceptor(object):
         sys.stderr = os.fdopen(self.orig_stderr_fd, 'w')
         
     def mainloop(self):
-        sock = self.context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        sock.setsockopt(zmq.LINGER, 0)
-        sock.connect('tcp://%s:%d' % (self.ip, self.port))
         import select
         open_fds = [self.stdout_read_pipe_fd, self.stderr_read_pipe_fd]
         while open_fds:
             ready, _, _ = select.select(open_fds, [], [])
-            for fd in ready:
-                if fd == self.stdout_read_pipe_fd:
-                    streamname = b'stdout'
-                else:
-                    streamname = b'stderr'
-                s = os.read(fd, 4096)
-                sock.send_multipart([streamname, s])
-                if not s:
-                    os.close(fd)
-                    open_fds.remove(fd)
-        sock.close()
+            with self.socklock:
+                for fd in ready:
+                    if fd == self.stdout_read_pipe_fd:
+                        streamname = b'stdout'
+                    else:
+                        streamname = b'stderr'
+                    s = os.read(fd, 4096)
+                    if not s:
+                        os.close(fd)
+                        open_fds.remove(fd)
+                        break
+                    self.sock.send_multipart([streamname, s])
             
 
 class Process(object):
@@ -807,6 +821,6 @@ if __name__ == '__main__':
     while True:
         data = sock.recv_multipart()
         if data[0] == b'stdout':
-            sys.stdout.write(data[1])
+            sys.stdout.write(repr(data[1]) + '\n')
         else:
-            sys.stderr.write(data[1])
+            sys.stderr.write(repr(data[1]) + '\n')
