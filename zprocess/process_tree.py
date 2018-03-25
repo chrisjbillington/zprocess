@@ -373,20 +373,11 @@ class OutputInterceptor(object):
             stderr_fd = 2
         else:
             stderr_fd = sys.stderr.fileno()
-        # self.read_pipe_fd, self.write_pipe_fd = os.pipe()
-        try:
-            os.mkfifo('test.stdout.fifo')
-        except OSError:
-            pass
-        try:
-            os.mkfifo('test.stderr.fifo')
-        except OSError:
-            pass
+        self.stdout_read_pipe_fd, self.stdout_write_pipe_fd = os.pipe()
+        self.stderr_read_pipe_fd, self.stderr_write_pipe_fd = os.pipe()
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
-        self.stdout_write_pipe_fd = os.open('test.stdout.fifo', os.O_WRONLY)
-        self.stderr_write_pipe_fd = os.open('test.stderr.fifo', os.O_WRONLY)
         self._flush_all()
         os.dup2(self.stdout_write_pipe_fd, stdout_fd)
         os.dup2(self.stderr_write_pipe_fd, stderr_fd)
@@ -406,17 +397,15 @@ class OutputInterceptor(object):
         sys.stderr = os.fdopen(self.orig_stderr_fd, 'w')
         
     def mainloop(self):
-        stdout_read_pipe_fd = os.open('test.stdout.fifo', os.O_RDONLY)
-        stderr_read_pipe_fd = os.open('test.stderr.fifo', os.O_RDONLY)
         sock = self.context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         sock.setsockopt(zmq.LINGER, 0)
         sock.connect('tcp://%s:%d' % (self.ip, self.port))
         import select
-        open_fds = [stdout_read_pipe_fd, stderr_read_pipe_fd]
+        open_fds = [self.stdout_read_pipe_fd, self.stderr_read_pipe_fd]
         while open_fds:
             ready, _, _ = select.select(open_fds, [], [])
             for fd in ready:
-                if fd == stdout_read_pipe_fd:
+                if fd == self.stdout_read_pipe_fd:
                     streamname = b'stdout'
                 else:
                     streamname = b'stderr'
@@ -799,7 +788,7 @@ if __name__ == '__main__':
     context = SecureContext()
     sock = context.socket(zmq.PULL)
     port = sock.bind_to_random_port('tcp://127.0.0.1')
-    # print('1. hello!')
+    print('1. hello!')
     interceptor = OutputInterceptor('localhost', port, 'stdout')
     # interceptor2 = OutputInterceptor('localhost', port, 'stderr')
     interceptor.connect()
