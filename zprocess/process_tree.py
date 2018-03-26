@@ -303,19 +303,28 @@ class StreamProxy(object):
         self.sock = sock
         self.socklock = socklock
         self.streamname_bytes = streamname.encode('utf8')
+        # Hopefully this covers all our bases for ensuring the mainloop gets
+        # a chance to run after C output before Python output is produced:
+        if os.name == 'posix':
+            libpthread = ctypes.CDLL('libpthread.so.0')
+            self.sched_yield = libpthread.sched_yield
+        else:
+            self.sched_yield = lambda: time.sleep(0)
 
     def write(self, s):
         if isinstance(s, str):
             s = s.encode('utf8')
-        # This increases the odds that previous output from C or a subprocess will
-        # have been processed by OutputInterceptor._mainloop(), preserving the
-        # order of output. This is no guarantee, but is the best we can do if we
-        # want to be able to capture output from C and subprocesses whilst
-        # distinguishing between stdout and stderr without doing LD_PRELOAD tricks.
-        # Sleeping zero releases the GIL momentarily, and the mainloop is higher
-        # priority, so it will get the GIL until it is done or until the next
-        # checkinterval().
-        time.sleep(0)
+        # Release the GIL momentarily to increase the odds that previous output
+        # from C or a subprocess will have been processed by
+        # OutputInterceptor._mainloop(), preserving the order of output. This is no
+        # guarantee, but is the best we can do if we want to be able to capture
+        # output from C and subprocesses whilst distinguishing between stdout and
+        # stderr without doing LD_PRELOAD tricks. Sleeping zero or calling
+        # sched_yield releases the GIL momentarily, giving other threads a chance
+        # to run. The mainloop is higher priority on Windows, so it will get the
+        # GIL until it is done or until the next checkinterval(). It is not higher
+        # priority on linux, but this is the best we can do.
+        self.sched_yield()
         with self.socklock:
             self.sock.send_multipart([self.streamname_bytes, s])
         # os.write(self.fd, s)
@@ -468,11 +477,16 @@ class OutputInterceptor(object):
             THREAD_SET_INFORMATION = 0x20
             THREAD_PRIORITY_ABOVE_NORMAL = 1
             handle = w32.OpenThread(THREAD_SET_INFORMATION, False,
-                                    self.mainloop_thread.ident)
+                                    threading.current_thread().ident)
             result = w32.SetThreadPriority(handle, THREAD_PRIORITY_ABOVE_NORMAL)
             w32.CloseHandle(handle)
             if not result:
                 print('Failed to set priority of thread',  w32.GetLastError())
+        else:
+            # In linux/mac, we cannot set a higher priority without root
+            # privileges. Best we can do it to call sched_yield from the other
+            # thread.
+            pass
         while True:
             s = os.read(self.read_pipe_fd, 4096)
             with self.socklock:
