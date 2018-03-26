@@ -10,6 +10,7 @@ import weakref
 import ast
 import json
 import ctypes
+from ctypes.util import find_library
 from socket import gethostbyname
 
 import zmq
@@ -306,7 +307,7 @@ class StreamProxy(object):
         # Hopefully this covers all our bases for ensuring the mainloop gets
         # a chance to run after C output before Python output is produced:
         if os.name == 'posix':
-            libpthread = ctypes.CDLL('libpthread.so.0')
+            libpthread = ctypes.CDLL(find_library('pthread'))
             self.sched_yield = libpthread.sched_yield
         else:
             self.sched_yield = lambda: time.sleep(0)
