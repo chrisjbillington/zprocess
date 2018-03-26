@@ -9,6 +9,7 @@ import signal
 import weakref
 import ast
 import json
+import ctypes
 from socket import gethostbyname
 
 import zmq
@@ -306,13 +307,15 @@ class StreamProxy(object):
     def write(self, s):
         if isinstance(s, str):
             s = s.encode('utf8')
-            # This increases the odds that previous output from C or a subprocess
-            # will have been processed by OutputInterceptor._mainloop(), preserving
-            # the order of output. This is no guarantee, but is the best we can do
-            # if we want to be able to capture output from C and subprocesses
-            # whilst distinguishing between stdout and stderr without doing
-            # LD_PRELOAD tricks.
-        time.sleep(0.001)
+        # This increases the odds that previous output from C or a subprocess will
+        # have been processed by OutputInterceptor._mainloop(), preserving the
+        # order of output. This is no guarantee, but is the best we can do if we
+        # want to be able to capture output from C and subprocesses whilst
+        # distinguishing between stdout and stderr without doing LD_PRELOAD tricks.
+        # Sleeping zero releases the GIL momentarily, and the mainloop is higher
+        # priority, so it will get the GIL until it is done or until the next
+        # checkinterval().
+        time.sleep(0)
         with self.socklock:
             self.sock.send_multipart([self.streamname_bytes, s])
         # os.write(self.fd, s)
@@ -370,7 +373,6 @@ class OutputInterceptor(object):
     def _flush(self):
         """Flush the C level file pointer for the stream. This should be
         done before closing their file descriptors"""
-        import ctypes
         if os.name == 'nt':
             # Windows:
             libc = ctypes.cdll.msvcrt
@@ -455,6 +457,22 @@ class OutputInterceptor(object):
 
     def _mainloop(self):
         streamname_bytes = self.streamname.encode('utf8')
+        # Set the priority of this thread a bit higher so that when C code or
+        # subprocesses write to stdout, and multiple threads are waiting on the
+        # GIL, this thread will get it and process the output before Python
+        # output is produced from other threads. This is only reliable if we
+        # can guarantee that the main thread releases and re-acquires the GIL
+        # before producing output, which we do in StreamProxy.write().
+        if os.name == 'nt':
+            w32 = ctypes.windll.kernel32
+            THREAD_SET_INFORMATION = 0x20
+            THREAD_PRIORITY_ABOVE_NORMAL = 1
+            handle = w32.OpenThread(THREAD_SET_INFORMATION, False,
+                                    self.mainloop_thread.ident)
+            result = w32.SetThreadPriority(handle, THREAD_PRIORITY_ABOVE_NORMAL)
+            w32.CloseHandle(handle)
+            if not result:
+                print('Failed to set priority of thread',  w32.GetLastError())
         while True:
             s = os.read(self.read_pipe_fd, 4096)
             with self.socklock:
@@ -851,9 +869,11 @@ if __name__ == '__main__':
     interceptor2.disconnect()
     print('3. hello')
 
-    while True:
+    # with open('test.txt', 'w') as f: 
+    f = sys.stdout
+    for i in range(30):
         data = sock.recv_multipart()
         if data[0] == b'stdout':
-            sys.stdout.write(data[1].decode())
+            f.write(data[1].decode())
         else:
-            sys.stderr.write(data[1].decode())
+            f.write(data[1].decode())
