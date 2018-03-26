@@ -332,14 +332,23 @@ class StreamProxy(object):
 # have to occur in order. Then test on Windows, then done!
 
 class OutputInterceptor(object):
+    # Two OutputInterceptors talking to the same server must share a sock and
+    # corresponding lock:
+    socks_by_connection = weakref.WeakValueDictionary()
+    locks_by_connection = weakref.WeakValueDictionary()
+    # A lock to serialise calls to connect() and disconnect()
+    connect_disconnect_lock = threading.Lock()
+    # Only one stdout or stderr can be conencted at a time,
+    # so we keep track with this class attribute dict:
+    streams_connected = {'stdout': False, 'stdin': False}
+
     """Redirect stderr and stdout to a zmq PUSH socket"""
     def __init__(self, host, port, streamname='stdout',
                  shared_secret=None, allow_insecure=False):
-        self.port = port
-        self.ip = gethostbyname(host)
-        self.shared_secret = shared_secret
-        self.allow_insecure = allow_insecure
-        self.context = SecureContext.instance(shared_secret=shared_secret)
+        if streamname not in ['stdout', 'stderr']:
+            msg = "streamname must be 'stdout' or 'stderr'"
+            raise ValueError(msg)
+        ip = gethostbyname(host)
 
         self.orig_stdout_fd = None
         self.orig_stderr_fd = None
@@ -350,11 +359,17 @@ class OutputInterceptor(object):
         self.stdout_mainloop_thread = None
         self.stderr_mainloop_thread = None
 
-        self.sock = self.context.socket(zmq.PUSH,
-                                        allow_insecure=self.allow_insecure)
-        self.sock.setsockopt(zmq.LINGER, 0)
-        self.sock.connect('tcp://%s:%d' % (self.ip, self.port))
-        self.socklock = threading.Lock()
+        connection_details = (ip, port, shared_secret, allow_insecure)
+        if connection_details not in self.socks_by_connection:
+            context = SecureContext.instance(shared_secret=shared_secret)
+            sock = context.socket(zmq.PUSH, allow_insecure=allow_insecure)
+            sock.setsockopt(zmq.LINGER, 0)
+            sock.connect('tcp://%s:%d' % (ip, port))
+            socklock = threading.Lock()
+            self.socks_by_connection[connection_details] = sock
+            self.locks_by_connection[connection_details] = socklock
+        self.sock = self.socks_by_connection[connection_details]
+        self.socklock = self.locks_by_connection[connection_details]
 
     def _flush_all(self):
         """Flush the C level file pointers for stdout and stdin. This should be
