@@ -858,37 +858,37 @@ __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
            'subprocess_with_queues', 'Event']
 
 
-if __name__ == '__main__':
+# if __name__ == '__main__':
     # def foo():
     #     remote_client = RemoteProcessClient('localhost', allow_insecure=True)
     #     to_child, from_child, child = _default_process_tree.subprocess(
     #         'test_remote.py', remote_process_client=remote_client)
     # foo()
 
-    context = SecureContext()
-    sock = context.socket(zmq.PULL)
-    port = sock.bind_to_random_port('tcp://127.0.0.1')
-    print('1. hello!')
-    interceptor = OutputInterceptor('localhost', port, 'stdout')
-    interceptor2 = OutputInterceptor('localhost', port, 'stderr')
-    interceptor.connect()
-    interceptor2.connect()
-    for i in range(10):
-        sys.stdout.write('1\n')
-        sys.stderr.write('2\n')
-        os.system('echo hello')
+    # context = SecureContext()
+    # sock = context.socket(zmq.PULL)
+    # port = sock.bind_to_random_port('tcp://127.0.0.1')
+    # print('1. hello!')
+    # interceptor = OutputInterceptor('localhost', port, 'stdout')
+    # interceptor2 = OutputInterceptor('localhost', port, 'stderr')
+    # interceptor.connect()
+    # interceptor2.connect()
+    # for i in range(10):
+    #     sys.stdout.write('1\n')
+    #     sys.stderr.write('2\n')
+    #     os.system('echo hello')
 
-    # print('2. hello')
-    # os.system('echo hello')
-    interceptor.disconnect()
-    interceptor2.disconnect()
-    print('3. hello')
+    # # print('2. hello')
+    # # os.system('echo hello')
+    # interceptor.disconnect()
+    # interceptor2.disconnect()
+    # print('3. hello')
 
-    # with open('test.txt', 'w') as f: 
-    f = sys.stdout
-    for i in range(30):
-        data = sock.recv_multipart()
-        if data[0] == b'stdout':
-            f.write(data[1].decode())
-        else:
-            f.write(data[1].decode())
+    # # with open('test.txt', 'w') as f: 
+    # f = sys.stdout
+    # for i in range(30):
+    #     data = sock.recv_multipart()
+    #     if data[0] == b'stdout':
+    #         f.write(data[1].decode())
+    #     else:
+    #         f.write(data[1].decode())
