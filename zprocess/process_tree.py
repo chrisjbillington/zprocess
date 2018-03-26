@@ -408,15 +408,16 @@ class OutputInterceptor(object):
                 raise RuntimeError(msg)
             self.streams_connected[self.streamname] = self
             stream = getattr(sys, self.streamname)
-            if stream is not None:
+            if stream is not None and stream.fileno() > 0:
                 # os.dup() lets us take a sort of backup of the current file
                 # descriptor for the stream, so that we can restore it later:
                 self.orig_fd = os.dup(stream.fileno())
                 stream_fd = stream.fileno()
-            # On Windows with pythonw, sys.stdout and sys.stderr are None. We still
-            # want to redirect any C code or subprocesses writing to stdout or
-            # stderr so we use the standard file descriptor numbers, which,
-            # assuming no other tricks played by other code, will be 1 and 2:
+            # On Windows with pythonw, sys.stdout and sys.stderr are None or have
+            # invalid (neagative) file descriptors. We still want to redirect any C
+            # code or subprocesses writing to stdout or stderr so we use the
+            # standard file descriptor numbers, which, assuming no other tricks
+            # played by other code, will be 1 and 2:
             elif self.streamname == 'stdout':
                 stream_fd = 1
             elif self.streamname == 'stderr':
@@ -874,6 +875,7 @@ __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
     # interceptor.connect()
     # interceptor2.connect()
     # for i in range(10):
+    #     print("hello")
     #     sys.stdout.write('1\n')
     #     sys.stderr.write('2\n')
     #     os.system('echo hello')
