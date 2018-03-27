@@ -224,7 +224,8 @@ class _Sender(object):
         else:
             self.local.sock = context.socket(zmq.REQ,
                                              allow_insecure=self.allow_insecure)
-        self.local.sock.setsockopt(zmq.LINGER, 0)
+        # Allow up to 1 second to send unsent messages on socket shutdown:
+        self.local.sock.setsockopt(zmq.LINGER, 1000)
         self.local.sock.connect('tcp://%s:%d' % (self.local.host, self.local.port))
         # Different send/recv methods depending on the desired protocol:
         if self.dtype == 'raw':
@@ -275,6 +276,7 @@ class _Sender(object):
                 return response
         except:
             # Any exceptions, we want to stop using this socket:
+            self.local.sock.close(linger=0)
             del self.local.sock
             raise
 
