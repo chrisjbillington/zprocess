@@ -898,52 +898,11 @@ __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
            'subprocess_with_queues', 'Event']
 
 
-if __name__ == '__main__':
+# if __name__ == '__main__':
     # def foo():
     #     remote_client = RemoteProcessClient('localhost', allow_insecure=True)
     #     to_child, from_child, child = _default_process_tree.subprocess(
     #         'test_remote.py', remote_process_client=remote_client)
     # foo()
 
-    context = SecureContext()
-    sock = context.socket(zmq.PULL)
-    port = sock.bind_to_random_port('tcp://127.0.0.1')
-    print('pre-redirect: hello!')
-    if sys.stdout is not None:
-        print('pre-redirect: stdout is a tty:', sys.stdout.isatty())
-    interceptor = OutputInterceptor('localhost', port, 'stdout')
-    interceptor2 = OutputInterceptor('localhost', port, 'stderr')
-    interceptor.connect()
-    interceptor2.connect()
-    try:
-        for i in range(10):
-            print("python hello")
-            sys.stdout.write('1\n')
-            sys.stderr.write('2\n')
-            os.system('echo echo hello')
-
-        child = subprocess.Popen(['python', '-c',
-                                 'import time; time.sleep(2); print("hello")'])
-        del child
-        print('stdout is a tty:', sys.stdout.isatty())
-    finally:
-        interceptor.disconnect()
-        interceptor2.disconnect()
-        print('post-redirect: hello!')
-        if sys.stdout is not None:
-            print('stdout is a tty:', sys.stdout.isatty())
-
-        if sys.stdout is None or sys.stdout.fileno() < 0:
-            f = open('test.txt', 'w')
-            g = f
-        else:
-            f = sys.stdout
-            g = sys.stderr
-        while sock.poll(100):
-            data = sock.recv_multipart()
-            if data[0] == b'stdout':
-                f.write(data[1].decode())
-            else:
-                g.write(data[1].decode())
-        f.flush()
-        g.flush()
+    
