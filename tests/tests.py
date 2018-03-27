@@ -126,7 +126,6 @@ class TestProcess(Process):
         sys.stderr.write(y)
         self.to_parent.put(item)
         os.system('echo hello from echo')
-        time.sleep(1)
 
 
 class ProcessClassTests(unittest.TestCase):
@@ -159,11 +158,14 @@ class ProcessClassTests(unittest.TestCase):
             from_child.get(timeout=0.1)
 
         # Check we recieved its stdout and stderr:
+        self.assertEqual(self.redirection_sock.poll(1000), zmq.POLLIN)
         self.assertEqual(self.redirection_sock.recv_multipart(),
                          [b'stdout', repr(x).encode('utf8')])
+        self.assertEqual(self.redirection_sock.poll(1000), zmq.POLLIN)
         self.assertEqual(self.redirection_sock.recv_multipart(),
                          [b'stderr', y.encode('utf8')])
         # And the shell output:
+        self.assertEqual(self.redirection_sock.poll(1000), zmq.POLLIN)
         self.assertEqual(self.redirection_sock.recv_multipart(),
                          [b'stdout', b'hello from echo\n'])
         # And no more...
@@ -432,4 +434,5 @@ if __name__ == '__main__':
     output = 'test-reports'
     if PY2:
         output = output.encode('utf8')
-    unittest.main(verbosity=3, testRunner=xmlrunner.XMLTestRunner(output=output))
+    unittest.main(verbosity=3,
+                  testRunner=xmlrunner.XMLTestRunner(output=output, verbosity=3))

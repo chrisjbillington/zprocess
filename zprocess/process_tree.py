@@ -10,6 +10,7 @@ import weakref
 import ast
 import json
 import ctypes
+import atexit
 from ctypes.util import find_library
 from socket import gethostbyname
 
@@ -345,7 +346,7 @@ class StreamProxy(object):
         return self.fd
 
     def isatty(self):
-        return False
+        return os.isatty(self.fd)
 
     def flush(self):
         pass
@@ -361,6 +362,20 @@ class OutputInterceptor(object):
     # Only one stdout or stderr can be conencted at a time,
     # so we keep track with this class attribute dict:
     streams_connected = {'stdout': None, 'stderr': None}
+
+    # Ensure output is flushed at interpreter shutdown:
+    def _close_socks():
+        cls = OutputInterceptor
+        for connection in list(cls.socks_by_connection.keys()):
+            try:
+                sock = cls.socks_by_connection[connection]
+                lock = cls.locks_by_connection[connection]
+            except KeyError:
+                continue
+            with lock:
+                sock.close()
+
+    atexit.register(_close_socks)
 
     """Redirect stderr and stdout to a zmq PUSH socket"""
     def __init__(self, host, port, streamname='stdout',
@@ -380,7 +395,8 @@ class OutputInterceptor(object):
         if connection_details not in self.socks_by_connection:
             context = SecureContext.instance(shared_secret=shared_secret)
             sock = context.socket(zmq.PUSH, allow_insecure=allow_insecure)
-            sock.setsockopt(zmq.LINGER, 0)
+            # At socket close, allow up to 1 second to send all unsent messages:
+            sock.setsockopt(zmq.LINGER, 1000)
             sock.connect('tcp://%s:%d' % (ip, port))
             socklock = threading.Lock()
             self.socks_by_connection[connection_details] = sock
@@ -880,30 +896,34 @@ if __name__ == '__main__':
     context = SecureContext()
     sock = context.socket(zmq.PULL)
     port = sock.bind_to_random_port('tcp://127.0.0.1')
-    # print('1. hello!')
+    print('pre-redirect: hello!')
+    print('pre-redirect: stdout is a tty:', sys.stdout.isatty())
     interceptor = OutputInterceptor('localhost', port, 'stdout')
     interceptor2 = OutputInterceptor('localhost', port, 'stderr')
     interceptor.connect()
     interceptor2.connect()
-    for i in range(10):
-        print("python hello")
-        sys.stdout.write('1\n')
-        sys.stderr.write('2\n')
-        os.system('echo echo hello')
+    try:
+        for i in range(10):
+            print("python hello")
+            sys.stdout.write('1\n')
+            sys.stderr.write('2\n')
+            os.system('echo echo hello')
 
-    # print('2. hello')
-    # os.system('echo hello')
-    interceptor.disconnect()
-    interceptor2.disconnect()
-    # print('3. hello')
 
-    # with open('test2.txt', 'w') as f: 
-    #     g = f
-    f = sys.stdout
-    g = sys.stderr
-    for i in range(30):
-        data = sock.recv_multipart()
-        if data[0] == b'stdout':
-            f.write(data[1].decode())
-        else:
-            g.write(data[1].decode())
+        print('stdout is a tty:', sys.stdout.isatty())
+    finally:
+        interceptor.disconnect()
+        interceptor2.disconnect()
+        print('post-redirect: hello!')
+        print('stdout is a tty:', sys.stdout.isatty())
+
+        # with open('test2.txt', 'w') as f: 
+        #     g = f
+        f = sys.stdout
+        g = sys.stderr
+        while sock.poll(100):
+            data = sock.recv_multipart()
+            if data[0] == b'stdout':
+                f.write(data[1].decode())
+            else:
+                g.write(data[1].decode())
