@@ -299,8 +299,8 @@ class ReadQueue(object):
 
 
 class StreamProxy(object):
-    def __init__(self, fd, sock, socklock, streamname):
-        self.fd = fd
+    def __init__(self, stream_fd, sock, socklock, streamname):
+        self.stream_fd = stream_fd
         self.sock = sock
         self.socklock = socklock
         self.streamname_bytes = streamname.encode('utf8')
@@ -331,10 +331,10 @@ class StreamProxy(object):
         # os.write(self.fd, s)
 
     def close(self):
-        os.close(self.fd)
+        os.close(self.stream_fd)
 
     def fileno(self):
-        return self.fd
+        return self.stream_fd
 
     def isatty(self):
         return False
@@ -362,9 +362,9 @@ class OutputInterceptor(object):
             raise ValueError(msg)
 
         self.streamname = streamname
-        self.orig_fd = None
+        self.stream_fd = None
+        self.backup_fd = None
         self.read_pipe_fd = None
-        self.write_pipe_fd = None
         self.mainloop_thread = None
 
         ip = gethostbyname(host)
@@ -409,26 +409,29 @@ class OutputInterceptor(object):
             self.streams_connected[self.streamname] = self
             stream = getattr(sys, self.streamname)
             if stream is not None and stream.fileno() > 0:
-                # os.dup() lets us take a sort of backup of the current file
-                # descriptor for the stream, so that we can restore it later:
-                self.orig_fd = os.dup(stream.fileno())
-                stream_fd = stream.fileno()
-            # On Windows with pythonw, sys.stdout and sys.stderr are None or have
-            # invalid (neagative) file descriptors. We still want to redirect any C
-            # code or subprocesses writing to stdout or stderr so we use the
-            # standard file descriptor numbers, which, assuming no other tricks
-            # played by other code, will be 1 and 2:
-            elif self.streamname == 'stdout':
-                stream_fd = 1
-            elif self.streamname == 'stderr':
-                stream_fd = 2
+                self.stream_fd = stream.fileno()
             else:
-                raise ValueError
+                # On Windows with pythonw, sys.stdout and sys.stderr are None or
+                # have invalid (negative) file descriptors. We still want to
+                # redirect any C code or subprocesses writing to stdout or stderr
+                # so we use the standard file descriptor numbers, which, assuming
+                # no other tricks played by other code, will be 1 and 2:
+                if self.streamname == 'stdout':
+                    self.stream_fd = 1
+                elif self.streamname == 'stderr':
+                    self.stream_fd = 2
+                else:
+                    raise ValueError(self.streamname)
+                
+            # os.dup() lets us take a sort of backup of the current file
+            # descriptor for the stream, so that we can restore it later:
+            self.backup_fd = os.dup(self.stream_fd)
+                
             # We set up a pipe and set the write end of it to be the output file
             # descriptor. C code and subprocesses will see this as the stream and
             # write to it, and we will read from the read end of the pipe in a 
             # thread to pass their output to the zmq socket.
-            self.read_pipe_fd, self.write_pipe_fd = os.pipe()
+            self.read_pipe_fd, write_pipe_fd = os.pipe()
             self.mainloop_thread = threading.Thread(target=self._mainloop)
             self.mainloop_thread.daemon = True
             self.mainloop_thread.start()
@@ -437,13 +440,20 @@ class OutputInterceptor(object):
             self._flush()
             # Redirect the stream to our write pipe, closing the original stream
             # file descriptor:
-            os.dup2(self.write_pipe_fd, stream_fd)
+            os.dup2(write_pipe_fd, self.stream_fd)
+            os.close(write_pipe_fd)
             # Replace sys.<streamname> with a proxy object. Any Python code writing
             # to the stream will have the output passed directly to the zmq socket.
-            # But any code inspecting the fileno will see the write end of our
-            # pipe.
-            proxy = StreamProxy(self.write_pipe_fd,
-                                     self.sock, self.socklock, self.streamname)
+            # We do this to guarantee that sys.stdout and sys.stderr will come out
+            # in the correct order when coming from Python code, which we cannot
+            # similarly guarantee for C output. The downside of this is that Python
+            # stdout and C stdout output may be in the incorrect order, though we
+            # do our best to decrease the odds of this with thread scheduling. This
+            # seemed like the better compromise than sending everything through the
+            # pipes and possibly reordering stdout and stderr for ordinary Python
+            # output.
+            proxy = StreamProxy(self.stream_fd,
+                                self.sock, self.socklock, self.streamname)
             setattr(sys, self.streamname, proxy)
 
     def disconnect(self):
@@ -456,14 +466,13 @@ class OutputInterceptor(object):
             self.streams_connected[self.streamname] = None
             orig_stream = getattr(sys, '__%s__' % self.streamname)
             self._flush()
-            if self.orig_fd is not None:
-                os.dup2(self.orig_fd, orig_stream.fileno())
-                self.orig_fd = None
-            getattr(sys, self.streamname).close()
+            os.dup2(self.backup_fd, self.stream_fd)
+            os.close(self.backup_fd)
+            self.stream_fd = None
+            self.backup_fd = None
             self.mainloop_thread.join()
             self.mainloop_thread = None
             self.read_pipe_fd = None
-            self.write_pipe_fd = None
             setattr(sys, self.streamname, orig_stream)
 
     def _mainloop(self):
@@ -859,38 +868,40 @@ __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
            'subprocess_with_queues', 'Event']
 
 
-# if __name__ == '__main__':
+if __name__ == '__main__':
     # def foo():
     #     remote_client = RemoteProcessClient('localhost', allow_insecure=True)
     #     to_child, from_child, child = _default_process_tree.subprocess(
     #         'test_remote.py', remote_process_client=remote_client)
     # foo()
 
-    # context = SecureContext()
-    # sock = context.socket(zmq.PULL)
-    # port = sock.bind_to_random_port('tcp://127.0.0.1')
-    # print('1. hello!')
-    # interceptor = OutputInterceptor('localhost', port, 'stdout')
-    # interceptor2 = OutputInterceptor('localhost', port, 'stderr')
-    # interceptor.connect()
-    # interceptor2.connect()
-    # for i in range(10):
-    #     print("hello")
-    #     sys.stdout.write('1\n')
-    #     sys.stderr.write('2\n')
-    #     os.system('echo hello')
+    context = SecureContext()
+    sock = context.socket(zmq.PULL)
+    port = sock.bind_to_random_port('tcp://127.0.0.1')
+    print('1. hello!')
+    interceptor = OutputInterceptor('localhost', port, 'stdout')
+    interceptor2 = OutputInterceptor('localhost', port, 'stderr')
+    interceptor.connect()
+    interceptor2.connect()
+    for i in range(10):
+        print("hello")
+        sys.stdout.write('1\n')
+        sys.stderr.write('2\n')
+        os.system('echo hello')
 
-    # # print('2. hello')
-    # # os.system('echo hello')
-    # interceptor.disconnect()
-    # interceptor2.disconnect()
-    # print('3. hello')
+    # print('2. hello')
+    # os.system('echo hello')
+    interceptor.disconnect()
+    interceptor2.disconnect()
+    print('3. hello')
 
-    # # with open('test.txt', 'w') as f: 
-    # f = sys.stdout
-    # for i in range(30):
-    #     data = sock.recv_multipart()
-    #     if data[0] == b'stdout':
-    #         f.write(data[1].decode())
-    #     else:
-    #         f.write(data[1].decode())
+    # with open('test.txt', 'w') as f: 
+    # g = f
+    f = sys.stdout
+    g = sys.stderr
+    for i in range(30):
+        data = sock.recv_multipart()
+        if data[0] == b'stdout':
+            f.write(data[1].decode())
+        else:
+            g.write(data[1].decode())
