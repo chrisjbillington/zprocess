@@ -389,6 +389,7 @@ class OutputInterceptor(object):
         self.backup_fd = None
         self.read_pipe_fd = None
         self.mainloop_thread = None
+        self.shutting_down = False
 
         ip = gethostbyname(host)
         connection_details = (ip, port, shared_secret, allow_insecure)
@@ -484,14 +485,24 @@ class OutputInterceptor(object):
             orig_stream = getattr(sys, '__%s__' % self.streamname)
             self._flush()
             os.dup2(self.backup_fd, self.stream_fd)
-            getattr(sys, self.streamname).close()
-            os.close(self.backup_fd)
             self.stream_fd = None
+            os.close(self.backup_fd)
             self.backup_fd = None
+            proxy_stream = getattr(sys, self.streamname)
+            # self-pipe trick to break out of the blocking read and see the
+            # shutting_down flag. We do this rather than close the file descriptor
+            # for the write end of the pipe because other processes may still have
+            # an open file descriptor for the write end of the pipe, so the
+            # mainloop would not get a signal that the pipe was closed. Any
+            # remaining subprocesses will get a broken pipe error if they try to
+            # write output.
+            self.shutting_down = True
+            os.write(proxy_stream.fileno(), b'<dummy message>')
+            proxy_stream.close()
+            setattr(sys, self.streamname, orig_stream)
             self.mainloop_thread.join()
             self.mainloop_thread = None
-            self.read_pipe_fd = None
-            setattr(sys, self.streamname, orig_stream)
+            self.shutting_down = False          
 
     def _mainloop(self):
         streamname_bytes = self.streamname.encode('utf8')
@@ -519,8 +530,9 @@ class OutputInterceptor(object):
         while True:
             s = os.read(self.read_pipe_fd, 4096)
             with self.socklock:
-                if not s:
+                if not s or self.shutting_down:
                     os.close(self.read_pipe_fd)
+                    self.read_pipe_fd = None
                     break
                 self.sock.send_multipart([streamname_bytes, s])
 
@@ -897,7 +909,8 @@ if __name__ == '__main__':
     sock = context.socket(zmq.PULL)
     port = sock.bind_to_random_port('tcp://127.0.0.1')
     print('pre-redirect: hello!')
-    print('pre-redirect: stdout is a tty:', sys.stdout.isatty())
+    if sys.stdout is not None:
+        print('pre-redirect: stdout is a tty:', sys.stdout.isatty())
     interceptor = OutputInterceptor('localhost', port, 'stdout')
     interceptor2 = OutputInterceptor('localhost', port, 'stderr')
     interceptor.connect()
@@ -909,21 +922,28 @@ if __name__ == '__main__':
             sys.stderr.write('2\n')
             os.system('echo echo hello')
 
-
+        child = subprocess.Popen(['python', '-c',
+                                 'import time; time.sleep(2); print("hello")'])
+        del child
         print('stdout is a tty:', sys.stdout.isatty())
     finally:
         interceptor.disconnect()
         interceptor2.disconnect()
         print('post-redirect: hello!')
-        print('stdout is a tty:', sys.stdout.isatty())
+        if sys.stdout is not None:
+            print('stdout is a tty:', sys.stdout.isatty())
 
-        # with open('test2.txt', 'w') as f: 
-        #     g = f
-        f = sys.stdout
-        g = sys.stderr
+        if sys.stdout is None or sys.stdout.fileno() < 0:
+            f = open('test.txt', 'w')
+            g = f
+        else:
+            f = sys.stdout
+            g = sys.stderr
         while sock.poll(100):
             data = sock.recv_multipart()
             if data[0] == b'stdout':
                 f.write(data[1].decode())
             else:
                 g.write(data[1].decode())
+        f.flush()
+        g.flush()
