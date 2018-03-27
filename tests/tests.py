@@ -125,6 +125,7 @@ class TestProcess(Process):
         sys.stdout.write(repr(x))
         sys.stderr.write(y)
         self.to_parent.put(item)
+        os.system('echo hello from echo')
         time.sleep(1)
 
 
@@ -162,6 +163,9 @@ class ProcessClassTests(unittest.TestCase):
                          [b'stdout', repr(x).encode('utf8')])
         self.assertEqual(self.redirection_sock.recv_multipart(),
                          [b'stderr', y.encode('utf8')])
+        # And the shell output:
+        self.assertEqual(self.redirection_sock.recv_multipart(),
+                         [b'stdout', b'hello from echo\n'])
         # And no more...
         self.assertEqual(self.redirection_sock.poll(100), 0)
 
