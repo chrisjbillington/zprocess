@@ -299,8 +299,8 @@ class ReadQueue(object):
 
 
 class StreamProxy(object):
-    def __init__(self, stream_fd, sock, socklock, streamname):
-        self.stream_fd = stream_fd
+    def __init__(self, fd, sock, socklock, streamname):
+        self.fd = fd
         self.sock = sock
         self.socklock = socklock
         self.streamname_bytes = streamname.encode('utf8')
@@ -327,14 +327,22 @@ class StreamProxy(object):
         # priority on linux, but this is the best we can do.
         self.sched_yield()
         with self.socklock:
+            # We write directly to the zmq socket for Python output to guarantee
+            # that sys.stdout and sys.stderr will come out in the correct order
+            # when coming from Python code, which we cannot similarly guarantee for
+            # C output. The downside of this is that Python stdout and C stdout
+            # output may be in the incorrect order, though we do our best to
+            # decrease the odds of this with thread yielding. This seemed like
+            # the better compromise than sending everything through the pipes and
+            # possibly reordering stdout and stderr for ordinary Python output.
             self.sock.send_multipart([self.streamname_bytes, s])
         # os.write(self.fd, s)
 
     def close(self):
-        os.close(self.stream_fd)
+        os.close(self.fd)
 
     def fileno(self):
-        return self.stream_fd
+        return self.fd
 
     def isatty(self):
         return False
@@ -441,18 +449,11 @@ class OutputInterceptor(object):
             # Redirect the stream to our write pipe, closing the original stream
             # file descriptor:
             os.dup2(write_pipe_fd, self.stream_fd)
-            os.close(write_pipe_fd)
             # Replace sys.<streamname> with a proxy object. Any Python code writing
-            # to the stream will have the output passed directly to the zmq socket.
-            # We do this to guarantee that sys.stdout and sys.stderr will come out
-            # in the correct order when coming from Python code, which we cannot
-            # similarly guarantee for C output. The downside of this is that Python
-            # stdout and C stdout output may be in the incorrect order, though we
-            # do our best to decrease the odds of this with thread scheduling. This
-            # seemed like the better compromise than sending everything through the
-            # pipes and possibly reordering stdout and stderr for ordinary Python
-            # output.
-            proxy = StreamProxy(self.stream_fd,
+            # to the stream will have the output passed directly to the zmq socket,
+            # and any other code inspecting sys.stdout/sderr's fileno() will see
+            # the write end of our redirection pipe.
+            proxy = StreamProxy(write_pipe_fd,
                                 self.sock, self.socklock, self.streamname)
             setattr(sys, self.streamname, proxy)
 
@@ -467,6 +468,7 @@ class OutputInterceptor(object):
             orig_stream = getattr(sys, '__%s__' % self.streamname)
             self._flush()
             os.dup2(self.backup_fd, self.stream_fd)
+            getattr(sys, self.streamname).close()
             os.close(self.backup_fd)
             self.stream_fd = None
             self.backup_fd = None
@@ -878,25 +880,25 @@ if __name__ == '__main__':
     context = SecureContext()
     sock = context.socket(zmq.PULL)
     port = sock.bind_to_random_port('tcp://127.0.0.1')
-    print('1. hello!')
+    # print('1. hello!')
     interceptor = OutputInterceptor('localhost', port, 'stdout')
     interceptor2 = OutputInterceptor('localhost', port, 'stderr')
     interceptor.connect()
     interceptor2.connect()
     for i in range(10):
-        print("hello")
+        print("python hello")
         sys.stdout.write('1\n')
         sys.stderr.write('2\n')
-        os.system('echo hello')
+        os.system('echo echo hello')
 
     # print('2. hello')
     # os.system('echo hello')
     interceptor.disconnect()
     interceptor2.disconnect()
-    print('3. hello')
+    # print('3. hello')
 
-    # with open('test.txt', 'w') as f: 
-    # g = f
+    # with open('test2.txt', 'w') as f: 
+    #     g = f
     f = sys.stdout
     g = sys.stderr
     for i in range(30):
