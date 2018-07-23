@@ -13,6 +13,7 @@ import ctypes
 import atexit
 from ctypes.util import find_library
 from socket import gethostbyname
+import logging
 
 import zmq
 
@@ -313,9 +314,13 @@ class StreamProxy(object):
         else:
             self.sched_yield = lambda: time.sleep(0)
 
-    def write(self, s):
+    def write(self, s, charformat=None):
         if isinstance(s, str):
             s = s.encode('utf8')
+        if charformat is None:
+            charformat = self.streamname_bytes
+        elif isinstance(charformat, str):
+            charformat = charformat.encode('utf8')
         # Release the GIL momentarily to increase the odds that previous output
         # from C or a subprocess will have been processed by
         # OutputInterceptor._mainloop(), preserving the order of output. This is no
@@ -336,7 +341,7 @@ class StreamProxy(object):
             # decrease the odds of this with thread yielding. This seemed like
             # the better compromise than sending everything through the pipes and
             # possibly reordering stdout and stderr for ordinary Python output.
-            self.sock.send_multipart([self.streamname_bytes, s])
+            self.sock.send_multipart([charformat, s])
         # os.write(self.fd, s)
 
     def close(self):
@@ -535,6 +540,68 @@ class OutputInterceptor(object):
                     self.read_pipe_fd = None
                     break
                 self.sock.send_multipart([streamname_bytes, s])
+
+
+def _has_charformat_kwarg(func):
+    import inspect
+    names, _, _, defaults = inspect.getargspec(func)
+    return defaults is not None and 'charformat' in names[-len(defaults) :]
+
+
+class RichStreamHandler(logging.StreamHandler):
+    """Logging hander that forwards the log level name as the 'charformat' keyword
+    argument, if it exists, to the write() method of the underlying stream object. If
+    connected to a qtutils.OutputBox, The OutputBox will format different log levels
+    depending on severity. This is designed both to work with an OutputBox as the
+    stream, or with a zprocess.StreamProxy. Thus zprocess subprocesses using a logger
+    with a OutputBoxHandler set to sys.stdout or sys.stderr will have colourised log
+    output, as will any loggers in the same process as the OutputBox with the stream set
+    to the OutputBox."""
+
+    def emit(self, record):
+        if not _has_charformat_kwarg(self.stream.write):
+            return logging.StreamHandler.emit(self, record)
+        try:
+            msg = self.format(record) + '\n'
+            self.stream.write(msg, charformat=record.levelname)
+        except Exception:
+            self.handleError(record)
+
+            
+def rich_print(*values, **kwargs):
+    """A print function allowing bold, italics, and colour, if stdout.write or
+    stderr.write supports a 'charformat' keyword argument and is connected to a
+    qtutils.OutputBox. This method accepts the same arguments as the Python print
+    function, as well as keyword args: 'color', a string containing either a named color
+    or hex value of a color; 'bold' and 'italic': booleans as to whether the text should
+    be bold or italic. If file=sys.stderr, the output will be red. If it is absent or
+    sys.stdout, it will be white. Anything else is an exception. The 'color' and 'bold'
+    keyword arguments if provided will override the settings inferred from the file
+    keyword argument. If the stream does not support the 'charformat' keyword argument,
+    then formatting will be ignored."""
+
+    file = kwargs.pop('file', sys.stdout)
+
+    if not _has_charformat_kwarg(file.write):
+        return print(*values, file=file, **kwargs)
+
+    sep = kwargs.pop('sep', ' ')
+    end = kwargs.pop('end', '\n')
+
+    if file is sys.stdout:
+        color = 'white'
+        bold = False
+    elif file is sys.stderr:
+        color = 'red'
+        bold = False
+    else:
+        msg = 'file argument for zprocess.print() must be stdout or stderr'
+        raise ValueError(msg)
+    bold = kwargs.pop('bold', bold)
+    color = kwargs.pop('color', color)
+    italic = kwargs.pop('italic', False)
+    charformat = repr((color, bold, italic)).encode('utf8')
+    file.write(sep.join(str(s) for s in values) + end, charformat=charformat)
 
 
 class Process(object):

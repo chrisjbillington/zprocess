@@ -18,7 +18,7 @@ import xmlrunner
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from zprocess import (ZMQServer, Process, TimeoutError,
+from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,
                       raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
@@ -127,6 +127,17 @@ class TestProcess(Process):
         self.to_parent.put(item)
         os.system('echo hello from echo')
 
+        # And now test logging:
+        import logging
+        logger = logging.Logger('test')
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(RichStreamHandler())
+        logger.info('this is a log message')
+
+        # And now test rich printing
+        rich_print('some test text', color='#123456', bold=True, italic=False)
+
+
 
 class ProcessClassTests(unittest.TestCase):
 
@@ -168,6 +179,17 @@ class ProcessClassTests(unittest.TestCase):
         self.assertEqual(self.redirection_sock.poll(1000), zmq.POLLIN)
         self.assertEqual(self.redirection_sock.recv_multipart(),
                          [b'stdout', b'hello from echo\n'])
+
+        # And the formatted logging:
+        self.assertEqual(self.redirection_sock.recv_multipart(),
+                         [b'INFO', b'this is a log message\n'])
+
+        # And the formatted printing:
+        import ast
+        charfmt_repr, text = self.redirection_sock.recv_multipart()
+        self.assertEqual(ast.literal_eval(charfmt_repr.decode('utf8')), ('#123456', True, False))
+        self.assertEqual(text, b'some test text\n')
+
         # And no more...
         self.assertEqual(self.redirection_sock.poll(100), 0)
 

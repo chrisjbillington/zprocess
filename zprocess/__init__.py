@@ -47,16 +47,30 @@ if 'zprocess' in  os.getenv('COVERAGE_PROCESS_START', ''):
     signal.signal(signal.SIGTERM, sigterm_handler)
 
 
-from zprocess.utils import (TimeoutError, start_daemon, embed, 
-                            raise_exception_in_thread)
+from zprocess.utils import TimeoutError, start_daemon, embed, raise_exception_in_thread
 
-from zprocess.clientserver import (ZMQServer, ZMQClient,
-           zmq_get, zmq_get_multipart, zmq_get_string, zmq_get_raw,
-           zmq_push, zmq_push_multipart, zmq_push_string, zmq_push_raw)
+from zprocess.clientserver import (
+    ZMQServer,
+    ZMQClient,
+    zmq_get,
+    zmq_get_multipart,
+    zmq_get_string,
+    zmq_get_raw,
+    zmq_push,
+    zmq_push_multipart,
+    zmq_push_string,
+    zmq_push_raw,
+)
 
-from zprocess.process_tree import (Process, ProcessTree,
-                                  setup_connection_with_parent,
-                                  subprocess_with_queues, Event)
+from zprocess.process_tree import (
+    Process,
+    ProcessTree,
+    setup_connection_with_parent,
+    subprocess_with_queues,
+    Event,
+    RichStreamHandler,
+    rich_print,
+)
 
 
 
