@@ -574,11 +574,11 @@ def rich_print(*values, **kwargs):
     qtutils.OutputBox. This method accepts the same arguments as the Python print
     function, as well as keyword args: 'color', a string containing either a named color
     or hex value of a color; 'bold' and 'italic': booleans as to whether the text should
-    be bold or italic. If file=sys.stderr, the output will be red. If it is absent or
-    sys.stdout, it will be white. Anything else is an exception. The 'color' and 'bold'
-    keyword arguments if provided will override the settings inferred from the file
-    keyword argument. If the stream does not support the 'charformat' keyword argument,
-    then formatting will be ignored."""
+    be bold or italic. If file=sys.stderr, the output will be red. Otherwise, if color
+    is not specified, output will be white. The 'color' and 'bold' keyword arguments if
+    provided will override the settings inferred from the file keyword argument. If the
+    stream does not support the 'charformat' keyword argument, then formatting will be
+    ignored."""
 
     file = kwargs.pop('file', sys.stdout)
 
@@ -588,15 +588,12 @@ def rich_print(*values, **kwargs):
     sep = kwargs.pop('sep', ' ')
     end = kwargs.pop('end', '\n')
 
-    if file is sys.stdout:
-        color = 'white'
-        bold = False
-    elif file is sys.stderr:
+    if file is sys.stderr:
         color = 'red'
         bold = False
     else:
-        msg = 'file argument for zprocess.print() must be stdout or stderr'
-        raise ValueError(msg)
+        color = 'white'
+        bold = False
     bold = kwargs.pop('bold', bold)
     color = kwargs.pop('color', color)
     italic = kwargs.pop('italic', False)
