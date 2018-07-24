@@ -301,6 +301,11 @@ class ReadQueue(object):
 
 
 class StreamProxy(object):
+
+    # Declare that our write() method accepts a 'charformat' kwarg for specifying
+    # formatting
+    supports_rich_write = True
+
     def __init__(self, fd, sock, socklock, streamname):
         self.fd = fd
         self.sock = sock
@@ -542,12 +547,6 @@ class OutputInterceptor(object):
                 self.sock.send_multipart([streamname_bytes, s])
 
 
-def _has_charformat_kwarg(func):
-    import inspect
-    names, _, _, defaults = inspect.getargspec(func)
-    return defaults is not None and 'charformat' in names[-len(defaults) :]
-
-
 class RichStreamHandler(logging.StreamHandler):
     """Logging hander that forwards the log level name as the 'charformat' keyword
     argument, if it exists, to the write() method of the underlying stream object. If
@@ -559,7 +558,7 @@ class RichStreamHandler(logging.StreamHandler):
     to the OutputBox."""
 
     def emit(self, record):
-        if not _has_charformat_kwarg(self.stream.write):
+        if not getattr(self.stream, 'supports_rich_write', False):
             return logging.StreamHandler.emit(self, record)
         try:
             msg = self.format(record) + '\n'
@@ -582,7 +581,7 @@ def rich_print(*values, **kwargs):
 
     file = kwargs.pop('file', sys.stdout)
 
-    if not _has_charformat_kwarg(file.write):
+    if not getattr(file, 'supports_rich_write', False):
         return print(*values, file=file, **kwargs)
 
     sep = kwargs.pop('sep', ' ')
