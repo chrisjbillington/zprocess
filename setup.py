@@ -11,13 +11,13 @@
 from setuptools import setup
 import os
 
-VERSION = '2.5.2'
+VERSION = '2.5.3'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
     f.write("__version__ = '%s'\n"%VERSION)
 
-dependencies = ['pyzmq', 'xmlrunner']
+dependencies = ['pyzmq >= 15.3', 'xmlrunner']
 
 import sys
 if sys.version_info.major == 2:
