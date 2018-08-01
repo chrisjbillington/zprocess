@@ -70,6 +70,7 @@ from zprocess.process_tree import (
     Event,
     RichStreamHandler,
     rich_print,
+    ExternalBroker,
 )
 
 

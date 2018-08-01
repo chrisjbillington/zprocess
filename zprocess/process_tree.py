@@ -149,10 +149,19 @@ class EventBroker(object):
                 return
 
 
+class ExternalBroker(object):
+    """Container object for the details of an event broker that is external to
+    the ProcessTree that this process belongs to.
+    """
+    def __init__(self, host, in_port, out_port):
+        self.host = host
+        self.in_port = in_port
+        self.out_port = out_port
+
+
 class Event(object):
 
-    def __init__(self, process_tree, event_name, role='wait'):
-        # Ensure we have a broker, whether it's in this process or a parent one:
+    def __init__(self, process_tree, event_name, role='wait', external_broker=None):
         self.event_name = event_name
         # We null terminate the event name otherwise any subscriber subscribing to
         # and event *starting* with our event name will also receive it, which
@@ -164,14 +173,23 @@ class Event(object):
         self.can_wait = self.role in ['wait', 'both']
         self.can_post = self.role in ['post', 'both']
         context = SecureContext.instance(shared_secret=process_tree.shared_secret)
-        broker_ip = gethostbyname(process_tree.broker_host)
+
+        if external_broker is not None:
+            broker_host = external_broker.host
+            broker_in_port = external_broker.in_port
+            broker_out_port = external_broker.out_port
+        else:
+            broker_host = process_tree.broker_host
+            broker_in_port = process_tree.broker_in_port
+            broker_out_port = process_tree.broker_out_port
+
+        broker_ip = gethostbyname(broker_host)
         if self.can_wait:
             self.sub = context.socket(zmq.SUB,
                                       allow_insecure=process_tree.allow_insecure)
             self.sub.set_hwm(1000)
             self.sub.setsockopt(zmq.SUBSCRIBE, self._encoded_event_name)
-            self.sub.connect(
-                'tcp://{}:{}'.format(broker_ip, process_tree.broker_out_port))
+            self.sub.connect('tcp://{}:{}'.format(broker_ip, broker_out_port))
             # Request a welcome message from the broker confirming it receives this
             # subscription request. This is important so that by the time this
             # __init__ method returns, the caller can know for sure that if the
@@ -203,8 +221,7 @@ class Event(object):
         if self.can_post:
             self.push = context.socket(zmq.PUSH,
                                        allow_insecure=process_tree.allow_insecure)
-            self.push.connect(
-                'tcp://{}:{}'.format(broker_ip, process_tree.broker_in_port))
+            self.push.connect('tcp://{}:{}'.format(broker_ip, broker_in_port))
             self.pushlock = threading.Lock()
 
     def post(self, identifier, data=None):
@@ -756,9 +773,10 @@ class ProcessTree(object):
             self.broker_in_port = self.broker.in_port
             self.broker_out_port = self.broker.out_port
 
-    def event(self, event_name, role='wait'):
-        self._check_broker()
-        return Event(self, event_name, role=role)
+    def event(self, event_name, role='wait', external_broker=None):
+        if external_broker is None:
+            self._check_broker()
+        return Event(self, event_name, role=role, external_broker=external_broker)
 
     def subprocess(self, path, output_redirection_port=None,
                    remote_process_client=None):
