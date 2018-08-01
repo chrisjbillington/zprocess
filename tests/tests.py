@@ -19,10 +19,11 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,
-                      raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw)
+                      raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw,
+                      ExternalBroker)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
-from zprocess.process_tree import _default_process_tree
+from zprocess.process_tree import _default_process_tree, EventBroker
 shared_secret = _default_process_tree.shared_secret
 from zprocess.security import SecureContext
 
@@ -319,12 +320,31 @@ class TestEventProcess(Process):
         event.post('1', data=u'boo')
         time.sleep(0.1)
 
+class TestExternalEventProcess(Process):
+    def run(self, broker_details):
+        event = self.process_tree.event('hello', role='post', external_broker=broker_details)
+        event.post('1', data=u'boo')
+        time.sleep(0.1)
+
+
 
 class EventTests(unittest.TestCase):
     def test_events(self):
         proc = TestEventProcess()
         event = _default_process_tree.event('hello', role='wait')
         proc.start()
+        try:
+            data = event.wait('1', timeout=1)
+            self.assertEqual(data, u'boo')
+        finally:
+            proc.terminate()
+
+    def test_external_broker(self):
+        broker = EventBroker(bind_address='tcp://127.0.0.1')
+        broker_details = ExternalBroker('localhost', broker.in_port, broker.out_port)
+        proc = TestExternalEventProcess()
+        proc.start(broker_details)
+        event = _default_process_tree.event('hello', role='wait', external_broker=broker_details)
         try:
             data = event.wait('1', timeout=1)
             self.assertEqual(data, u'boo')
