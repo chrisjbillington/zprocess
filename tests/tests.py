@@ -476,5 +476,5 @@ if __name__ == '__main__':
     output = 'test-reports'
     if PY2:
         output = output.encode('utf8')
-    unittest.main(verbosity=3,
-                  testRunner=xmlrunner.XMLTestRunner(output=output, verbosity=3))
+    testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=3)
+    unittest.main(verbosity=3, testRunner=testRunner, exit=False)

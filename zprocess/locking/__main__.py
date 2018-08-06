@@ -242,7 +242,7 @@ class ZMQLockServer(object):
                     # after other requests are processed, or once maximum
                     # response time is reached. Don't give the client
                     # a response yet:
-                     continue
+                    continue
                 else:
                     # If success or error, tell the client about it. Or
                     # if we have already been retrying their request for
