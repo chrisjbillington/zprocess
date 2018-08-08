@@ -1,8 +1,6 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
-import time
 import zmq
 from bisect import insort
-from collections import deque
 import threading
 import enum
 
@@ -171,7 +169,7 @@ class LockRequest(object):
             self.schedule_timeout_release(MAX_ABSENT_TIME)
             self.state = rs.ABSENT_HELD
         else:
-            raise ValueError(self.state)
+            raise ValueError(self.state) # pragma: no cover
 
     def _initial_acquisition(self, routing_id, timeout, read_only):
         self.routing_id = routing_id
@@ -205,6 +203,7 @@ class LockRequest(object):
             if read_only != self.read_only:
                 # Client has changed their mind about whether they want a read_only
                 # lock. Give up and start again:
+                self.give_up(cleanup=False)
                 self._initial_acquisition(routing_id, timeout, read_only)
             else:
                 self.timeout = timeout
@@ -224,7 +223,7 @@ class LockRequest(object):
         elif self.state is rs.HELD:
             self.server.send(routing_id, b'error: lock already held')
         else:
-            raise ValueError(self.state)
+            raise ValueError(self.state)  # pragma: no cover
 
     def release_request(self, routing_id):
         if self.state is rs.HELD:
@@ -243,7 +242,7 @@ class LockRequest(object):
         elif self.state in (rs.INITIAL, rs.ABSENT_WAITING):
             self.server.send(routing_id, b'error: lock not held')
         else:
-            raise ValueError(self.state)
+            raise ValueError(self.state)  # pragma: no cover
 
     def schedule_advise_retry(self):
         self.advise_retry_task = Task(MAX_RESPONSE_TIME, self.advise_retry)
@@ -265,11 +264,12 @@ class LockRequest(object):
     def cancel_give_up(self):
         self.server.tasks.cancel(self.give_up_task)
 
-    def give_up(self):
+    def give_up(self, cleanup=True):
         """Stop trying to acquire the lock"""
         lock = Lock.instance(self.key, self.server)
         lock.give_up(self.client_id)
-        self._cleanup()
+        if cleanup:
+            self._cleanup()
 
     def schedule_timeout_release(self, timeout):
         self.timeout_task = Task(timeout, self.release)
@@ -351,7 +351,6 @@ class ZMQLockServer(object):
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
         self.started.set()
-        # print('starting')
         while True:
             # Wait until we receive a request or a task is due:
             if self.tasks:
