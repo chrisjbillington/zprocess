@@ -161,12 +161,12 @@ class LockRequest(object):
     def on_triggered_acquisition(self):
         """The lock has been acquired for this client in response to being released by
         one or more other clients"""
-        if self.state == rs.PRESENT_WAITING:
+        if self.state is rs.PRESENT_WAITING:
             self.server.send(self.routing_id, b'ok')
             self.schedule_timeout_release(self.timeout)
             self.cancel_advise_retry()
             self.state = rs.HELD
-        elif self.state == rs.ABSENT_WAITING:
+        elif self.state is rs.ABSENT_WAITING:
             self.cancel_give_up()
             self.schedule_timeout_release(MAX_ABSENT_TIME)
             self.state = rs.ABSENT_HELD
@@ -196,10 +196,10 @@ class LockRequest(object):
 
     def acquire_request(self, routing_id, timeout, read_only):
         """A client has requested to acquire the lock"""
-        if self.state == rs.INITIAL:
+        if self.state is rs.INITIAL:
             # First attempt to acquire the lock:
             self._initial_acquisition(routing_id, timeout, read_only)
-        elif self.state == rs.ABSENT_WAITING:
+        elif self.state is rs.ABSENT_WAITING:
             # A retry attempt, the lock is still not free:
             self.cancel_give_up()
             if read_only != self.read_only:
@@ -211,32 +211,32 @@ class LockRequest(object):
                 self.routing_id = routing_id
                 self.schedule_advise_retry()
                 self.state = rs.PRESENT_WAITING
-        elif self.state == rs.ABSENT_HELD:
+        elif self.state is rs.ABSENT_HELD:
             # A retry attempt, and the lock was acquired whilst the client was absent.
             self.server.send(routing_id, b'ok')
             self.cancel_timeout_release()
             self.schedule_timeout_release(timeout)
             self.state = rs.HELD
-        elif self.state == rs.PRESENT_WAITING:
+        elif self.state is rs.PRESENT_WAITING:
             # Client not allowed to make two requests without waiting for a response:
             msg = b'error: multiple concurrent requests with same key and client_id'
             self.server.send(routing_id, msg)
-        elif self.state == rs.HELD:
+        elif self.state is rs.HELD:
             self.server.send(routing_id, b'error: lock already held')
         else:
             raise ValueError(self.state)
 
     def release_request(self, routing_id):
-        if self.state == rs.HELD:
+        if self.state is rs.HELD:
             self.server.send(routing_id, b'ok')
             self.release()
             self.cancel_timeout_release()
-        elif self.state == rs.ABSENT_HELD:
+        elif self.state is rs.ABSENT_HELD:
             # A lie, but the client didn't follow protocol, so no lock for you:
             self.server.send(routing_id, b'error: lock not held')
             self.release()
             self.cancel_timeout_release()
-        elif self.state == rs.PRESENT_WAITING:
+        elif self.state is rs.PRESENT_WAITING:
             # Client not allowed to make two requests without waiting for a response:
             msg = b'error: multiple concurrent requests with same key and client_id'
             self.server.send(routing_id, msg)
