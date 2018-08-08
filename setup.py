@@ -24,6 +24,7 @@ if sys.version_info.major == 2:
     # Backported modules:
     dependencies.append('ipaddress')
     dependencies.append('subprocess32')
+    dependencies.append('enum34')
 
 setup(name='zprocess',
       version=VERSION,

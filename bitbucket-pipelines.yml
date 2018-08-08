@@ -13,6 +13,7 @@ pipelines:
         script:
           - pip install -e .
           - python tests/tests.py
+          - python tests/zlock_server_tests.py
     - step:
         name: py3_tests
         image: python:3.6.4
@@ -21,3 +22,4 @@ pipelines:
         script:
           - pip install -e .
           - python tests/tests.py
+          - python tests/zlock_server_tests.py
