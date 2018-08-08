@@ -531,6 +531,11 @@ class OtherTests(unittest.TestCase):
         finally:
             server.stop()
 
+    def test_stop_unstarted(self):
+        # Can't stop a server that's not running:
+        server = ZMQLockServer(bind_address='tcp://127.0.0.1')
+        with self.assertRaises(RuntimeError):
+            server.stop()
 
 def test_speed():
     with TemporaryREQSocket(7339) as sock:

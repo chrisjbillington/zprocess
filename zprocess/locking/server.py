@@ -1,5 +1,5 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
-import zmq
+import sys
 from bisect import insort
 import threading
 import enum
@@ -8,6 +8,8 @@ try:
     from time import monotonic
 except ImportError:
     from time import time as monotonic
+
+import zmq
 
 MAX_RESPONSE_TIME = 1  # second
 MAX_ABSENT_TIME = 1  # second
@@ -354,6 +356,7 @@ class ZMQLockServer(object):
         self.run_thread = None
         self.stopping = False
         self.started = threading.Event()
+        self.running = False
 
     def run(self):
         self.context = zmq.Context.instance()
@@ -362,6 +365,8 @@ class ZMQLockServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
+        print('This is zlock server, running on %s:%d' % (self.bind_address, self.port))
+        self.running = True
         self.started.set()
         while True:
             # Wait until we receive a request or a task is due:
@@ -397,6 +402,7 @@ class ZMQLockServer(object):
         self.router = None
         self.context = None
         self.port = self._initial_port
+        self.running = False
         self.started.clear()
 
     def run_in_thread(self):
@@ -408,6 +414,8 @@ class ZMQLockServer(object):
             raise RuntimeError('Server failed to start')  # pragma: no cover
 
     def stop(self):
+        if not self.running:
+            raise RuntimeError('Not running')
         self.stopping = True
         sock = self.context.socket(zmq.REQ)
         sock.connect('tcp://127.0.0.1:%d' % self.port)
