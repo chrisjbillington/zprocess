@@ -11,6 +11,7 @@ PYTHON3 = 'python3'
 PYTHONS = {'2': PYTHON2,
            '3': PYTHON3}
 
+test_files = ['tests.py', 'test_zlock_server.py']
 
 def mkdir_p(path):
     try:
@@ -41,7 +42,8 @@ for python_version in PYTHONS:
         with open(path_file, 'w') as f:
             f.write("import sys; sys.path.insert(0, '{}')\n".format(coverage_import_path))
             f.write("import coverage; coverage.process_startup()" + '\n')
-        subprocess.call([python_executable, 'tests/tests.py'], env = environ)
+        for test_file in test_files:
+            subprocess.call([python_executable, os.path.join('tests', test_file)], env=environ)
     finally:
         try:
             os.unlink(path_file)
