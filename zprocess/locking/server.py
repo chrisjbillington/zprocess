@@ -6,6 +6,11 @@ from collections import deque
 import threading
 import enum
 
+try:
+    from time import monotonic
+except ImportError:
+    from time import time as monotonic
+
 MAX_RESPONSE_TIME = 1  # second
 MAX_ABSENT_TIME = 1  # second
 
@@ -18,7 +23,7 @@ class Task(object):
         due_in is how long in the future, in seconds, the function should be called,
         func is the function to call. All subsequent arguments and keyword arguments
         will be passed to the function."""
-        self.due_at = time.time() + due_in
+        self.due_at = monotonic() + due_in
         self.func = func
         self.args = args
         self.kwargs = kwargs
@@ -26,7 +31,7 @@ class Task(object):
 
     def due_in(self):
         """The time interval in seconds until the task is due"""
-        return self.due_at - time.time()
+        return self.due_at - monotonic()
 
     def __call__(self):
         if self.called:
@@ -35,14 +40,15 @@ class Task(object):
         return self.func(*self.args, **self.kwargs)
 
     def __gt__(self, other):
-        # Ordering of tasks is defined by their due time
-        return self.due_at > other.due_at
+        # Tasks due sooner are 'greater than' tasks due later. This is necessary for
+        # insort() and pop() as used in TaskQueue.
+        return self.due_at < other.due_at
 
 
 class TaskQueue(object):
     def __init__(self):
         """Class representing a list of pending tasks due at certain times."""
-        self.queue = deque()
+        self.queue = []
 
     def add(self, task):
         """Insert the task into the queue, maintaining sort order"""
@@ -50,11 +56,12 @@ class TaskQueue(object):
 
     def pop(self):
         """Return the next due task, removing it from the queue"""
-        return self.queue.popleft()
+        # We pop from the right since this is more efficient for lists.
+        return self.queue.pop()
 
     def next(self):
         """Return the next due task, without removing it from the queue"""
-        return self.queue[0]
+        return self.queue[-1]
 
     def cancel(self, task):
         """Remove a task from the queue"""
@@ -63,6 +70,8 @@ class TaskQueue(object):
     def __bool__(self):
         # Whether there are any tasks in the queue
         return bool(self.queue)
+
+    __nonzero__ = __bool__  # Python 2 compat
 
 
 class Lock(object):
@@ -164,6 +173,7 @@ class Lock(object):
 
 class rs(enum.IntEnum):
     """enum for the state of a lock request"""
+
     # We haven't done anything with the request yet:
     INITIAL = 0
     # The client has asked for a lock and is waiting for a response:
@@ -175,8 +185,6 @@ class rs(enum.IntEnum):
     ABSENT_HELD = 3
     # The client has the lock and knows it:
     HELD = 4
-    # The lock was released and the request complete, it should not be used again:
-    INVALID = 5
 
 
 class LockRequest(object):
