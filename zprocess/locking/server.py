@@ -26,6 +26,7 @@ class Lock(object):
         self.waiting_writers = set()
         self.readers = set()
         self.writer = None
+        self.invalid = False
 
     @classmethod
     def instance(cls, key, server):
@@ -38,23 +39,32 @@ class Lock(object):
             server.active_locks[key] = inst
             return inst
 
+    def _invalid(self):
+        msg = "Cannot re-use Lock instance after all clients released - "
+        msg +="call Lock.instance() for a new instance."
+        raise RuntimeError(msg)
+
     def _check_cleanup(self):
         """Delete the instance from the ZMQServer's dict of active locks if there are no
         readers, writers or waiters"""
         if not any((self.readers, self.waiting_readers, self.waiting_writers)):
             if self.writer is None:
+                self.invalid = True
                 del self.server.active_locks[self.key]
+                   
 
     def acquire(self, client_id, read_only):
         """Attempt to acquire the lock for the given client. Return True on success, or
         False upon failure. In the latter case, the client will be added to an internal
         list of clients that are waiting for the lock"""
+        if self.invalid:
+            self._invalid()
         try:
             if client_id in self.readers or client_id == self.writer:
                 raise ValueError('Lock already held')
+            if client_id in self.waiting_readers or client_id in self.waiting_writers:
+                raise ValueError('Client already waiting')
             if read_only:
-                if client_id in self.waiting_readers:
-                    raise ValueError('Client already waiting')
                 # The reader can have the lock if there is no writer or waiting writers:
                 if self.writer is None and not self.waiting_writers:
                     self.readers.add(client_id)
@@ -63,8 +73,6 @@ class Lock(object):
                     self.waiting_readers.add(client_id)
                     return False
             else:
-                if client_id in self.waiting_writers:
-                    raise ValueError('Client already waiting')
                 # The writer can have the lock if there are no other readers or writers:
                 if self.writer is None and not self.readers:
                     self.writer = client_id
@@ -79,6 +87,8 @@ class Lock(object):
         """Release the lock held by the given client. If this makes the lock available
         for other waiting clients, acquire the lock for those clients. Return a set of
         client ids that acquired the lock in this way."""
+        if self.invalid:
+            self._invalid()
         try:
             if client_id in self.readers:
                 self.readers.remove(client_id)
@@ -105,6 +115,8 @@ class Lock(object):
             self._check_cleanup()
 
     def give_up(self, client_id):
+        if self.invalid:
+            self._invalid()
         """Remove the client from the list of waiting clients"""
         if client_id in self.waiting_readers:
             self.waiting_readers.remove(client_id)
@@ -364,7 +376,7 @@ class ZMQLockServer(object):
                 # print('received:', request)
                 if len(request) < 3 or request[1] != b'':
                     # Not well formed as [routing_id, '', command, ...]
-                    continue
+                    continue  # pragma: no cover
                 routing_id, command, args = request[0], request[2], request[3:]
                 if command == b'hello':
                     self.send(routing_id, b'hello')
@@ -392,7 +404,8 @@ class ZMQLockServer(object):
         self.run_thread = threading.Thread(target=self.run)
         self.run_thread.daemon = True
         self.run_thread.start()
-        self.started.wait()
+        if not self.started.wait(timeout=2):
+            raise RuntimeError('Server failed to start')  # pragma: no cover
 
     def stop(self):
         self.stopping = True
