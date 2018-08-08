@@ -1,7 +1,7 @@
 from __future__ import unicode_literals, print_function, division
 import sys
 import os
-
+import time
 import zmq
 import unittest
 import xmlrunner
@@ -14,7 +14,7 @@ parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
 from zprocess.locking.server import ZMQLockServer
-
+import zprocess.locking.server
 
 class TemporaryREQSocket(object):
     """Context manager for a REQ socket connecting to a certain port on localhost"""
@@ -158,7 +158,7 @@ class ZLockServerTests(unittest.TestCase):
             # It gets an error:
             self.assertEqual(
                 writer2_copy.recv(),
-                b'error: multiple concurrent requests with same client_id',
+                b'error: multiple concurrent requests with same key and client_id',
             )
             # The first writer releases the lock:
             writer1.send_multipart([b'release', b'key_foo', b'writer1'])
@@ -169,8 +169,112 @@ class ZLockServerTests(unittest.TestCase):
             writer2.send_multipart([b'release', b'key_foo', b'writer2'])
             self.assertEqual(writer2.recv(), b'ok')
 
+    def test_timeout(self):
+        with TemporaryREQSocket(self.port) as sock:
+            # Client acquires the lock with a short timeout
+            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'0.1'])
+            self.assertEqual(sock.recv(), b'ok')
+            # Client waits longer than the timeout before releasing:
+            time.sleep(0.2)
+            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
+            self.assertEqual(sock.recv(), b'error: lock not held')
+
+    def test_already_held(self):
+        with TemporaryREQSocket(self.port) as sock:
+            # Client acquires the lock:
+            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
+            self.assertEqual(sock.recv(), b'ok')
+            # Client makes a second acquisition request without releasing:
+            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
+            self.assertEqual(sock.recv(), b'error: lock already held')
+
+    def test_malformed_requests(self):
+        with TemporaryREQSocket(self.port) as sock:
+            # Invalid command:
+            sock.send_multipart([b'frobulate', b'key_foo', b'client_foo', b'30'])
+            self.assertEqual(sock.recv(), b'error: invalid command')
+            # read_only wrong:
+            sock.send_multipart(
+                [b'acquire', b'key_foo', b'client_foo', b'30', b'not_going_to_write']
+            )
+            self.assertEqual(
+                sock.recv(), b"error: expected 'read_only', got not_going_to_write"
+            )
+            # Too few args to acquire:
+            sock.send_multipart([b'acquire'])
+            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            # Too many args to acquire:
+            sock.send_multipart([b'acquire', b'1', b'2', b'3', b'4', b'5'])
+            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            # Timeout not a number:
+            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'fs'])
+            self.assertEqual(sock.recv(), b'error: timeout fs not a valid number')
+            # Timeout not a valid number:
+            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'-inf'])
+            self.assertEqual(sock.recv(), b'error: timeout -inf not a valid number')
+            # Too few args to release:
+            sock.send_multipart([b'release'])
+            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            # Too many args to release:
+            sock.send_multipart([b'release', b'1', b'2', b'3', b'4', b'5'])
+            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+
+    def test_absentee_acquire(self):
+        with TemporaryREQSocket(self.port) as sock:
+            # First client acquires the lock:
+            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
+            self.assertEqual(sock.recv(), b'ok')
+            # Second client tries to acquire the lock, but is told to retry:
+            try:
+                # Speed up the response:
+                orig_max_response_time = zprocess.locking.server.MAX_RESPONSE_TIME
+                zprocess.locking.server.MAX_RESPONSE_TIME = 0.1
+                sock.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
+                self.assertEqual(sock.recv(), b'retry')
+            finally:
+                zprocess.locking.server.MAX_RESPONSE_TIME = orig_max_response_time
+            # Before the second client retries, the first client releases the lock:
+            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
+            self.assertEqual(sock.recv(), b'ok')
+            # The second client should receive the lock upon retrying:
+            sock.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
+            self.assertEqual(sock.recv(), b'ok')
+
+
+
+def test_speed():
+    with TemporaryREQSocket(7339) as sock:
+        start_time = time.time()
+        sock.send(b'hello')
+        assert sock.recv() == b'hello'
+        for _ in range(1000):
+            sock.send(b'hello')
+            assert sock.recv() == b'hello'
+        print('hello:', (time.time() - start_time)/1000 * 1e6, 'us')
+
+        start_time = time.time()
+        for i in range(1000):
+            sock.send_multipart([b'acquire', b'foo', b'client_foo', b'30'])
+            assert sock.recv() == b'ok'
+            sock.send_multipart([b'release', b'foo', b'client_foo'])
+            assert sock.recv() == b'ok'
+        print('acq/release:', (time.time() - start_time)/1000 * 1e6, 'us')
+
+        start_time = time.time()
+        for i in range(1000):
+            with open('/etc/hosts') as f:
+                pass
+        print('open/close:', (time.time() - start_time)/1000 * 1e6, 'us')
+
+        start_time = time.time()
+        for i in range(1000):
+            pass
+        print('nothing:', (time.time() - start_time)/1000 * 1e6, 'us')
+
+# test_speed()
 
 if __name__ == '__main__':
+
     output = 'test-reports'
     if PY2:
         output = output.encode('utf8')
