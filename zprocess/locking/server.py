@@ -17,66 +17,8 @@ MAX_ABSENT_TIME = 1  # second
 INVALID_NUMBERS = {float('nan'), float('inf'), float('-inf')}
 
 
-class Task(object):
-    def __init__(self, due_in, func, *args, **kwargs):
-        """Wrapper for a function call to be executed after a specified time interval.
-        due_in is how long in the future, in seconds, the function should be called,
-        func is the function to call. All subsequent arguments and keyword arguments
-        will be passed to the function."""
-        self.due_at = monotonic() + due_in
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-        self.called = False
-
-    def due_in(self):
-        """The time interval in seconds until the task is due"""
-        return self.due_at - monotonic()
-
-    def __call__(self):
-        if self.called:
-            raise RuntimeError('Task has already been called')
-        self.called = True
-        return self.func(*self.args, **self.kwargs)
-
-    def __gt__(self, other):
-        # Tasks due sooner are 'greater than' tasks due later. This is necessary for
-        # insort() and pop() as used in TaskQueue.
-        return self.due_at < other.due_at
-
-
-class TaskQueue(object):
-    def __init__(self):
-        """Class representing a list of pending tasks due at certain times."""
-        self.queue = []
-
-    def add(self, task):
-        """Insert the task into the queue, maintaining sort order"""
-        insort(self.queue, task)
-
-    def pop(self):
-        """Return the next due task, removing it from the queue"""
-        # We pop from the right since this is more efficient for lists.
-        return self.queue.pop()
-
-    def next(self):
-        """Return the next due task, without removing it from the queue"""
-        return self.queue[-1]
-
-    def cancel(self, task):
-        """Remove a task from the queue"""
-        self.queue.remove(task)
-
-    def __bool__(self):
-        # Whether there are any tasks in the queue
-        return bool(self.queue)
-
-    __nonzero__ = __bool__  # Python 2 compat
-
-
 class Lock(object):
-    """Object to represent a readers-writer lock. Implementation gives priority to
-    writers"""
+    """A readers-writer lock. Implementation gives priority to writers"""
 
     def __init__(self, key, server):
         self.key = key
@@ -89,6 +31,8 @@ class Lock(object):
 
     @classmethod
     def instance(cls, key, server):
+        """Get an existing instance of the lock, if any, from server.active_locks,
+        otherwise make a new one."""
         if key in server.active_locks:
             return server.active_locks[key]
         else:
@@ -214,16 +158,6 @@ class LockRequest(object):
             server.active_requests[key, client_id] = inst
             return inst
 
-    # For debugging state changes
-    # @property
-    # def state(self):
-    #     return self._state
-
-    # @state.setter
-    # def state(self, state):
-    #     print(self.client_id, 'change state to:', state)
-    #     self._state = state
-
     def on_triggered_acquisition(self):
         """The lock has been acquired for this client in response to being released by
         one or more other clients"""
@@ -346,6 +280,50 @@ class LockRequest(object):
 
     def _cleanup(self):
         del self.server.active_requests[self.key, self.client_id]
+
+
+class Task(object):
+    def __init__(self, due_in, func, *args, **kwargs):
+        """Wrapper for a function call to be executed after a specified time interval.
+        due_in is how long in the future, in seconds, the function should be called,
+        func is the function to call. All subsequent arguments and keyword arguments
+        will be passed to the function."""
+        self.due_at = monotonic() + due_in
+        self.func = func
+        self.args = args
+        self.kwargs = kwargs
+        self.called = False
+
+    def due_in(self):
+        """The time interval in seconds until the task is due"""
+        return self.due_at - monotonic()
+
+    def __call__(self):
+        if self.called:
+            raise RuntimeError('Task has already been called')
+        self.called = True
+        return self.func(*self.args, **self.kwargs)
+
+    def __gt__(self, other):
+        # Tasks due sooner are 'greater than' tasks due later. This is necessary for
+        # insort() and pop() as used in TaskQueue.
+        return self.due_at < other.due_at
+
+
+class TaskQueue(list):
+    """A list of pending tasks due at certain times. Tasks are stored, with the soonest
+    due at the end of the list, to be removed with pop()"""
+
+    def add(self, task):
+        """Insert the task into the queue, maintaining sort order"""
+        insort(self, task)
+
+    def next(self):
+        """Return the next due task, without removing it from the queue"""
+        return self[-1]
+
+    def cancel(self, task):
+        self.remove(task)
 
 
 class ZMQLockServer(object):
