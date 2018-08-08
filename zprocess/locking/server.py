@@ -4,25 +4,12 @@ import zmq
 from bisect import insort
 from collections import deque
 import threading
+import enum
 
 MAX_RESPONSE_TIME = 1  # second
 MAX_ABSENT_TIME = 1  # second
 
-
-class AlreadyHeld(ValueError):
-    pass
-
-
-class AlreadyWaiting(ValueError):
-    pass
-
-
-class NotHeld(ValueError):
-    pass
-
-
-class ConcurrentRequests(ValueError):
-    pass
+INVALID_NUMBERS = {float('nan'), float('inf'), float('-inf')}
 
 
 class Task(object):
@@ -35,12 +22,16 @@ class Task(object):
         self.func = func
         self.args = args
         self.kwargs = kwargs
+        self.called = False
 
     def due_in(self):
         """The time interval in seconds until the task is due"""
         return self.due_at - time.time()
 
     def __call__(self):
+        if self.called:
+            raise RuntimeError('Task has already been called')
+        self.called = True
         return self.func(*self.args, **self.kwargs)
 
     def __gt__(self, other):
@@ -78,21 +69,30 @@ class Lock(object):
     """Object to represent a readers-writer lock. Implementation gives priority to
     writers"""
 
-    def __init__(self, key, active_locks):
+    def __init__(self, key, server):
         self.key = key
         # Dict of active locks from the parent ZMQLockServer
-        self.active_locks = active_locks
+        self.server = server
         self.waiting_readers = set()
         self.waiting_writers = set()
         self.readers = set()
         self.writer = None
+
+    @classmethod
+    def instance(cls, key, server):
+        if key in server.active_locks:
+            return server.active_locks[key]
+        else:
+            inst = cls(key, server)
+            server.active_locks[key] = inst
+            return inst
 
     def _check_cleanup(self):
         """Delete the instance from the ZMQServer's dict of active locks if there are no
         readers, writers or waiters"""
         if not any((self.readers, self.waiting_readers, self.waiting_writers)):
             if self.writer is None:
-                del self.active_locks[self.key]
+                del self.server.active_locks[self.key]
 
     def acquire(self, client_id, read_only):
         """Attempt to acquire the lock for the given client. Return True on success, or
@@ -100,10 +100,10 @@ class Lock(object):
         list of clients that are waiting for the lock"""
         try:
             if client_id in self.readers or client_id == self.writer:
-                raise AlreadyHeld
+                raise ValueError('Lock already held')
             if read_only:
                 if client_id in self.waiting_readers:
-                    raise AlreadyWaiting
+                    raise ValueError('Client already waiting')
                 # The reader can have the lock if there is no writer or waiting writers:
                 if self.writer is None and not self.waiting_writers:
                     self.readers.add(client_id)
@@ -113,7 +113,7 @@ class Lock(object):
                     return False
             else:
                 if client_id in self.waiting_writers:
-                    raise AlreadyWaiting
+                    raise ValueError('Client already waiting')
                 # The writer can have the lock if there are no other readers or writers:
                 if self.writer is None and not self.readers:
                     self.writer = client_id
@@ -148,7 +148,7 @@ class Lock(object):
                     self.waiting_readers = set()
                     return acquired
             else:
-                raise NotHeld
+                raise ValueError('Lock not held')
             return set()
         finally:
             self._check_cleanup()
@@ -162,6 +162,184 @@ class Lock(object):
         self._check_cleanup()
 
 
+class rs(enum.IntEnum):
+    """enum for the state of a lock request"""
+    # We haven't done anything with the request yet:
+    INITIAL = 0
+    # The client has asked for a lock and is waiting for a response:
+    PRESENT_WAITING = 1
+    # The client was told to retry, but hasn't yet done so:
+    ABSENT_WAITING = 2
+    # The client was told to retry, hasn't yet done so, but has been granted the lock in
+    # the meantime:
+    ABSENT_HELD = 3
+    # The client has the lock and knows it:
+    HELD = 4
+    # The lock was released and the request complete, it should not be used again:
+    INVALID = 5
+
+
+class LockRequest(object):
+    """Object representing an active lock request. Functionally similar to a
+    coroutine"""
+
+    def __init__(self, key, client_id, server):
+        self.key = key
+        self.client_id = client_id
+        self.routing_id = None
+        self.timeout = None
+        self.read_only = None
+        self.server = server
+        self.state = rs.INITIAL
+        self.advise_retry_task = None
+        self.give_up_task = None
+        self.timeout_task = None
+
+    @classmethod
+    def instance(cls, key, client_id, server):
+        """Get an existing instance of the request, if any, from server.active_requests,
+        otherwise make a new one."""
+        if (key, client_id) in server.active_requests:
+            return server.active_requests[key, client_id]
+        else:
+            inst = cls(key, client_id, server)
+            server.active_requests[key, client_id] = inst
+            return inst
+
+    # For debugging state changes
+    # @property
+    # def state(self):
+    #     return self._state
+
+    # @state.setter
+    # def state(self, state):
+    #     print(self.client_id, 'change state to:', state)
+    #     self._state = state
+
+    def on_triggered_acquisition(self):
+        """The lock has been acquired for this client in response to being released by
+        one or more other clients"""
+        if self.state == rs.PRESENT_WAITING:
+            self.server.send(self.routing_id, b'ok')
+            self.schedule_timeout_release(self.timeout)
+            self.cancel_advise_retry()
+            self.state = rs.HELD
+        elif self.state == rs.ABSENT_WAITING:
+            self.cancel_give_up()
+            self.schedule_timeout_release(MAX_ABSENT_TIME)
+            self.state = rs.ABSENT_HELD
+        else:
+            raise ValueError(self.state)
+
+    def _initial_acquisition(self, routing_id, timeout, read_only):
+        self.routing_id = routing_id
+        self.timeout = timeout
+        self.read_only = read_only
+        lock = Lock.instance(self.key, self.server)
+        if lock.acquire(self.client_id, read_only):
+            self.server.send(routing_id, b'ok')
+            self.schedule_timeout_release(timeout)
+            self.state = rs.HELD
+        else:
+            self.schedule_advise_retry()
+            self.state = rs.PRESENT_WAITING
+
+    def release(self):
+        lock = Lock.instance(self.key, self.server)
+        acquirers = lock.release(self.client_id)
+        for client_id in acquirers:
+            other_request = LockRequest.instance(self.key, client_id, self.server)
+            other_request.on_triggered_acquisition()
+        self._cleanup()
+
+    def acquire_request(self, routing_id, timeout, read_only):
+        """A client has requested to acquire the lock"""
+        if self.state == rs.INITIAL:
+            # First attempt to acquire the lock:
+            self._initial_acquisition(routing_id, timeout, read_only)
+        elif self.state == rs.ABSENT_WAITING:
+            # A retry attempt, the lock is still not free:
+            self.cancel_give_up()
+            if read_only != self.read_only:
+                # Client has changed their mind about whether they want a read_only
+                # lock. Give up and start again:
+                self._initial_acquisition(routing_id, timeout, read_only)
+            else:
+                self.timeout = timeout
+                self.routing_id = routing_id
+                self.schedule_advise_retry()
+                self.state = rs.PRESENT_WAITING
+        elif self.state == rs.ABSENT_HELD:
+            # A retry attempt, and the lock was acquired whilst the client was absent.
+            self.server.send(routing_id, b'ok')
+            self.cancel_timeout_release()
+            self.schedule_timeout_release(timeout)
+            self.state = rs.HELD
+        elif self.state == rs.PRESENT_WAITING:
+            # Client not allowed to make two requests without waiting for a response:
+            msg = b'error: multiple concurrent requests with same key and client_id'
+            self.server.send(routing_id, msg)
+        elif self.state == rs.HELD:
+            self.server.send(routing_id, b'error: lock already held')
+        else:
+            raise ValueError(self.state)
+
+    def release_request(self, routing_id):
+        if self.state == rs.HELD:
+            self.server.send(routing_id, b'ok')
+            self.release()
+            self.cancel_timeout_release()
+        elif self.state == rs.ABSENT_HELD:
+            # A lie, but the client didn't follow protocol, so no lock for you:
+            self.server.send(routing_id, b'error: lock not held')
+            self.release()
+            self.cancel_timeout_release()
+        elif self.state == rs.PRESENT_WAITING:
+            # Client not allowed to make two requests without waiting for a response:
+            msg = b'error: multiple concurrent requests with same key and client_id'
+            self.server.send(routing_id, msg)
+        elif self.state in (rs.INITIAL, rs.ABSENT_WAITING):
+            self.server.send(routing_id, b'error: lock not held')
+        else:
+            raise ValueError(self.state)
+
+    def schedule_advise_retry(self):
+        self.advise_retry_task = Task(MAX_RESPONSE_TIME, self.advise_retry)
+        self.server.tasks.add(self.advise_retry_task)
+
+    def cancel_advise_retry(self):
+        self.server.tasks.cancel(self.advise_retry_task)
+
+    def advise_retry(self):
+        """Tell the client to retry acquiring the lock"""
+        self.server.send(self.routing_id, b'retry')
+        self.schedule_give_up()
+        self.state = rs.ABSENT_WAITING
+
+    def schedule_give_up(self):
+        self.give_up_task = Task(MAX_ABSENT_TIME, self.give_up)
+        self.server.tasks.add(self.give_up_task)
+
+    def cancel_give_up(self):
+        self.server.tasks.cancel(self.give_up_task)
+
+    def give_up(self):
+        """Stop trying to acquire the lock"""
+        lock = Lock.instance(self.key, self.server)
+        lock.give_up(self.client_id)
+        self._cleanup()
+
+    def schedule_timeout_release(self, timeout):
+        self.timeout_task = Task(timeout, self.release)
+        self.server.tasks.add(self.timeout_task)
+
+    def cancel_timeout_release(self):
+        self.server.tasks.cancel(self.timeout_task)
+
+    def _cleanup(self):
+        del self.server.active_requests[self.key, self.client_id]
+
+
 class ZMQLockServer(object):
     def __init__(self, port=None, bind_address='tcp://0.0.0.0'):
         self.port = port
@@ -173,30 +351,11 @@ class ZMQLockServer(object):
         self.active_locks = {}
 
         # Lock-acquiring clients we haven't replied to yet:
-        self.pending_requests = {}
-        # Tasks for timing out locks if clients don't release them:
-        self.timeout_tasks = {}
-        # Tasks for advising the clients that they need to retry:
-        self.advise_retry_tasks = {}
-        # Tasks for giving up trying to acquire a lock if the client does not retry:
-        self.give_up_tasks = {}
-        # Tasks for releasing a lock that was acquired after a client was advised that
-        # it needed to retry, but before it responded with a retry request.
-        self.absentee_release_tasks = {}
+        self.active_requests = {}
 
         self.run_thread = None
         self.stopping = False
         self.started = threading.Event()
-
-    def get_lock(self, key):
-        """Return the lock object with the given key if it already exists, else make
-        a new instance"""
-        if key in self.active_locks:
-            return self.active_locks[key]
-        else:
-            lock = Lock(key, self.active_locks)
-            self.active_locks[key] = lock
-            return lock
 
     def run(self):
         self.context = zmq.Context.instance()
@@ -206,7 +365,7 @@ class ZMQLockServer(object):
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
         self.started.set()
-        print('starting')
+        # print('starting')
         while True:
             # Wait until we receive a request or a task is due:
             if self.tasks:
@@ -217,10 +376,9 @@ class ZMQLockServer(object):
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
-                print('received:', request)
+                # print('received:', request)
                 if len(request) < 3 or request[1] != b'':
                     # Not well formed as [routing_id, '', command, ...]
-                    print('not well formed')
                     continue
                 routing_id, command, args = request[0], request[2], request[3:]
                 if command == b'hello':
@@ -263,23 +421,8 @@ class ZMQLockServer(object):
         self.stopping = False
 
     def send(self, routing_id, message):
-        print('sending:', [routing_id, b'', message])
+        # print('sending:', [routing_id, b'', message])
         self.router.send_multipart([routing_id, b'', message])
-
-    def start_request(self, routing_id, client_id, timeout, read_only):
-        """Record that we have a pending request for a certain client, so that
-        we can return errors if a client with the same client_id sends us
-        more requests before we have responded to the first one."""
-        if client_id in self.pending_requests:
-            msg = b'error: multiple concurrent requests with same client_id'
-            self.send(routing_id, msg)
-            raise ConcurrentRequests
-        else:
-            self.pending_requests[client_id] = routing_id, timeout, read_only
-
-    def end_request(self, client_id):
-        """Mark a pending request as done"""
-        del self.pending_requests[client_id]
 
     def acquire_request(self, routing_id, args):
         if not 3 <= len(args) <= 4:
@@ -289,7 +432,13 @@ class ZMQLockServer(object):
         try:
             timeout = float(timeout)
         except ValueError:
-            self.send(routing_id, b'error: timeout %s not a number' % timeout)
+            self.send(routing_id, b'error: timeout %s not a valid number' % timeout)
+            return
+        if timeout in INVALID_NUMBERS:
+            self.send(
+                routing_id,
+                b'error: timeout %s not a valid number' % str(timeout).encode(),
+            )
             return
         if len(args) == 4:
             if args[3] != b'read_only':
@@ -298,170 +447,16 @@ class ZMQLockServer(object):
             read_only = True
         else:
             read_only = False
-        try:
-            self.start_request(routing_id, client_id, timeout, read_only)
-        except ConcurrentRequests:
-            return
-        else:
-            self.acquire(routing_id, key, client_id, timeout, read_only)
+        request = LockRequest.instance(key, client_id, self)
+        request.acquire_request(routing_id, timeout, read_only)
 
     def release_request(self, routing_id, args):
         if not len(args) == 2:
             self.send(routing_id, b'error: wrong number of arguments')
-        key, client_id = args
-        self.release(routing_id, key, client_id)
-
-    def acquire(self, routing_id, key, client_id, timeout, read_only):
-        """Acquire a lock for a client."""
-        if (key, client_id, read_only) in self.absentee_release_tasks:
-            # Lock was previously acquired in the client's absence:
-            self.cancel_absentee_release(key, client_id, read_only)
-            self.schedule_timeout(key, client_id, timeout)
-            self.send(routing_id, b'ok')
-            self.end_request(client_id)
             return
-        elif (key, client_id, not read_only) in self.absentee_release_tasks:
-            # Lock was previously acquired in the client's absence, but with a
-            # different value for read_only. Release it and process as normal:
-            self.cancel_absentee_release(key, client_id, not read_only)
-            self.release(None, key, client_id)
-
-        lock = self.get_lock(key)
-
-        if (key, client_id) in self.give_up_tasks:
-            # This is a retry. Do not give_up, for the client has returned.
-            self.cancel_give_up(key, client_id)
-            # Keep waiting until the lock is free:
-            self.schedule_advise_retry(routing_id, key, client_id)
-        else:
-            try:
-                success = lock.acquire(client_id, read_only)
-            except AlreadyHeld:
-                self.send(routing_id, b'error: lock already held')
-                self.end_request(client_id)
-            else:
-                if success:
-                    self.post_acquire(routing_id, key, client_id, timeout, read_only)
-                else:
-                    self.schedule_advise_retry(routing_id, key, client_id)
-
-    def post_acquire(self, routing_id, key, client_id, timeout, read_only):
-        """Actions to be taken after a lock was acquired. If routing_id is not None,
-        then the acquisition was whilst a client was waiting for a response, in which
-        case we send the response. Otherwise the client is absentee and we schedule the
-        lock to be released after MAX_ABSENT_TIME if the client does not retry"""
-        if routing_id is None:
-            self.schedule_absentee_release(key, client_id, read_only)
-        else:
-            self.send(routing_id, b'ok')
-            self.end_request(client_id)
-            self.schedule_timeout(key, client_id, timeout)
-            if (routing_id, key, client_id) in self.advise_retry_tasks:
-                self.cancel_advise_retry(routing_id, key, client_id)
-
-    def release(self, routing_id, key, client_id):
-        """Release a lock for a client. If routing_id is None, then it is assumed that
-        there is no pending request to reply to."""
-        for k in ((key, client_id, True), (key, client_id, False)):
-            # If the lock was acquired while the client was absent, then it has not
-            # followed protocol in acquiring the lock, so deny it:
-            if k in self.absentee_release_tasks:
-                self.send(routing_id, b'error: lock not held')
-                self.cancel_absentee_release(*k)
-                self.absentee_release(*k)
-                return
-
-        lock = self.get_lock(key)
-        try:
-            acquirers = lock.release(client_id)
-        except NotHeld:
-            assert routing_id is not None
-            self.send(routing_id, b'error: lock not held')
-        else:
-            if routing_id is not None:
-                self.send(routing_id, b'ok')
-                self.cancel_timeout(key, client_id)
-            self.process_triggered_acquisitions(key, acquirers)
-
-    def process_triggered_acquisitions(self, key, acquirers):
-        """When the lock was acquired by a number of clients as a result of being
-        released, call self.post_acquire on each one"""
-        for client_id in acquirers:
-            routing_id, timeout, read_only = self.pending_requests[client_id]
-            self.post_acquire(routing_id, key, client_id, timeout, read_only)
-
-    def schedule_advise_retry(self, routing_id, key, client_id):
-        """Queue up a task to tell the client to retry if we have not acquired the lock
-        for it after MAX_RESPONSE_TIME"""
-        task = Task(MAX_RESPONSE_TIME, self.advise_retry, routing_id, key, client_id)
-        self.tasks.add(task)
-        self.advise_retry_tasks[routing_id, key, client_id] = task
-
-    def cancel_advise_retry(self, routing_id, key, client_id):
-        """Cancel a scheduled advise_retry task"""
-        task = self.advise_retry_tasks.pop((routing_id, key, client_id))
-        self.tasks.cancel(task)
-
-    def advise_retry(self, routing_id, key, client_id):
-        """Tell the client to retry acquiring the lock"""
-        self.send(routing_id, b'retry')
-        self.end_request(client_id)
-        del self.advise_retry_tasks[routing_id, key, client_id]
-        self.schedule_give_up(key, client_id)
-
-    def schedule_timeout(self, key, client_id, timeout):
-        """Queue up a task to release the lock if the client has not released it
-        before the timeout"""
-        task = Task(timeout, self.timeout, key, client_id)
-        self.tasks.add(task)
-        self.timeout_tasks[key, client_id] = task
-
-    def cancel_timeout(self, key, client_id):
-        """Cancel a scheduled timeout task"""
-        task = self.timeout_tasks.pop((key, client_id))
-        self.tasks.cancel(task)
-
-    def timeout(self, key, client_id):
-        """Release a lock that has been held for too long"""
-        self.release(None, key, client_id)
-        del self.timeout_tasks[key, client_id]
-
-    def schedule_absentee_release(self, key, client_id, read_only):
-        """Queue up a task to release the lock, which was acquired in the client's
-        absence, if it does not sent a retry request within MAX_ABSENT_TIME"""
-        task = Task(MAX_ABSENT_TIME, self.absentee_release, key, client_id, read_only)
-        self.tasks.add(task)
-        self.absentee_release_tasks[key, client_id, read_only] = task
-
-    def cancel_absentee_release(self, key, client_id, read_only):
-        """Cancel a scheduled absentee_release task"""
-        task = self.absentee_release_tasks.pop((key, client_id, read_only))
-        self.tasks.cancel(task)
-
-    def absentee_release(self, key, client_id, read_only):
-        """Release a lock that was acquired in the client's absence, if the client did
-        not send a retry request within MAX_ABSENT_TIME"""
-        self.release(None, key, client_id)
-        del self.absentee_release_tasks[key, client_id, read_only]
-
-    def schedule_give_up(self, key, client_id):
-        """Queue up a task to give up waiting for the lock if the client doesn't retry
-        within MAX_ABSENT_TIME"""
-        task = Task(MAX_ABSENT_TIME, self.give_up, key, client_id)
-        self.tasks.add(task)
-        self.give_up_tasks[key, client_id] = task
-
-    def cancel_give_up(self, key, client_id):
-        """Cancel a scheduled give_up task"""
-        task = self.give_up_tasks.pop((key, client_id))
-        self.tasks.cancel(task)
-
-    def give_up(self, key, client_id):
-        """Give up waiting for a lock, if a client did not retry within
-        MAX_ABSENT_TIME"""
-        lock = self.get_lock(key)
-        lock.give_up(client_id)
-        del self.give_up_tasks[key, client_id]
+        key, client_id = args
+        request = LockRequest.instance(key, client_id, self)
+        request.release_request(routing_id)
 
 
 if __name__ == '__main__':
