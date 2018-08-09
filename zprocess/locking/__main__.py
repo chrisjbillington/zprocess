@@ -64,8 +64,8 @@ else:
 #
 # Anything the server replies with other than ['ok'] or ['retry'] will be a single zmq
 # message and should be considered an error and raised in the client code. This will
-# occur if the client provides the wrong number of messages, if it spells 'acquire'
-# wrong or similar.
+# occur if the client provides the wrong number of messages, tries to release a lock it
+# has not acquired, if it spells 'acquire' wrong or similar.
 #
 # To release a lock, send a three-part multipart message:
 #
@@ -93,6 +93,14 @@ else:
 # granted the lock, and will have to wait. The server will then wait until all the
 # existing readers have released the lock, then it will give the lock to the writer. Any
 # waiting writers will be granted the lock before the waiting readers.
+#
+# The locks are reentrant. If a client that already holds the lock requests to acquire
+# it again, the request will be granted, unless the first acquisition was read_only and
+# the second is not, which results in an error. The lock must be released as many times
+# as it is acquired. Re-entrant locks will time out at the latest time consistent with
+# the set of requested timeouts, at which point the lock will be released completely for
+# that client (i.e. not just the latest adquisition).
+#
 
 def main():
     try:
