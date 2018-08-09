@@ -340,6 +340,74 @@ class ZLockServerTests(unittest.TestCase):
                 client.release()
                 client.assertReceived(ERR_NOT_HELD)
 
+    def test_reentrant_contending_writers(self):
+        reader = self.client(b'key_foo', b'reader')
+        writer = self.client(b'key_foo', b'writer')
+        with reader, writer:
+            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+                # Reader acquires the lock:
+                reader.acquire()
+                reader.assertReceived(b'ok')
+                # Writer tries to acquire the lock, but is told to retry:
+                writer.acquire()
+                writer.assertReceived(b'retry')
+                # Reader reentrantly acquires the lock:
+                reader.acquire()
+                reader.assertReceived(b'ok')
+                # Writer still told to retry:
+                writer.acquire()
+                writer.assertReceived(b'retry')
+                # Reader releases fully:
+                reader.release()
+                reader.assertReceived(b'ok')
+                reader.release()
+                reader.assertReceived(b'ok')
+                # Now the writer gets it:
+                writer.acquire()
+                writer.assertReceived(b'ok')
+                # And releases:
+                writer.release()
+                writer.assertReceived(b'ok')
+                # Both shouldn't be able to release more:
+                writer.release()
+                writer.assertReceived(ERR_NOT_HELD)
+                reader.release()
+                reader.assertReceived(ERR_NOT_HELD)
+
+    def test_reentrant_reader_with_waiting_writer(self):
+        reader = self.client(b'key_foo', b'reader')
+        writer = self.client(b'key_foo', b'writer')
+        with reader, writer:
+            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+                # Reader acquires the lock:
+                reader.acquire(read_only=True)
+                reader.assertReceived(b'ok')
+                # Writer tries to acquire the lock, but is told to retry:
+                writer.acquire()
+                writer.assertReceived(b'retry')
+                # Reader reentrantly acquires the lock:
+                reader.acquire(read_only=True)
+                reader.assertReceived(b'ok')
+                # Writer still told to retry:
+                writer.acquire()
+                writer.assertReceived(b'retry')
+                # Reader releases fully:
+                reader.release()
+                reader.assertReceived(b'ok')
+                reader.release()
+                reader.assertReceived(b'ok')
+                # Now the writer gets it:
+                writer.acquire()
+                writer.assertReceived(b'ok')
+                # And releases:
+                writer.release()
+                writer.assertReceived(b'ok')
+                # Both shouldn't be able to release more:
+                writer.release()
+                writer.assertReceived(ERR_NOT_HELD)
+                reader.release()
+                reader.assertReceived(ERR_NOT_HELD)
+
     def test_invalid_reentry(self):
         with self.client(b'key_foo', b'client_foo') as client:
             # Client acquires the lock as reader:
