@@ -87,25 +87,9 @@ class Lock(object):
         try:
             if client_id in self.waiting_readers or client_id in self.waiting_writers:
                 raise AlreadyWaiting('Client already waiting')
-            if read_only:
-                if self.writer is not None:
-                    # Reader must wait if there is a writer:
-                    self.waiting_readers.add(client_id)
-                    return False
-                if self.waiting_writers:
-                    # Reader can re-enter the lock if there are waiting writers, but
-                    # must wait to acquire it initially:
-                    if client_id in self.readers:
-                        self.readers[client_id] += 1
-                        return True
-                    else:
-                        self.waiting_readers.add(client_id)
-                        return False
-                else:
-                    # Acquire or re-enter the lock:
-                    self.readers[client_id] += 1
-                    return True
-            else:
+            if not read_only or self.writer == client_id:
+                # A writer, or a writer reentering as a reader, for which we will simply
+                # increment its reentrancy level
                 if client_id in self.readers:
                     msg = 'Cannot re-enter read-only lock as a writer'
                     raise InvalidReentry(msg)
@@ -118,6 +102,25 @@ class Lock(object):
                 else:
                     self.waiting_writers.add(client_id)
                     return False
+            else:
+                # A reader:
+                if self.writer is not None and self.writer != client_id:
+                    # Reader must wait if there is a writer:
+                    self.waiting_readers.add(client_id)
+                    return False
+                if self.waiting_writers:
+                    # Reader can reenter the lock if there are waiting writers, but
+                    # must wait to acquire it initially:
+                    if client_id in self.readers:
+                        self.readers[client_id] += 1
+                        return True
+                    else:
+                        self.waiting_readers.add(client_id)
+                        return False
+                else:
+                    # Acquire or re-enter the lock:
+                    self.readers[client_id] += 1
+                    return True
         finally:
             self._check_cleanup()
 
@@ -172,6 +175,9 @@ class Lock(object):
             self.waiting_writers.remove(client_id)
         self._check_cleanup()
 
+    def isheldby(self, client_id):
+        """Return whether the given client has the lock"""
+        return client_id in self.readers or client_id == self.writer
 
 class rs(enum.IntEnum):
     """enum for the state of a lock request"""
@@ -247,13 +253,17 @@ class LockRequest(object):
     def release(self, fully=False):
         """Release the lock for the client, and process any triggered acquisitions. If
         fully is True, the lock will be completely released, regardless of the current
-        reentrancy level."""
+        reentrancy level. Return whether the lock is still held."""
         lock = Lock.instance(self.key, self.server)
         acquirers = lock.release(self.client_id, fully=fully)
         for client_id in acquirers:
             other_request = LockRequest.instance(self.key, client_id, self.server)
             other_request.on_triggered_acquisition()
-        self._cleanup()
+        still_held = lock.isheldby(self.client_id)
+        if not still_held:
+            # If this was the final release, then this request is over:
+            self._cleanup()
+        return still_held
 
     def acquire_request(self, routing_id, timeout, read_only):
         """A client has requested to acquire the lock"""
@@ -261,7 +271,7 @@ class LockRequest(object):
             # First attempt to acquire the lock:
             self._initial_acquisition(routing_id, timeout, read_only)
         elif self.state is rs.HELD:
-            # A re-entry of an already held lock:
+            # A reentry of an already held lock:
             lock = Lock.instance(self.key, self.server)
             try:
                 assert lock.acquire(self.client_id, read_only)
@@ -300,8 +310,9 @@ class LockRequest(object):
     def release_request(self, routing_id):
         if self.state is rs.HELD:
             self.server.send(routing_id, b'ok')
-            self.release()
-            self.cancel_timeout_release()
+            still_held = self.release()
+            if not still_held:
+                self.cancel_timeout_release()
         elif self.state is rs.ABSENT_HELD:
             # A lie, but the client didn't follow protocol, so no lock for you:
             self.server.send(routing_id, ERR_NOT_HELD)
@@ -398,7 +409,7 @@ class TaskQueue(list):
 
 
 class ZMQLockServer(object):
-    def __init__(self, port=None, bind_address='tcp://0.0.0.0'):
+    def __init__(self, port=None, bind_address='tcp://0.0.0.0', silent=False):
         self.port = port
         self._initial_port = port
         self.bind_address = bind_address
@@ -414,6 +425,7 @@ class ZMQLockServer(object):
         self.stopping = False
         self.started = threading.Event()
         self.running = False
+        self.silent = silent
 
     def run(self):
         self.context = zmq.Context.instance()
@@ -424,7 +436,9 @@ class ZMQLockServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        print('This is zlock server, running on %s:%d' % (self.bind_address, self.port))
+        if not self.silent:
+            msg = 'This is zlock server, running on %s:%d'
+            print(msg % (self.bind_address, self.port))
         self.running = True
         self.started.set()
         while True:

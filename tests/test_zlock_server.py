@@ -102,7 +102,7 @@ class Client(object):
 class ZLockServerTests(unittest.TestCase):
     def setUp(self):
         # Run the server on a random port on localhost:
-        self.server = ZMQLockServer(bind_address='tcp://127.0.0.1')
+        self.server = ZMQLockServer(bind_address='tcp://127.0.0.1', silent=True)
         self.server.run_in_thread()
         self.port = self.server.port
 
@@ -321,6 +321,24 @@ class ZLockServerTests(unittest.TestCase):
             client.release()
             # And gets an error:
             client.assertReceived(ERR_NOT_HELD)
+
+    def test_reentry(self):
+        with self.client(b'key_foo', b'client_foo') as client:
+            for first, second in [(True, True), (False, False), (False, True)]:
+                # Client acquires the lock:
+                client.acquire(read_only=first)
+                client.assertReceived(b'ok')
+                # Client reentrantly requests the lock again:
+                client.acquire(read_only=second)
+                client.assertReceived(b'ok')
+                # Release:
+                client.release()
+                client.assertReceived(b'ok')
+                client.release()
+                client.assertReceived(b'ok')
+                # Error if the client releases too far:
+                client.release()
+                client.assertReceived(ERR_NOT_HELD)
 
     def test_invalid_reentry(self):
         with self.client(b'key_foo', b'client_foo') as client:
@@ -546,7 +564,9 @@ class OtherTests(unittest.TestCase):
 
         for _ in range(1):
             port = random.randint(40000, 60000)
-            server = ZMQLockServer(bind_address='tcp://127.0.0.1', port=port)
+            server = ZMQLockServer(
+                bind_address='tcp://127.0.0.1', port=port, silent=True
+            )
             server.run_in_thread()
             break
         else:
@@ -564,7 +584,7 @@ class OtherTests(unittest.TestCase):
 
     def test_stop_unstarted(self):
         # Can't stop a server that's not running:
-        server = ZMQLockServer(bind_address='tcp://127.0.0.1')
+        server = ZMQLockServer(bind_address='tcp://127.0.0.1', silent=True)
         with self.assertRaises(RuntimeError):
             server.stop()
 
