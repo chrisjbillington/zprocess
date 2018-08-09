@@ -147,18 +147,18 @@ class Lock(object):
                 if self.writer_reentrancy_level == 0 or fully:
                     self.writer = None
                     self.writer_reentrancy_level = 0
-                # Is there a waiting writer to give the lock to?
-                if self.waiting_writers:
-                    self.writer = self.waiting_writers.pop()
-                    self.writer_reentrancy_level = 1
-                    return {self.writer}
-                # Are there waiting readers to give the lock to?
-                if self.waiting_readers:
-                    for reader_client_id in self.waiting_readers:
-                        self.readers[reader_client_id] += 1
-                    acquired = self.waiting_readers
-                    self.waiting_readers = set()
-                    return acquired
+                    # Is there a waiting writer to give the lock to?
+                    if self.waiting_writers:
+                        self.writer = self.waiting_writers.pop()
+                        self.writer_reentrancy_level = 1
+                        return {self.writer}
+                    # Are there waiting readers to give the lock to?
+                    if self.waiting_readers:
+                        for reader_client_id in self.waiting_readers:
+                            self.readers[reader_client_id] += 1
+                        acquired = self.waiting_readers
+                        self.waiting_readers = set()
+                        return acquired
             else:
                 raise NotHeld('Lock not held')
             return set()
@@ -178,6 +178,7 @@ class Lock(object):
     def isheldby(self, client_id):
         """Return whether the given client has the lock"""
         return client_id in self.readers or client_id == self.writer
+
 
 class rs(enum.IntEnum):
     """enum for the state of a lock request"""
@@ -436,7 +437,7 @@ class ZMQLockServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        if not self.silent:
+        if not self.silent:  # pragma: no cover
             msg = 'This is zlock server, running on %s:%d'
             print(msg % (self.bind_address, self.port))
         self.running = True
@@ -452,7 +453,7 @@ class ZMQLockServer(object):
                 # A request was received:
                 request = self.router.recv_multipart()
                 # print('received:', request)
-                if len(request) < 3 or request[1] != b'':
+                if len(request) < 3 or request[1] != b'':  # pragma: no cover
                     # Not well formed as [routing_id, '', command, ...]
                     continue  # pragma: no cover
                 routing_id, command, args = request[0], request[2], request[3:]
