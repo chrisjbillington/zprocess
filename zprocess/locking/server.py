@@ -1,5 +1,4 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
-import sys
 from bisect import insort
 import threading
 import enum
@@ -22,7 +21,6 @@ class Lock(object):
 
     def __init__(self, key, server):
         self.key = key
-        # Dict of active locks from the parent ZMQLockServer
         self.server = server
         self.waiting_readers = set()
         self.waiting_writers = set()
@@ -43,7 +41,7 @@ class Lock(object):
 
     def _invalid(self):
         msg = "Cannot re-use Lock instance after all clients released - "
-        msg +="call Lock.instance() for a new instance."
+        msg += "call Lock.instance() for a new instance."
         raise RuntimeError(msg)
 
     def _check_cleanup(self):
@@ -53,7 +51,6 @@ class Lock(object):
             if self.writer is None:
                 self.invalid = True
                 del self.server.active_locks[self.key]
-                   
 
     def acquire(self, client_id, read_only):
         """Attempt to acquire the lock for the given client. Return True on success, or
@@ -117,9 +114,9 @@ class Lock(object):
             self._check_cleanup()
 
     def give_up(self, client_id):
+        """Remove the client from the list of waiting clients"""
         if self.invalid:
             self._invalid()
-        """Remove the client from the list of waiting clients"""
         if client_id in self.waiting_readers:
             self.waiting_readers.remove(client_id)
         elif client_id in self.waiting_writers:
@@ -183,7 +180,7 @@ class LockRequest(object):
             self.schedule_timeout_release(MAX_ABSENT_TIME)
             self.state = rs.ABSENT_HELD
         else:
-            raise ValueError(self.state) # pragma: no cover
+            raise ValueError(self.state)  # pragma: no cover
 
     def _initial_acquisition(self, routing_id, timeout, read_only):
         self.routing_id = routing_id
@@ -320,12 +317,12 @@ class Task(object):
 
     def __gt__(self, other):
         # Tasks due sooner are 'greater than' tasks due later. This is necessary for
-        # insort() and pop() as used in TaskQueue.
+        # insort() and pop() as used with TaskQueue.
         return self.due_at < other.due_at
 
 
 class TaskQueue(list):
-    """A list of pending tasks due at certain times. Tasks are stored, with the soonest
+    """A list of pending tasks due at certain times. Tasks are stored with the soonest
     due at the end of the list, to be removed with pop()"""
 
     def add(self, task):
@@ -361,6 +358,8 @@ class ZMQLockServer(object):
     def run(self):
         self.context = zmq.Context.instance()
         self.router = self.context.socket(zmq.ROUTER)
+        poller = zmq.Poller()
+        poller.register(self.router, zmq.POLLIN)
         if self.port is not None:
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
@@ -374,7 +373,7 @@ class ZMQLockServer(object):
                 timeout = max(0, 1000 * self.tasks.next().due_in())
             else:
                 timeout = None
-            events = self.router.poll(timeout, flags=zmq.POLLIN)
+            events = poller.poll(timeout)
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
