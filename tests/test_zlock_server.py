@@ -13,7 +13,22 @@ if PY2:
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from zprocess.locking.server import ZMQLockServer, Task, TaskQueue, Lock
+from zprocess.locking.server import (
+    ZMQLockServer,
+    Task,
+    TaskQueue,
+    Lock,
+    NotHeld,
+    AlreadyWaiting,
+    InvalidReentry,
+    ERR_NOT_HELD,
+    ERR_INVALID_REENTRY,
+    ERR_CONCURRENT,
+    ERR_INVALID_COMMAND,
+    ERR_WRONG_NUM_ARGS,
+    ERR_TIMEOUT_INVALID,
+    ERR_READ_ONLY_WRONG,
+)
 import zprocess.locking.server
 
 
@@ -34,17 +49,51 @@ class monkeypatch(object):
         setattr(self.obj, self.name, self.real_attr)
 
 
-class TemporaryREQSocket(object):
-    """Context manager for a REQ socket connecting to a certain port on localhost"""
+class Client(object):
+    """Context manager for a mock client"""
 
-    def __init__(self, port):
+    def __init__(self, testcase, port, key, client_id):
         context = zmq.Context.instance()
         self.sock = context.socket(zmq.REQ)
         self.port = port
+        self.key = key
+        self.client_id = client_id
+        self.testcase = testcase
 
     def __enter__(self):
         self.sock.connect('tcp://127.0.0.1:%d' % self.port)
-        return self.sock
+        return self
+
+    def send(self, *args, **kwargs):
+        return self.sock.send(*args, **kwargs)
+
+    def send_multipart(self, *args, **kwargs):
+        return self.sock.send_multipart(*args, **kwargs)
+
+    def recv(self, *args, **kwargs):
+        return self.sock.recv(*args, **kwargs)
+
+    def recv_multipart(self, *args, **kwargs):
+        return self.sock.recv_multipart(*args, **kwargs)
+
+    def poll(self, *args, **kwargs):
+        return self.sock.poll(*args, **kwargs)
+
+    def acquire(self, timeout=30, read_only=False):
+        timeout = str(timeout).encode('utf8')
+        msg = [b'acquire', self.key, self.client_id, timeout]
+        if read_only:
+            msg += [b'read_only']
+        return self.send_multipart(msg)
+
+    def release(self):
+        return self.send_multipart([b'release', self.key, self.client_id])
+
+    def assertReceived(self, response):
+        self.testcase.assertEqual(self.recv(), response)
+
+    def assertNoResponse(self):
+        self.testcase.assertEqual(self.poll(100, zmq.POLLIN), 0)
 
     def __exit__(self, *args, **kwargs):
         self.sock.close()
@@ -62,271 +111,254 @@ class ZLockServerTests(unittest.TestCase):
         self.server = None
         self.port = None
 
+    def client(self, key, client_id):
+        return Client(self, self.port, key, client_id)
+
     def test_hello(self):
-        with TemporaryREQSocket(self.port) as sock:
-            sock.send(b'hello')
-            self.assertEqual(sock.recv(), b'hello')
+        with self.client(None, None) as client:
+            client.send(b'hello')
+            client.assertReceived(b'hello')
 
     def test_uncontested_reader(self):
-        with TemporaryREQSocket(self.port) as sock:
+        with self.client(b'key_foo', b'client_foo') as reader:
             # Reader acquires the lock:
-            sock.send_multipart(
-                [b'acquire', b'key_foo', b'client_foo', b'30', b'read_only']
-            )
-            self.assertEqual(sock.recv(), b'ok')
+            reader.acquire(read_only=True)
+            reader.assertReceived(b'ok')
             # Reader releases the lock:
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
+            reader.release()
+            self.assertEqual(reader.recv(), b'ok')
 
     def test_uncontested_writer(self):
-        with TemporaryREQSocket(self.port) as sock:
+        with self.client(b'key_foo', b'client_foo') as writer:
             # Writer acquires the lock:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            # Writer releases the lock:
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
-
-    def test_multiple_readers(self):
-        with TemporaryREQSocket(self.port) as sock:
-            # Reader acquires the lock:
-            sock.send_multipart(
-                [b'acquire', b'key_foo', b'client_foo', b'30', b'read_only']
-            )
-            self.assertEqual(sock.recv(), b'ok')
-            # Another reader acquires the lock:
-            sock.send_multipart(
-                [b'acquire', b'key_foo', b'client_bar', b'30', b'read_only']
-            )
-            self.assertEqual(sock.recv(), b'ok')
-            # Both release the lock:
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'release', b'key_foo', b'client_bar'])
-            self.assertEqual(sock.recv(), b'ok')
-
-    def test_reader_then_writer(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        with sock1 as reader, sock2 as writer:
-            # Reader acquires the lock:
-            reader.send_multipart(
-                [b'acquire', b'key_foo', b'client_foo', b'30', b'read_only']
-            )
-            self.assertEqual(reader.recv(), b'ok')
-            # Writer is blocked trying to acquire the lock:
-            writer.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
-            self.assertEqual(writer.poll(100, zmq.POLLIN), 0)
-            # Reader releases the lock:
-            reader.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(reader.recv(), b'ok')
-            # Writer should now get the lock:
+            writer.acquire()
             self.assertEqual(writer.recv(), b'ok')
             # Writer releases the lock:
-            writer.send_multipart([b'release', b'key_foo', b'client_bar'])
+            writer.release()
+            self.assertEqual(writer.recv(), b'ok')
+
+    def test_multiple_readers(self):
+        reader1 = self.client(b'key_foo', b'client_foo')
+        reader2 = self.client(b'key_foo', b'client_bar')
+        with reader1, reader2:
+            # Reader acquires the lock:
+            reader1.acquire(read_only=True)
+            reader1.assertReceived(b'ok')
+            # Another reader acquires the lock:
+            reader2.acquire(read_only=True)
+            reader2.assertReceived(b'ok')
+            # Both release the lock:
+            reader1.release()
+            reader1.assertReceived(b'ok')
+            reader2.release()
+            reader2.assertReceived(b'ok')
+
+    def test_reader_then_writer(self):
+        reader = self.client(b'key_foo', b'client_foo')
+        writer = self.client(b'key_foo', b'client_bar')
+        with reader, writer:
+            # Reader acquires the lock:
+            reader.acquire(read_only=True)
+            reader.assertReceived(b'ok')
+            # Writer is blocked trying to acquire the lock:
+            writer.acquire()
+            writer.assertNoResponse()
+            # Reader releases the lock:
+            reader.release()
+            reader.assertReceived(b'ok')
+            # Writer should now get the lock:
+            writer.assertReceived(b'ok')
+            # Writer releases the lock:
+            writer.release()
             self.assertEqual(writer.recv(), b'ok')
 
     def test_waiting_writer_blocks_new_readers(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        sock3 = TemporaryREQSocket(self.port)
-        with sock1 as reader1, sock2 as reader2, sock3 as writer:
+        reader1 = self.client(b'key_foo', b'reader1')
+        reader2 = self.client(b'key_foo', b'reader2')
+        writer = self.client(b'key_foo', b'writer')
+        with reader1, reader2, writer:
             # Reader acquires the lock:
-            reader1.send_multipart(
-                [b'acquire', b'key_foo', b'reader1', b'30', b'read_only']
-            )
-            self.assertEqual(reader1.recv(), b'ok')
+            reader1.acquire(read_only=True)
+            reader1.assertReceived(b'ok')
             # Writer is blocked trying to acquire the lock:
-            writer.send_multipart([b'acquire', b'key_foo', b'writer', b'30'])
-            self.assertEqual(writer.poll(100, zmq.POLLIN), 0)
+            writer.acquire()
+            writer.assertNoResponse()
             # Another reader attempts to acquire the lock but is blocked:
-            reader2.send_multipart(
-                [b'acquire', b'key_foo', b'reader2', b'30', b'read_only']
-            )
-            self.assertEqual(reader2.poll(100, zmq.POLLIN), 0)
+            reader2.acquire(read_only=True)
+            reader2.assertNoResponse()
             # The first reader releases the lock:
-            reader1.send_multipart([b'release', b'key_foo', b'reader1'])
-            self.assertEqual(reader1.recv(), b'ok')
+            reader1.release()
+            reader1.assertReceived(b'ok')
             # The writer should get the lock now:
-            self.assertEqual(writer.recv(), b'ok')
+            writer.assertReceived(b'ok')
             # Not the other reader though:
-            self.assertEqual(reader2.poll(100, zmq.POLLIN), 0)
+            reader2.assertNoResponse()
             # The writer releases the lock:
-            writer.send_multipart([b'release', b'key_foo', b'writer'])
-            self.assertEqual(writer.recv(), b'ok')
+            writer.release()
+            writer.assertReceived(b'ok')
             # Now the second reader should get the lock:
-            self.assertEqual(reader2.recv(), b'ok')
+            reader2.assertReceived(b'ok')
             # Which it then releases:
-            reader2.send_multipart([b'release', b'key_foo', b'reader2'])
-            self.assertEqual(reader2.recv(), b'ok')
+            reader2.release()
+            reader2.assertReceived(b'ok')
 
     def test_concurrent_error(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        sock3 = TemporaryREQSocket(self.port)
-        with sock1 as writer1, sock2 as writer2, sock3 as writer2_copy:
-            # Writer acquires the lock
-            writer1.send_multipart([b'acquire', b'key_foo', b'writer1', b'30'])
-            self.assertEqual(writer1.recv(), b'ok')
-            # Another writer is blocked trying to acquire:
-            writer2.send_multipart([b'acquire', b'key_foo', b'writer2', b'30'])
-            self.assertEqual(writer2.poll(100, zmq.POLLIN), 0)
-            # The second writer doesn't wait for a reply before retrying:
-            writer2_copy.send_multipart([b'acquire', b'key_foo', b'writer2', b'30'])
-            # It gets an error:
-            self.assertEqual(
-                writer2_copy.recv(),
-                b'error: multiple concurrent requests with same key and client_id',
-            )
-            # The second client then calls release before waiting for a response:
-            writer2_copy.send_multipart([b'release', b'key_foo', b'writer2'])
-            # It gets an error:
-            self.assertEqual(
-                writer2_copy.recv(),
-                b'error: multiple concurrent requests with same key and client_id',
-            )
+        writer1 = self.client(b'key_foo', b'writer1')
+        writer2 = self.client(b'key_foo', b'writer2')
+        writer2_copy = self.client(b'key_foo', b'writer2')
 
+        with writer1, writer2, writer2_copy:
+            # Writer acquires the lock
+            writer1.acquire()
+            writer1.assertReceived(b'ok')
+            # Another writer is blocked trying to acquire:
+            writer2.acquire()
+            writer2.assertNoResponse()
+            # The second writer doesn't wait for a reply before retrying:
+            writer2_copy.acquire()
+            # It gets an error:
+            writer2_copy.assertReceived(ERR_CONCURRENT)
+            # The second client then calls release before waiting for a response:
+            writer2_copy.release()
+            # It gets an error:
+            writer2_copy.assertReceived(ERR_CONCURRENT)
             # The first writer releases the lock:
-            writer1.send_multipart([b'release', b'key_foo', b'writer1'])
-            self.assertEqual(writer1.recv(), b'ok')
+            writer1.release()
+            writer1.assertReceived(b'ok')
             # The second writer gets it now:
-            self.assertEqual(writer2.recv(), b'ok')
+            writer2.assertReceived(b'ok')
             # And releases it:
-            writer2.send_multipart([b'release', b'key_foo', b'writer2'])
-            self.assertEqual(writer2.recv(), b'ok')
+            writer2.release()
+            writer2.assertReceived(b'ok')
 
     def test_change_mind(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        with sock1 as reader, sock2 as mind_changer:
+        reader = self.client(b'key_foo', b'reader')
+        mind_changer = self.client(b'key_foo', b'mind_changer')
+        with reader, mind_changer:
             # Reader acquires the lock
-            reader.send_multipart(
-                [b'acquire', b'key_foo', b'reader', b'30', b'read_only']
-            )
-            self.assertEqual(reader.recv(), b'ok')
+            reader.acquire(read_only=True)
+            reader.assertReceived(b'ok')
             # Speed up the response:
             with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Another writer tries to acquire but is told to retry
-                mind_changer.send_multipart(
-                    [b'acquire', b'key_foo', b'mind_changer', b'30']
-                )
-                self.assertEqual(mind_changer.recv(), b'retry')
+                mind_changer.acquire()
+                mind_changer.assertReceived(b'retry')
             # It retries, but now it wants a read-only lock:
-            mind_changer.send_multipart(
-                [b'acquire', b'key_foo', b'mind_changer', b'30', b'read_only']
-            )
+            mind_changer.acquire(read_only=True)
             # It should get it, since the other client is a reader:
-            self.assertEqual(mind_changer.recv(), b'ok')
+            mind_changer.assertReceived(b'ok')
             # Both clients release:
-            mind_changer.send_multipart([b'release', b'key_foo', b'mind_changer'])
-            self.assertEqual(mind_changer.recv(), b'ok')
-            reader.send_multipart([b'release', b'key_foo', b'reader'])
-            self.assertEqual(reader.recv(), b'ok')
+            mind_changer.release()
+            mind_changer.assertReceived(b'ok')
+            reader.release()
+            reader.assertReceived(b'ok')
 
     def test_absentee_acquire_release(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        with sock1 as writer1, sock2 as writer2:
+        writer1 = self.client(b'key_foo', b'writer1')
+        writer2 = self.client(b'key_foo', b'writer2')
+        with writer1, writer2:
             # Client acquires the lock:
-            writer1.send_multipart([b'acquire', b'key_foo', b'writer1', b'30'])
-            self.assertEqual(writer1.recv(), b'ok')
+            writer1.acquire()
+            writer1.assertReceived(b'ok')
             # Speed up the response:
             with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Another client tries to acquire but is told to retry
-                writer2.send_multipart([b'acquire', b'key_foo', b'writer2', b'30'])
-                self.assertEqual(writer2.recv(), b'retry')
-            # First client releases the lock, now the second client has the lock in absentia:
-            writer1.send_multipart([b'release', b'key_foo', b'writer1'])
-            self.assertEqual(writer1.recv(), b'ok')
+                writer2.acquire()
+                writer2.assertReceived(b'retry')
+            # First client releases the lock, now the second client has the lock in
+            # absentia:
+            writer1.release()
+            writer1.assertReceived(b'ok')
             # Second client calls release, even though it hasn't retried yet:
-            writer2.send_multipart([b'release', b'key_foo', b'writer2'])
+            writer2.release()
             # It should get an error, since it didn't follow protocol in finishing
             # acquiring the lock:
-            self.assertEqual(writer2.recv(), b'error: lock not held')
+            writer2.assertReceived(ERR_NOT_HELD)
 
     def test_absentee_acquire_timeout(self):
-        with TemporaryREQSocket(self.port) as sock:
+        client1 = self.client(b'key_foo', b'client1')
+        client2 = self.client(b'key_foo', b'client2')
+        with client1, client2:
             # First client acquires the lock:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
+            client1.acquire()
+            client1.assertReceived(b'ok')
             # Speed up the response:
             with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Second client tries to acquire the lock, but is told to retry:
-                sock.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
-            self.assertEqual(sock.recv(), b'retry')
+                client2.acquire()
+            client2.assertReceived(b'retry')
             # Before the second client retries, the first client releases the lock.
             # The second client should now have the lock in absentia.
             with monkeypatch(zprocess.locking.server, 'MAX_ABSENT_TIME', 0.2):
-                sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-                self.assertEqual(sock.recv(), b'ok')
+                client1.release()
+                client1.assertReceived(b'ok')
             # Before the second client retries, the first client asks for the lock
             # again:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
+            client1.acquire()
             # It doesn't work at first, because the second client has the lock:
-            self.assertEqual(sock.poll(100, zmq.POLLIN), 0)
+            client1.assertNoResponse()
             # But since the second client is not retrying, its lock times out
             # and the first client gets it:
-            self.assertEqual(sock.recv(), b'ok')
+            client1.assertReceived(b'ok')
             # Then it releases it:
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
+            client1.release()
+            client1.assertReceived(b'ok')
 
             # The second client lost its spot in the queue, but should be able to
             # try again to acquire and release the lock as normal:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'release', b'key_foo', b'client_bar'])
-            self.assertEqual(sock.recv(), b'ok')
+            client2.acquire()
+            client2.assertReceived(b'ok')
+            client2.release()
+            client2.assertReceived(b'ok')
 
     def test_timeout(self):
-        with TemporaryREQSocket(self.port) as sock:
+        with self.client(b'key_foo', b'client_foo') as client:
             # Client acquires the lock with a short timeout
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'0.1'])
-            self.assertEqual(sock.recv(), b'ok')
+            client.acquire(timeout=0.1)
+            client.assertReceived(b'ok')
             # Client waits longer than the timeout before releasing:
             time.sleep(0.2)
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'error: lock not held')
+            client.release()
+            # And gets an error:
+            client.assertReceived(ERR_NOT_HELD)
 
-    def test_already_held(self):
-        with TemporaryREQSocket(self.port) as sock:
-            # Client acquires the lock:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            # Client makes a second acquisition request without releasing:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'error: lock already held')
+    def test_invalid_reentry(self):
+        with self.client(b'key_foo', b'client_foo') as client:
+            # Client acquires the lock as reader:
+            client.acquire(read_only=True)
+            client.assertReceived(b'ok')
+            # Client re-entrantly requests the lock as a writer:
+            client.acquire()
+            client.assertReceived(ERR_INVALID_REENTRY)
 
     def test_malformed_requests(self):
-        with TemporaryREQSocket(self.port) as sock:
+        with self.client(b'key_foo', b'client_foo') as client:
             # Invalid command:
-            sock.send_multipart([b'frobulate', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'error: invalid command')
+            client.send_multipart([b'frobulate', b'key_foo', b'client_foo', b'30'])
+            client.assertReceived(ERR_INVALID_COMMAND)
             # read_only wrong:
-            sock.send_multipart(
+            client.send_multipart(
                 [b'acquire', b'key_foo', b'client_foo', b'30', b'not_going_to_write']
             )
-            self.assertEqual(
-                sock.recv(), b"error: expected 'read_only', got not_going_to_write"
-            )
+            client.assertReceived(ERR_READ_ONLY_WRONG)
             # Too few args to acquire:
-            sock.send_multipart([b'acquire'])
-            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            client.send_multipart([b'acquire'])
+            client.assertReceived(ERR_WRONG_NUM_ARGS)
             # Too many args to acquire:
-            sock.send_multipart([b'acquire', b'1', b'2', b'3', b'4', b'5'])
-            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            client.send_multipart([b'acquire', b'1', b'2', b'3', b'4', b'5'])
+            client.assertReceived(ERR_WRONG_NUM_ARGS)
             # Timeout not a number:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'fs'])
-            self.assertEqual(sock.recv(), b'error: timeout fs not a valid number')
+            client.send_multipart([b'acquire', b'key_foo', b'client_foo', b'fs'])
+            client.assertReceived(ERR_TIMEOUT_INVALID)
             # Timeout not a valid number:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'-inf'])
-            self.assertEqual(sock.recv(), b'error: timeout -inf not a valid number')
+            client.send_multipart([b'acquire', b'key_foo', b'client_foo', b'-inf'])
+            client.assertReceived(ERR_TIMEOUT_INVALID)
             # Too few args to release:
-            sock.send_multipart([b'release'])
-            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            client.send_multipart([b'release'])
+            client.assertReceived(ERR_WRONG_NUM_ARGS)
             # Too many args to release:
-            sock.send_multipart([b'release', b'1', b'2', b'3', b'4', b'5'])
-            self.assertEqual(sock.recv(), b'error: wrong number of arguments')
+            client.send_multipart([b'release', b'1', b'2', b'3', b'4', b'5'])
+            client.assertReceived(ERR_WRONG_NUM_ARGS)
 
             # Have to use a DEALER to make a message missing the initial empty message
             context = zmq.Context.instance()
@@ -340,106 +372,106 @@ class ZLockServerTests(unittest.TestCase):
                 dealer.close()
 
     def test_absentee_acquire(self):
-        with TemporaryREQSocket(self.port) as sock:
+        client1 = self.client(b'key_foo', b'client1')
+        client2 = self.client(b'key_foo', b'client2')
+        with client1, client2:
             # First client acquires the lock:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
+            client1.acquire()
+            client1.assertReceived(b'ok')
             # Speed up the response:
             with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Second client tries to acquire the lock, but is told to retry:
-                sock.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
-            self.assertEqual(sock.recv(), b'retry')
+                client2.acquire()
+            client2.assertReceived(b'retry')
             # Before the second client retries, the first client releases the lock:
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
+            client1.release()
+            client1.assertReceived(b'ok')
             # The second client should receive the lock upon retrying:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
+            client2.acquire()
+            client2.assertReceived(b'ok')
 
     def test_retry(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        with sock1 as writer1, sock2 as writer2:
+        writer1 = self.client(b'key_foo', b'writer1')
+        writer2 = self.client(b'key_foo', b'writer2')
+        with writer1, writer2:
             # First client acquires the lock:
-            writer1.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(writer1.recv(), b'ok')
+            writer1.acquire()
+            writer1.assertReceived(b'ok')
             # Speed up the response:
             with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Second client tries to acquire the lock but is told to retry:
-                writer2.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
-                self.assertEqual(writer2.recv(), b'retry')
+                writer2.acquire()
+                writer2.assertReceived(b'retry')
             # Second client retries:
-            writer2.send_multipart([b'acquire', b'key_foo', b'client_bar', b'30'])
+            writer2.acquire()
             # First client releases:
-            writer1.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(writer1.recv(), b'ok')
+            writer1.release()
+            writer1.assertReceived(b'ok')
             # Second client gets it:
-            self.assertEqual(writer2.recv(), b'ok')
+            writer2.assertReceived(b'ok')
 
     def test_absent_give_up(self):
-        sock1 = TemporaryREQSocket(self.port)
-        sock2 = TemporaryREQSocket(self.port)
-        with sock1 as writer1, sock2 as writer2:
+        client1 = self.client(b'key_foo', b'client1')
+        client2 = self.client(b'key_foo', b'client2')
+        with client1, client2:
             for read_only in [True, False]:
                 # First client acquires the lock:
-                writer1.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-                self.assertEqual(writer1.recv(), b'ok')
+                client1.acquire()
+                client1.assertReceived(b'ok')
                 # Speed up the response and away timeout:
                 with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
                     with monkeypatch(zprocess.locking.server, 'MAX_ABSENT_TIME', 0.1):
                         # Second client tries to acquire the lock but is told to retry:
-                        request = [b'acquire', b'key_foo', b'client_bar', b'30']
-                        if read_only:
-                            request.append(b'read_only')
-                        writer2.send_multipart(request)
-                        self.assertEqual(writer2.recv(), b'retry')
+                        client2.acquire(read_only=read_only)
+                        client2.assertReceived(b'retry')
                         # Second client waits too long and loses its spot in the queue
                         time.sleep(0.2)
                         # First client releases the lock:
-                        writer1.send_multipart([b'release', b'key_foo', b'client_foo'])
-                        self.assertEqual(writer1.recv(), b'ok')
+                        client1.release()
+                        client1.assertReceived(b'ok')
                         # And then acquires it again, sucessfully since client 1 has
                         # given up:
-                        writer1.send_multipart(
-                            [b'acquire', b'key_foo', b'client_foo', b'30']
-                        )
-                        self.assertEqual(writer1.recv(), b'ok')
+                        client1.acquire()
+                        client1.assertReceived(b'ok')
                         # Second client retries:
-                        writer2.send_multipart(request)
+                        client2.acquire(read_only=read_only)
                         # But is told to wait since it lost its spot in the queue:
-                        self.assertEqual(writer2.recv(), b'retry')
+                        client2.assertReceived(b'retry')
                         # It immediately retries:
-                        writer2.send_multipart(request)
+                        client2.acquire(read_only=read_only)
                         # First client releases:
-                        writer1.send_multipart([b'release', b'key_foo', b'client_foo'])
-                        self.assertEqual(writer1.recv(), b'ok')
+                        client1.release()
+                        client1.assertReceived(b'ok')
                         # Then second client gets the lock:
-                        self.assertEqual(writer2.recv(), b'ok')
+                        client2.assertReceived(b'ok')
                         # And finally releases:
-                        writer2.send_multipart([b'release', b'key_foo', b'client_bar'])
-                        self.assertEqual(writer2.recv(), b'ok')
+                        client2.release()
+                        client2.assertReceived(b'ok')
 
     def test_locks_independent(self):
-        with TemporaryREQSocket(self.port) as sock:
+        client1 = self.client(b'key_foo', b'client1')
+        client2 = self.client(b'key_bar', b'client2')
+        client1_different_lock = self.client(b'key_bar', b'client1')
+        with client1, client2, client1_different_lock:
             # Two clients acquiring different locks should be able to:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'acquire', b'key_bar', b'client_bar', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'release', b'key_bar', b'client_bar'])
-            self.assertEqual(sock.recv(), b'ok')
+            client1.acquire()
+            client1.assertReceived(b'ok')
+            client2.acquire()
+            client2.assertReceived(b'ok')
+            client1.release()
+            client1.assertReceived(b'ok')
+            client2.release()
+            client2.assertReceived(b'ok')
 
             # The same client acquiring different locks should be able to:
-            sock.send_multipart([b'acquire', b'key_foo', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'acquire', b'key_bar', b'client_foo', b'30'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
-            sock.send_multipart([b'release', b'key_bar', b'client_foo'])
-            self.assertEqual(sock.recv(), b'ok')
+            client1.acquire()
+            client1.assertReceived(b'ok')
+            client1_different_lock.acquire()
+            client1_different_lock.assertReceived(b'ok')
+            client1.release()
+            client1.assertReceived(b'ok')
+            client1_different_lock.release()
+            client1_different_lock.assertReceived(b'ok')
 
 
 class ImplementationUnitTests(unittest.TestCase):
@@ -478,9 +510,9 @@ class ImplementationUnitTests(unittest.TestCase):
         server = FakeServer()
         lock = Lock.instance(b'key_foo', server)
 
-        # Can't acquire if already held:
-        self.assertTrue(lock.acquire(b'client_foo', read_only=False))
-        with self.assertRaises(ValueError):
+        # Can't acquire as read-write if already held read-only:
+        self.assertTrue(lock.acquire(b'client_foo', read_only=True))
+        with self.assertRaises(InvalidReentry):
             lock.acquire(b'client_foo', read_only=False)
         self.assertEqual(lock.release(b'client_foo'), set())
 
@@ -494,17 +526,18 @@ class ImplementationUnitTests(unittest.TestCase):
 
         lock = Lock.instance(b'key_foo', server)
         # Can't release if not acquired:
-        with self.assertRaises(ValueError):
+        with self.assertRaises(NotHeld):
             lock.release(b'client_foo')
 
         lock = Lock.instance(b'key_foo', server)
         # Can't acquire if already waiting:
         self.assertTrue(lock.acquire(b'client_foo', read_only=False))
         self.assertFalse(lock.acquire(b'client_bar', read_only=False))
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AlreadyWaiting):
             lock.acquire(b'client_bar', read_only=False)
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AlreadyWaiting):
             lock.acquire(b'client_bar', read_only=True)
+
 
 class OtherTests(unittest.TestCase):
     def test_bind_to_port(self):
@@ -519,15 +552,13 @@ class OtherTests(unittest.TestCase):
         else:
             raise RuntimeError("Couldn't bind to a specified port")
         try:
-            with TemporaryREQSocket(port) as sock:
+            with Client(self, port, b'key_foo', b'client_foo') as reader:
                 # Reader acquires the lock:
-                sock.send_multipart(
-                    [b'acquire', b'key_foo', b'client_foo', b'30', b'read_only']
-                )
-                self.assertEqual(sock.recv(), b'ok')
+                reader.acquire(read_only=True)
+                reader.assertReceived(b'ok')
                 # Reader releases the lock:
-                sock.send_multipart([b'release', b'key_foo', b'client_foo'])
-                self.assertEqual(sock.recv(), b'ok')
+                reader.release()
+                reader.assertReceived(b'ok')
         finally:
             server.stop()
 
@@ -537,22 +568,23 @@ class OtherTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             server.stop()
 
+
 def test_speed():
-    with TemporaryREQSocket(7339) as sock:
+    with Client(None, 7339, b'key_foo', b'client_foo') as client:
         start_time = time.time()
-        sock.send(b'hello')
-        assert sock.recv() == b'hello'
+        client.send(b'hello')
+        assert client.recv() == b'hello'
         for _ in range(1000):
-            sock.send(b'hello')
-            assert sock.recv() == b'hello'
+            client.send(b'hello')
+            assert client.recv() == b'hello'
         print('hello:', (time.time() - start_time) / 1000 * 1e6, 'us')
 
         start_time = time.time()
         for _ in range(1000):
-            sock.send_multipart([b'acquire', b'foo', b'client_foo', b'30'])
-            assert sock.recv() == b'ok'
-            sock.send_multipart([b'release', b'foo', b'client_foo'])
-            assert sock.recv() == b'ok'
+            client.send_multipart([b'acquire', b'foo', b'client_foo', b'30'])
+            assert client.recv() == b'ok'
+            client.send_multipart([b'release', b'foo', b'client_foo'])
+            assert client.recv() == b'ok'
         print('acq/release:', (time.time() - start_time) / 1000 * 1e6, 'us')
 
         start_time = time.time()
