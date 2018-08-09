@@ -19,35 +19,38 @@ import socket
 import threading
 import time
 import weakref
+
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
 import zmq
 
-DEFAULT_TIMEOUT = 30 # seconds
+DEFAULT_TIMEOUT = 30  # seconds
 DEFAULT_PORT = 7339
 
 process_identifier_prefix = ''
 thread_identifier_prefix = threading.local()
 
+_zmq_lock_client = None
+
 
 def _name_change_checks():
-    if '_zmq_lock_client' in globals():
+    if _zmq_lock_client is not None:
         # Clear thread local data so that the client id is re-generated in all threads:
         _zmq_lock_client.local = threading.local()
-                
-                
+
+
 def set_client_process_name(name):
     global process_identifier_prefix
     _name_change_checks()
     process_identifier_prefix = name + '-'
-        
-        
+
+
 def set_client_thread_name(name):
     _name_change_checks()
     thread_identifier_prefix.prefix = name + '-'
-    
-    
+
+
 def get_client_id():
     try:
         prefix = thread_identifier_prefix.prefix
@@ -59,30 +62,18 @@ def get_client_id():
     return ':'.join([host_name, process_identifier, thread_identifier])
 
 
-def _typecheck_or_convert_key(key):
-    """Checks that key is bytes or string and encodes to bytes with utf8.
-    Raises TypeError if it's neither. If data is bytes, checks that it is utf8
-    encoded and raises ValueError if not."""
-
-    msg = "Key must be a string or bytes, if bytes, must be utf-8 encoded"
-    # Decode to ensure that if it's python2 str or python3 bytes that is
-    # is in fact utf8 encoded:
-    if isinstance(key, bytes):
-        try:
-            key.decode('utf8')
-        except UnicodeDecodeError:
-            raise ValueError(msg)
-    elif isinstance(key, str):
-        key = key.encode('utf8')
-    else:
-        raise TypeError(msg)
-    return key
+def _ensure_bytes(s):
+    if isinstance(s, str):
+        s = s.encode('utf8')
+    elif not isinstance(s, bytes):
+        raise TypeError("Bytes or string required, not %s" % str(type(s)))
+    return s
 
 
 class ZMQLockClient(object):
 
     RESPONSE_TIMEOUT = 5000
-    
+
     def __init__(self, host, port):
         self.host = socket.gethostbyname(host)
         self.port = port
@@ -91,7 +82,7 @@ class ZMQLockClient(object):
         # local storage:
         self.local = threading.local()
         self.shutdown_complete = threading.Event()
-         
+
     def new_socket(self):
         # Every time the REQ/REP cadence is broken, we need to create
         # and bind a new socket to get it back on track. Also, we have
@@ -102,8 +93,8 @@ class ZMQLockClient(object):
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)
         self.local.sock.connect('tcp://%s:%s' % (self.host, str(self.port)))
-        self.local.client_id = get_client_id()
-        
+        self.local.client_id = _ensure_bytes(get_client_id())
+
     def say_hello(self, timeout=None):
         """Ping the server to test for a response"""
         try:
@@ -126,21 +117,19 @@ class ZMQLockClient(object):
             self.local.sock.close(linger=False)
             del self.local.sock
             raise
-    
-    def acquire(self, key, timeout=None):
-        key = _typecheck_or_convert_key(key)
+
+    def acquire(self, key, timeout=None, read_only=False):
         if timeout is None:
             timeout = DEFAULT_TIMEOUT
+        timeout = str(timeout).encode('utf8')
         if not hasattr(self.local, 'sock'):
             self.new_socket()
+        key = _ensure_bytes(key)
+        messages = [b'acquire', key, self.local.client_id, timeout]
+        if read_only:
+            messages.append(b'read_only')
         try:
             while True:
-                messages = (
-                    b'acquire',
-                    key,
-                    self.local.client_id.encode('utf8'),
-                    str(timeout).encode('utf8'),
-                )
                 self.local.sock.send_multipart(messages, zmq.NOBLOCK)
                 events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
                 if not events:
@@ -156,16 +145,15 @@ class ZMQLockClient(object):
                 self.local.sock.close(linger=False)
                 del self.local.sock
             raise
-        
+
     def release(self, key, client_id):
-        key = _typecheck_or_convert_key(key)
         if not hasattr(self.local, 'sock'):
             self.new_socket()
         try:
             if client_id is None:
                 client_id = self.local.client_id
-            messages = (b'release', key, client_id.encode('utf8'))
-            self.local.sock.send_multipart(messages)
+            key = _ensure_bytes(key)
+            self.local.sock.send_multipart([b'release', key, client_id])
             events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
             if not events:
                 raise zmq.ZMQError('No response from zlock server: timed out')
@@ -178,60 +166,54 @@ class ZMQLockClient(object):
                 self.local.sock.close(linger=False)
                 del self.local.sock
             raise
-    
-    
+
+
 class Lock(object):
-    def __init__(self, key):
+    def __init__(self, key, read_only=False):
         self.key = key
-    
-    def acquire(self, timeout=None):
-        acquire(self.key, timeout)
-            
+        self.read_only = read_only
+
+    def acquire(self, timeout=None, read_only=None):
+        if read_only is None:
+            read_only = self.read_only
+        acquire(self.key, timeout, read_only)
+
     def release(self):
         release(self.key)
 
     def __enter__(self):
         self.acquire()
-        
+
     def __exit__(self, type, value, traceback):
         self.release()
-        
-        
-def acquire(key, timeout=None):
+
+
+def acquire(key, timeout=None, read_only=False):
     """Acquire a lock identified by key, for a specified time in
     seconds. Blocks until success, raises exception if the server isn't
     responding"""
-    try:
-        _zmq_lock_client
-    except NameError:
+    if _zmq_lock_client is None:
         raise RuntimeError('Not connected to a zlock server')
-    else:
-        _zmq_lock_client.acquire(key, timeout)
-        
-        
+    _zmq_lock_client.acquire(key, timeout, read_only)
+
+
 def release(key, client_id=None):
     """Release the lock identified by key. Raises an exception if the
     lock was not held, or was held by someone else, or if the server
     isn't responding. If client_id is provided, one thread can release
     the lock on behalf of another, but this should not be the normal
     usage."""
-    try:
-        _zmq_lock_client
-    except NameError:
+    if _zmq_lock_client is None:
         raise RuntimeError('Not connected to a zlock server')
-    else:
-        _zmq_lock_client.release(key, client_id)
-     
-     
+    _zmq_lock_client.release(key, client_id)
+
+
 def ping(timeout=None):
-    try:
-        _zmq_lock_client
-    except NameError:
+    if _zmq_lock_client is None:
         raise RuntimeError('Not connected to a zlock server')
-    else:
-        return _zmq_lock_client.say_hello(timeout)
-    
-    
+    return _zmq_lock_client.say_hello(timeout)
+
+
 def set_default_timeout(t):
     """Sets how long the locks should be acquired for before the server
     times them out and allows other clients to acquire them. Attempting
@@ -239,7 +221,7 @@ def set_default_timeout(t):
     global DEFAULT_TIMEOUT
     DEFAULT_TIMEOUT = t
 
-    
+
 def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
@@ -250,7 +232,7 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
     ping(timeout)
     return ping(timeout)
 
-    
+
 if __name__ == '__main__':
     # test:
     connect()
