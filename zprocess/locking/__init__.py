@@ -31,10 +31,7 @@ process_identifier_prefix = ''
 thread_identifier_prefix = threading.local()
 
 
-def name_change_checks():
-    if Lock.instances:
-        raise RuntimeError('Cannot change process/thread name while Locks are in use.' +
-                           'Please change names before instantiating Lock objects.')
+def _name_change_checks():
     if '_zmq_lock_client' in globals():
         # Clear thread local data so that the client id is re-generated in all threads:
         _zmq_lock_client.local = threading.local()
@@ -42,12 +39,12 @@ def name_change_checks():
                 
 def set_client_process_name(name):
     global process_identifier_prefix
-    name_change_checks()
+    _name_change_checks()
     process_identifier_prefix = name + '-'
         
         
 def set_client_thread_name(name):
-    name_change_checks()
+    _name_change_checks()
     thread_identifier_prefix.prefix = name + '-'
     
     
@@ -59,7 +56,7 @@ def get_client_id():
     thread_identifier = prefix + threading.current_thread().name
     process_identifier = process_identifier_prefix + str(os.getpid())
     host_name = socket.gethostname()
-    return ':'.join([host_name, process_identifier,thread_identifier])
+    return ':'.join([host_name, process_identifier, thread_identifier])
 
 
 def _typecheck_or_convert_key(key):
@@ -104,17 +101,17 @@ class ZMQLockClient(object):
         self.local.sock.setsockopt(zmq.LINGER, 0)
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)
-        self.local.sock.connect('tcp://%s:%s'%(self.host, str(self.port)))    
+        self.local.sock.connect('tcp://%s:%s' % (self.host, str(self.port)))
         self.local.client_id = get_client_id()
         
-    def say_hello(self,timeout=None):
+    def say_hello(self, timeout=None):
         """Ping the server to test for a response"""
         try:
             if timeout is None:
                 timeout = self.RESPONSE_TIMEOUT
             else:
-                timeout = 1000*timeout # convert to ms
-            if not hasattr(self.local,'sock'):
+                timeout = 1000 * timeout  # convert to ms
+            if not hasattr(self.local, 'sock'):
                 self.new_socket()
             start_time = time.time()
             self.local.sock.send(b'hello', zmq.NOBLOCK)
@@ -122,7 +119,7 @@ class ZMQLockClient(object):
             if events:
                 response = self.local.sock.recv().decode('utf8')
                 if response == 'hello':
-                    return round((time.time() - start_time)*1000,2)
+                    return round((time.time() - start_time) * 1000, 2)
                 raise zmq.ZMQError('Invalid repsonse from server: ' + response)
             raise zmq.ZMQError('No response from zlock server: timed out')
         except:
@@ -130,40 +127,6 @@ class ZMQLockClient(object):
             del self.local.sock
             raise
     
-    def status(self):
-        try:
-            if not hasattr(self.local,'sock'):
-                self.new_socket()
-            self.local.sock.send(b'status', zmq.NOBLOCK)
-            events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
-            if events:
-                response = self.local.sock.recv().decode('utf8')
-                if response.startswith('ok'):
-                    return response
-                raise zmq.ZMQError(response)
-            raise zmq.ZMQError('No response from zlock server: timed out')
-        except:
-            self.local.sock.close(linger=False)
-            del self.local.sock
-            raise
-            
-    def clear(self, clear_all):
-        try:
-            if not hasattr(self.local, 'sock'):
-                self.new_socket()
-            self.local.sock.send_multipart([b'clear', str(clear_all)], zmq.NOBLOCK)
-            events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
-            if events:
-                response = self.local.sock.recv().decode('utf8')
-                if response == 'ok':
-                    return
-                raise zmq.ZMQError(response)
-            raise zmq.ZMQError('No response from zlock server: timed out')
-        except:
-            self.local.sock.close(linger=False)
-            del self.local.sock
-            raise
-            
     def acquire(self, key, timeout=None):
         key = _typecheck_or_convert_key(key)
         if timeout is None:
@@ -172,7 +135,12 @@ class ZMQLockClient(object):
             self.new_socket()
         try:
             while True:
-                messages = (b'acquire', key, self.local.client_id.encode('utf8'), str(timeout).encode('utf8'))
+                messages = (
+                    b'acquire',
+                    key,
+                    self.local.client_id.encode('utf8'),
+                    str(timeout).encode('utf8'),
+                )
                 self.local.sock.send_multipart(messages, zmq.NOBLOCK)
                 events = self.local.poller.poll(self.RESPONSE_TIMEOUT)
                 if not events:
@@ -183,7 +151,7 @@ class ZMQLockClient(object):
                 elif response == 'retry':
                     continue
                 raise zmq.ZMQError(response)
-        except: 
+        except:
             if hasattr(self.local, 'sock'):
                 self.local.sock.close(linger=False)
                 del self.local.sock
@@ -191,7 +159,7 @@ class ZMQLockClient(object):
         
     def release(self, key, client_id):
         key = _typecheck_or_convert_key(key)
-        if not hasattr(self.local,'sock'):
+        if not hasattr(self.local, 'sock'):
             self.new_socket()
         try:
             if client_id is None:
@@ -213,53 +181,15 @@ class ZMQLockClient(object):
     
     
 class Lock(object):
-
-    instances = weakref.WeakValueDictionary()
-    class_lock = threading.Lock()
-    
-    def __new__(cls, key, *args, **kwargs):
-        with cls.class_lock:
-            try:
-                instance = cls.instances[key]
-            except KeyError:
-                instance = object.__new__(cls)
-                cls.instances[key] = instance
-            return instance
-            
     def __init__(self, key):
-        with self.class_lock:
-            if not hasattr(self, 'key'):
-                self.key = key
-                self.local_lock = threading.RLock()
-                self.recursion_level=0
-                try:
-                    _zmq_lock_client
-                except NameError:
-                    raise RuntimeError('Not connected to a zlock server')
-        
+        self.key = key
+    
     def acquire(self, timeout=None):
-        self.local_lock.acquire()
-        self.recursion_level += 1
-        if self.recursion_level==1:
-            try:
-                acquire(self.key, timeout)
-            except:
-                self.recursion_level -= 1
-                self.local_lock.release()
-                raise
+        acquire(self.key, timeout)
             
     def release(self):
-        if self.recursion_level==0:
-            raise RuntimeError('cannot release un-acquired lock')
-        try:
-            if self.recursion_level==1:
-                release(self.key)
-        finally:
-            # Always release the local lock, even if we failed to release
-            # the network lock:
-            self.recursion_level -= 1
-            self.local_lock.release()
-        
+        release(self.key)
+
     def __enter__(self):
         self.acquire()
         
@@ -267,48 +197,6 @@ class Lock(object):
         self.release()
         
         
-class NetworkOnlyLock(object):
-
-    instances = weakref.WeakValueDictionary()
-    class_lock = threading.Lock()
-    
-    def __new__(cls, key, *args, **kwargs):
-        with cls.class_lock:
-            try:
-                instance = cls.instances[key]
-            except KeyError:
-                instance = object.__new__(cls)
-                cls.instances[key] = instance
-            return instance
-            
-    def __init__(self, key):
-        with self.class_lock:
-            if not hasattr(self,'key'):
-                self.key = key
-                # Get the Lock for this key:
-                self.lock = Lock(key)
-        
-    def acquire(self, timeout=None):
-        with self.lock.local_lock:
-            acquire(self.key, timeout)
-            self.lock.recursion_level += 1
-            
-    def release(self):
-        with self.lock.local_lock:
-            if self.lock.recursion_level != 1:
-                raise RuntimeError('cannot release network lock whilst local locks still held')
-            try:
-                release(self.key)
-            finally:
-                self.lock.recursion_level = 0
-        
-    def __enter__(self):
-        self.acquire()
-        
-    def __exit__(self, type, value, traceback):
-        self.release()
-
-
 def acquire(key, timeout=None):
     """Acquire a lock identified by key, for a specified time in
     seconds. Blocks until success, raises exception if the server isn't
@@ -344,24 +232,6 @@ def ping(timeout=None):
         return _zmq_lock_client.say_hello(timeout)
     
     
-def status():
-    try:
-        _zmq_lock_client
-    except NameError:
-        raise RuntimeError('Not connected to a zlock server')
-    else:
-        return _zmq_lock_client.status()
-      
-      
-def clear(clear_all):
-    try:
-        _zmq_lock_client
-    except NameError:
-        raise RuntimeError('Not connected to a zlock server')
-    else:
-        return _zmq_lock_client.clear(clear_all)
-       
-       
 def set_default_timeout(t):
     """Sets how long the locks should be acquired for before the server
     times them out and allows other clients to acquire them. Attempting
