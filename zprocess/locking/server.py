@@ -1,6 +1,7 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 from bisect import insort
 import threading
+from collections import defaultdict
 import enum
 
 try:
@@ -15,17 +16,39 @@ MAX_ABSENT_TIME = 1  # second
 
 INVALID_NUMBERS = {float('nan'), float('inf'), float('-inf')}
 
+ERR_NOT_HELD = b'error: lock not held'
+ERR_INVALID_REENTRY = b'error: lock already held read-only, cannot re-enter as writer'
+ERR_CONCURRENT = b'error: multiple concurrent requests with same key and client_id'
+ERR_INVALID_COMMAND = b'error: invalid command'
+ERR_WRONG_NUM_ARGS = b'error: wrong number of arguments'
+ERR_TIMEOUT_INVALID = b'error: timeout not a valid number'
+ERR_READ_ONLY_WRONG = b"error: argument 4 if present can only 'read_only'"
+
+
+class AlreadyWaiting(ValueError):
+    pass
+
+
+class InvalidReentry(ValueError):
+    pass
+
+
+class NotHeld(ValueError):
+    pass
+
 
 class Lock(object):
-    """A readers-writer lock. Implementation gives priority to writers"""
+    """A reentrant readers-writer lock. Implementation gives priority to writers.
+    Readers may re-enter as a reader but not as a writer."""
 
     def __init__(self, key, server):
         self.key = key
         self.server = server
         self.waiting_readers = set()
         self.waiting_writers = set()
-        self.readers = set()
+        self.readers = defaultdict(int)  # {client_id: reentrancy_level}
         self.writer = None
+        self.writer_reentrancy_level = 0
         self.invalid = False
 
     @classmethod
@@ -53,28 +76,44 @@ class Lock(object):
                 del self.server.active_locks[self.key]
 
     def acquire(self, client_id, read_only):
-        """Attempt to acquire the lock for the given client. Return True on success, or
-        False upon failure. In the latter case, the client will be added to an internal
-        list of clients that are waiting for the lock"""
+        """Attempt to acquire or re-enter the lock for the given client. Return True on
+        success, or False upon failure. In the latter case, the client will be added to
+        an internal list of clients that are waiting for the lock. Raises AlreadyWaiting
+        if the client has previously requested the lock unsuccessfully and has not since
+        called give_up(), and raises InvalidReentry if a client that has acquired the
+        lock as read-only attempts to re-enter it as read-write."""
         if self.invalid:
             self._invalid()
         try:
-            if client_id in self.readers or client_id == self.writer:
-                raise ValueError('Lock already held')
             if client_id in self.waiting_readers or client_id in self.waiting_writers:
-                raise ValueError('Client already waiting')
+                raise AlreadyWaiting('Client already waiting')
             if read_only:
-                # The reader can have the lock if there is no writer or waiting writers:
-                if self.writer is None and not self.waiting_writers:
-                    self.readers.add(client_id)
-                    return True
-                else:
+                if self.writer is not None:
+                    # Reader must wait if there is a writer:
                     self.waiting_readers.add(client_id)
                     return False
+                if self.waiting_writers:
+                    # Reader can re-enter the lock if there are waiting writers, but
+                    # must wait to acquire it initially:
+                    if client_id in self.readers:
+                        self.readers[client_id] += 1
+                        return True
+                    else:
+                        self.waiting_readers.add(client_id)
+                        return False
+                else:
+                    # Acquire or re-enter the lock:
+                    self.readers[client_id] += 1
+                    return True
             else:
-                # The writer can have the lock if there are no other readers or writers:
-                if self.writer is None and not self.readers:
+                if client_id in self.readers:
+                    msg = 'Cannot re-enter read-only lock as a writer'
+                    raise InvalidReentry(msg)
+                # The writer can acquire or re-enter the lock if there are no other
+                # readers or writers:
+                if self.writer in (None, client_id) and not self.readers:
                     self.writer = client_id
+                    self.writer_reentrancy_level += 1
                     return True
                 else:
                     self.waiting_writers.add(client_id)
@@ -82,33 +121,43 @@ class Lock(object):
         finally:
             self._check_cleanup()
 
-    def release(self, client_id):
-        """Release the lock held by the given client. If this makes the lock available
-        for other waiting clients, acquire the lock for those clients. Return a set of
-        client ids that acquired the lock in this way."""
+    def release(self, client_id, fully=False):
+        """Release the lock held by the given client, or decrease its re-entrancy level
+        by one. If this makes the lock available for other waiting clients, acquire the
+        lock for those clients. Return a set of client ids that acquired the lock in
+        this way. Raises NotHeld if the lock was not held by the client. If fully is
+        True than the lock is completely released regardless of reentrancy level."""
         if self.invalid:
             self._invalid()
         try:
             if client_id in self.readers:
-                self.readers.remove(client_id)
+                self.readers[client_id] -= 1
+                if self.readers[client_id] == 0 or fully:
+                    del self.readers[client_id]
                 # Is the lock now available for a writer?
                 if self.waiting_writers and not self.readers:
                     self.writer = self.waiting_writers.pop()
+                    self.writer_reentrancy_level = 1
                     return {self.writer}
             elif client_id == self.writer:
-                self.writer = None
+                self.writer_reentrancy_level -= 1
+                if self.writer_reentrancy_level == 0 or fully:
+                    self.writer = None
+                    self.writer_reentrancy_level = 0
                 # Is there a waiting writer to give the lock to?
                 if self.waiting_writers:
                     self.writer = self.waiting_writers.pop()
+                    self.writer_reentrancy_level = 1
                     return {self.writer}
                 # Are there waiting readers to give the lock to?
                 if self.waiting_readers:
-                    self.readers = set(self.waiting_readers)
+                    for reader_client_id in self.waiting_readers:
+                        self.readers[reader_client_id] += 1
                     acquired = self.waiting_readers
                     self.waiting_readers = set()
                     return acquired
             else:
-                raise ValueError('Lock not held')
+                raise NotHeld('Lock not held')
             return set()
         finally:
             self._check_cleanup()
@@ -195,9 +244,12 @@ class LockRequest(object):
             self.schedule_advise_retry()
             self.state = rs.PRESENT_WAITING
 
-    def release(self):
+    def release(self, fully=False):
+        """Release the lock for the client, and process any triggered acquisitions. If
+        fully is True, the lock will be completely released, regardless of the current
+        reentrancy level."""
         lock = Lock.instance(self.key, self.server)
-        acquirers = lock.release(self.client_id)
+        acquirers = lock.release(self.client_id, fully=fully)
         for client_id in acquirers:
             other_request = LockRequest.instance(self.key, client_id, self.server)
             other_request.on_triggered_acquisition()
@@ -208,8 +260,26 @@ class LockRequest(object):
         if self.state is rs.INITIAL:
             # First attempt to acquire the lock:
             self._initial_acquisition(routing_id, timeout, read_only)
+        elif self.state is rs.HELD:
+            # A re-entry of an already held lock:
+            lock = Lock.instance(self.key, self.server)
+            try:
+                assert lock.acquire(self.client_id, read_only)
+                self.server.send(routing_id, b'ok')
+                # Extend the timeout if necessary:
+                if monotonic() + timeout > self.timeout_task.due_at:
+                    self.cancel_timeout_release()
+                    self.schedule_timeout_release(timeout)
+            except InvalidReentry:
+                self.server.send(routing_id, ERR_INVALID_REENTRY)
+        elif self.state is rs.ABSENT_HELD:
+            # A retry attempt, and the lock was acquired whilst the client was absent.
+            self.server.send(routing_id, b'ok')
+            self.cancel_timeout_release()
+            self.schedule_timeout_release(timeout)
+            self.state = rs.HELD
         elif self.state is rs.ABSENT_WAITING:
-            # A retry attempt, the lock is still not free:
+            # A retry attempt, but the lock is still not free:
             self.cancel_give_up()
             if read_only != self.read_only:
                 # Client has changed their mind about whether they want a read_only
@@ -221,18 +291,9 @@ class LockRequest(object):
                 self.routing_id = routing_id
                 self.schedule_advise_retry()
                 self.state = rs.PRESENT_WAITING
-        elif self.state is rs.ABSENT_HELD:
-            # A retry attempt, and the lock was acquired whilst the client was absent.
-            self.server.send(routing_id, b'ok')
-            self.cancel_timeout_release()
-            self.schedule_timeout_release(timeout)
-            self.state = rs.HELD
         elif self.state is rs.PRESENT_WAITING:
             # Client not allowed to make two requests without waiting for a response:
-            msg = b'error: multiple concurrent requests with same key and client_id'
-            self.server.send(routing_id, msg)
-        elif self.state is rs.HELD:
-            self.server.send(routing_id, b'error: lock already held')
+            self.server.send(routing_id, ERR_CONCURRENT)
         else:
             raise ValueError(self.state)  # pragma: no cover
 
@@ -243,15 +304,14 @@ class LockRequest(object):
             self.cancel_timeout_release()
         elif self.state is rs.ABSENT_HELD:
             # A lie, but the client didn't follow protocol, so no lock for you:
-            self.server.send(routing_id, b'error: lock not held')
+            self.server.send(routing_id, ERR_NOT_HELD)
             self.release()
             self.cancel_timeout_release()
         elif self.state is rs.PRESENT_WAITING:
             # Client not allowed to make two requests without waiting for a response:
-            msg = b'error: multiple concurrent requests with same key and client_id'
-            self.server.send(routing_id, msg)
+            self.server.send(routing_id, ERR_CONCURRENT)
         elif self.state in (rs.INITIAL, rs.ABSENT_WAITING):
-            self.server.send(routing_id, b'error: lock not held')
+            self.server.send(routing_id, ERR_NOT_HELD)
         else:
             raise ValueError(self.state)  # pragma: no cover
 
@@ -283,7 +343,7 @@ class LockRequest(object):
             self._cleanup()
 
     def schedule_timeout_release(self, timeout):
-        self.timeout_task = Task(timeout, self.release)
+        self.timeout_task = Task(timeout, self.release, fully=True)
         self.server.tasks.add(self.timeout_task)
 
     def cancel_timeout_release(self):
@@ -392,7 +452,7 @@ class ZMQLockServer(object):
                     self.send(routing_id, b'ok')
                     break
                 else:
-                    self.send(routing_id, b'error: invalid command')
+                    self.send(routing_id, ERR_INVALID_COMMAND)
             else:
                 # A task is due:
                 task = self.tasks.pop()
@@ -431,23 +491,20 @@ class ZMQLockServer(object):
 
     def acquire_request(self, routing_id, args):
         if not 3 <= len(args) <= 4:
-            self.send(routing_id, b'error: wrong number of arguments')
+            self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
         key, client_id, timeout = args[:3]
         try:
             timeout = float(timeout)
         except ValueError:
-            self.send(routing_id, b'error: timeout %s not a valid number' % timeout)
+            self.send(routing_id, ERR_TIMEOUT_INVALID)
             return
         if timeout in INVALID_NUMBERS:
-            self.send(
-                routing_id,
-                b'error: timeout %s not a valid number' % str(timeout).encode(),
-            )
+            self.send(routing_id, ERR_TIMEOUT_INVALID)
             return
         if len(args) == 4:
             if args[3] != b'read_only':
-                self.send(routing_id, b"error: expected 'read_only', got %s" % args[3])
+                self.send(routing_id, ERR_READ_ONLY_WRONG)
                 return
             read_only = True
         else:
@@ -457,7 +514,7 @@ class ZMQLockServer(object):
 
     def release_request(self, routing_id, args):
         if not len(args) == 2:
-            self.send(routing_id, b'error: wrong number of arguments')
+            self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
         key, client_id = args
         request = LockRequest.instance(key, client_id, self)
