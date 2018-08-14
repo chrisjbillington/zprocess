@@ -503,8 +503,10 @@ class ZMQLockServer(object):
                     self.release_request(routing_id, args)
                 elif command == b'hello':
                     self.send(routing_id, b'hello')
+                    logging.info("Someone said hello")
                 elif command == b'protocol':
                     self.send(routing_id, PROTOCOL_VERSION.encode('utf8'))
+                    logging.info("Someone requested the protocol version")
                 elif command == b'stop' and self.stopping:
                     self.send(routing_id, b'ok')
                     break
