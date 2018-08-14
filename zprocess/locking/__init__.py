@@ -118,6 +118,30 @@ class ZMQLockClient(object):
             del self.local.sock
             raise
 
+    def get_protocol_version(self, timeout=None):
+        """Ask the server what protocol version it is running"""
+        try:
+            if timeout is None:
+                timeout = self.RESPONSE_TIMEOUT
+            else:
+                timeout = 1000 * timeout  # convert to ms
+            if not hasattr(self.local, 'sock'):
+                self.new_socket()
+            self.local.sock.send(b'protocol', zmq.NOBLOCK)
+            events = self.local.poller.poll(timeout)
+            if events:
+                response = self.local.sock.recv().decode('utf8')
+                if 'KeyError' in response:
+                    # This is what zlock used to say before we gave it the 'protocol'
+                    # method. That means it's version 1.0.0
+                    return '1.0.0'
+                else:
+                    return response
+        except:
+            self.local.sock.close(linger=False)
+            del self.local.sock
+            raise
+
     def acquire(self, key, timeout=None, read_only=False):
         if timeout is None:
             timeout = DEFAULT_TIMEOUT
@@ -139,6 +163,13 @@ class ZMQLockClient(object):
                     break
                 elif response == 'retry':
                     continue
+                elif 'acquire() takes exactly 4 arguments (5 given)' in response:
+                    # Zlock version too old to support read_only.
+                    if read_only:
+                        msg = "Client requested a read-only lock, but the zlock server "
+                        msg += "is too old to support this. Please update the zlock "
+                        msg += "server to zprocess >= 2.7.0 for read-only locks."
+                        raise zmq.ZMQError(msg)
                 raise zmq.ZMQError(response)
         except:
             if hasattr(self.local, 'sock'):
@@ -214,6 +245,12 @@ def ping(timeout=None):
     return _zmq_lock_client.say_hello(timeout)
 
 
+def get_protocol_version(timeout=None):
+    if _zmq_lock_client is None:
+        raise RuntimeError('Not connected to a zlock server')
+    return _zmq_lock_client.get_protocol_version(timeout)
+
+
 def set_default_timeout(t):
     """Sets how long the locks should be acquired for before the server
     times them out and allows other clients to acquire them. Attempting
@@ -236,5 +273,5 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
 if __name__ == '__main__':
     # test:
     connect()
-    with Lock('test'):
+    with Lock('test', read_only=True):
         print('with lock')
