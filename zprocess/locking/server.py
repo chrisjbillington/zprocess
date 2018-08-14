@@ -1,8 +1,12 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
+import sys
+import os
 from bisect import insort
 import threading
 from collections import defaultdict
 import enum
+import logging
+from logging.handlers import RotatingFileHandler
 
 try:
     from time import monotonic
@@ -24,6 +28,7 @@ ERR_WRONG_NUM_ARGS = b'error: wrong number of arguments'
 ERR_TIMEOUT_INVALID = b'error: timeout not a valid number'
 ERR_READ_ONLY_WRONG = b"error: argument 4 if present can only 'read_only'"
 
+PROTOCOL_VERSION = '1.1.0'
 
 class AlreadyWaiting(ValueError):
     pass
@@ -35,6 +40,36 @@ class InvalidReentry(ValueError):
 
 class NotHeld(ValueError):
     pass
+
+
+def _ds(s):
+    """Decode a bytestring for printing"""
+    return s.decode("utf-8", "backslashreplace")
+
+
+def setup_logging():
+    if os.name == 'nt':
+        logpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zlock.log')
+    else:
+        logpath = '/var/log/zlock.log'
+    handlers = []
+    try:
+        handler = RotatingFileHandler(logpath, maxBytes=50 * 1024 ** 2, backupCount=1)
+        handlers.append(handler)
+        file_handler_success = True
+    except IOError:
+        file_handler_success = False
+    if sys.stdout is not None and sys.stdout.isatty():
+        handlers.append(logging.StreamHandler(sys.stdout))
+    logging.basicConfig(
+        format='[%(asctime)s] %(levelname)s: %(message)s',
+        level=logging.DEBUG,
+        handlers=handlers,
+    )
+    if not file_handler_success:
+        msg = 'Can\'t open or do not have permission to write to log file '
+        msg += logpath + '. Only terminal logging will be output.'
+        logging.warning(msg)
 
 
 class Lock(object):
@@ -228,10 +263,12 @@ class LockRequest(object):
         one or more other clients"""
         if self.state is rs.PRESENT_WAITING:
             self.server.send(self.routing_id, b'ok')
+            logging.info('%s acquired %s', _ds(self.client_id), _ds(self.key))
             self.schedule_timeout_release(self.timeout)
             self.cancel_advise_retry()
             self.state = rs.HELD
         elif self.state is rs.ABSENT_WAITING:
+            logging.info('%s acquired (in absentia) %s', _ds(self.client_id), _ds(self.key))
             self.cancel_give_up()
             self.schedule_timeout_release(MAX_ABSENT_TIME)
             self.state = rs.ABSENT_HELD
@@ -245,6 +282,7 @@ class LockRequest(object):
         lock = Lock.instance(self.key, self.server)
         if lock.acquire(self.client_id, read_only):
             self.server.send(routing_id, b'ok')
+            logging.info('%s acquired %s', _ds(self.client_id), _ds(self.key))
             self.schedule_timeout_release(timeout)
             self.state = rs.HELD
         else:
@@ -255,6 +293,7 @@ class LockRequest(object):
         """Release the lock for the client, and process any triggered acquisitions. If
         fully is True, the lock will be completely released, regardless of the current
         reentrancy level. Return whether the lock is still held."""
+        logging.info('%s released %s', _ds(self.client_id), _ds(self.key))
         lock = Lock.instance(self.key, self.server)
         acquirers = lock.release(self.client_id, fully=fully)
         for client_id in acquirers:
@@ -277,6 +316,7 @@ class LockRequest(object):
             try:
                 assert lock.acquire(self.client_id, read_only)
                 self.server.send(routing_id, b'ok')
+                logging.info('%s acquired %s', _ds(self.client_id), _ds(self.key))
                 # Extend the timeout if necessary:
                 if monotonic() + timeout > self.timeout_task.due_at:
                     self.cancel_timeout_release()
@@ -438,8 +478,9 @@ class ZMQLockServer(object):
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
         if not self.silent:  # pragma: no cover
+            setup_logging()
             msg = 'This is zlock server, running on %s:%d'
-            print(msg % (self.bind_address, self.port))
+            logging.info(msg, self.bind_address, self.port)
         self.running = True
         self.started.set()
         while True:
@@ -452,17 +493,18 @@ class ZMQLockServer(object):
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
-                # print('received:', request)
                 if len(request) < 3 or request[1] != b'':  # pragma: no cover
                     # Not well formed as [routing_id, '', command, ...]
                     continue  # pragma: no cover
                 routing_id, command, args = request[0], request[2], request[3:]
-                if command == b'hello':
-                    self.send(routing_id, b'hello')
-                elif command == b'acquire':
+                if command == b'acquire':
                     self.acquire_request(routing_id, args)
                 elif command == b'release':
                     self.release_request(routing_id, args)
+                elif command == b'hello':
+                    self.send(routing_id, b'hello')
+                elif command == b'protocol':
+                    self.send(routing_id, PROTOCOL_VERSION.encode('utf8'))
                 elif command == b'stop' and self.stopping:
                     self.send(routing_id, b'ok')
                     break
@@ -501,7 +543,6 @@ class ZMQLockServer(object):
         self.stopping = False
 
     def send(self, routing_id, message):
-        # print('sending:', [routing_id, b'', message])
         self.router.send_multipart([routing_id, b'', message])
 
     def acquire_request(self, routing_id, args):

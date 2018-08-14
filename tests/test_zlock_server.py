@@ -119,6 +119,11 @@ class ZLockServerTests(unittest.TestCase):
             client.send(b'hello')
             client.assertReceived(b'hello')
 
+    def test_protocol(self):
+        with self.client(None, None) as client:
+            client.send(b'protocol')
+            client.assertReceived(b'1.1.0')
+
     def test_uncontested_reader(self):
         with self.client(b'key_foo', b'client_foo') as reader:
             # Reader acquires the lock:
