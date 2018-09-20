@@ -113,7 +113,7 @@ class ZMQLogClient(object):
             message = message.encode('utf8')
         messages = [b'log', client_id, filepath, message]
         try:
-            self.local.new_push_socket.send_multipart(messages, zmq.NOBLOCK)
+            self.local.push_sock.send_multipart(messages, zmq.NOBLOCK)
         except zmq.Again:
             msg = """Warning: zlog server not receiving log messages. Logging may not be
                 functional"""
@@ -154,7 +154,7 @@ class ZMQLoggingHandler(Handler):
         self.filename = os.path.abspath(filename)
         # A unique ID so that the server can identify us:
         self.client_id = os.urandom(32)
-        Handler.__init__(self, filename)
+        Handler.__init__(self)
 
     def close(self):
         """Tell the server we're done with the file. It will know to close the file once
@@ -198,3 +198,8 @@ def get_protocol_version(timeout=None):
 if __name__ == '__main__':
     connect()
     print(get_protocol_version())
+    import logging
+    logger = logging.Logger('test')
+    logger.setLevel(logging.DEBUG)
+    logger.addHandler(ZMQLoggingHandler('test.log'))
+    logger.info('this is a log message')

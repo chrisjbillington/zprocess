@@ -12,14 +12,20 @@
 #####################################################################
 from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
-
-import zprocess.locking as zlock
-from zprocess.locking.server import ZMQLockServer
+import os
 
 if sys.version_info[0] == 2:
     import ConfigParser as configparser
 else:
     import configparser
+
+# Ensure zprocess is in the path if we are running from this directory
+if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
+
+import zprocess.locking as zlock
+from zprocess.locking.server import ZMQLockServer
+
 
 # Protocol description:
 #

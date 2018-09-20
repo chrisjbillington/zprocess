@@ -55,7 +55,6 @@ class ZMQLogServer(object):
         self.context = None
         self.router = None
         self.tasks = TaskQueue()
-        self.active_locks = {}
 
         self.run_thread = None
         self.stopping = False
@@ -88,7 +87,7 @@ class ZMQLogServer(object):
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
-
+                print(request)
                 if len(request) < 3 or request[1] != b'':  # pragma: no cover
                     # Not well formed as [routing_id, '', command, ...]
                     continue  # pragma: no cover
