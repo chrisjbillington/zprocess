@@ -136,6 +136,7 @@ class ZMQLockClient(object):
                     return '1.0.0'
                 else:
                     return response
+            raise zmq.ZMQError('No response from zlock server: timed out')
         except:
             self.local.sock.close(linger=False)
             del self.local.sock

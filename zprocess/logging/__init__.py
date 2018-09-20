@@ -82,6 +82,26 @@ class ZMQLogClient(object):
             del self.local.poller
             raise
 
+    def get_protocol_version(self, timeout=None):
+        """Ask the server what protocol version it is running"""
+        try:
+            if timeout is None:
+                timeout = self.RESPONSE_TIMEOUT
+            else:
+                timeout = 1000 * timeout  # convert to ms
+            if not hasattr(self.local, 'req_sock'):
+                self.new_req_socket()
+            self.local.req_sock.send(b'protocol', zmq.NOBLOCK)
+            events = self.local.poller.poll(timeout)
+            if events:
+                response = self.local.req_sock.recv().decode('utf8')
+                return response
+            raise zmq.ZMQError('No response from zlog server: timed out')
+        except:
+            self.local.req_sock.close(linger=False)
+            del self.local.req_sock
+            raise
+
     def log(self, client_id, filepath, message):
         """Send a message to the logging server, asking it to write it to the specified
         filepath"""
@@ -169,5 +189,12 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
     return ping(timeout)
 
 
+def get_protocol_version(timeout=None):
+    if _zmq_log_client is None:
+        raise RuntimeError('Not connected to a zlog server')
+    return _zmq_log_client.get_protocol_version(timeout)
+
+
 if __name__ == '__main__':
     connect()
+    print(get_protocol_version())

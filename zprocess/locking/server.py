@@ -1,7 +1,6 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys
 import os
-from bisect import insort
 import threading
 from collections import defaultdict
 import enum
@@ -14,6 +13,12 @@ except ImportError:
     from time import time as monotonic
 
 import zmq
+
+# Ensure zprocess is in the path if we are running from this directory
+if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
+
+from zprocess.tasks import Task, TaskQueue
 
 MAX_RESPONSE_TIME = 1  # second
 MAX_ABSENT_TIME = 1  # second
@@ -29,6 +34,7 @@ ERR_TIMEOUT_INVALID = b'error: timeout not a valid number'
 ERR_READ_ONLY_WRONG = b"error: argument 4 if present can only 'read_only'"
 
 PROTOCOL_VERSION = '1.1.0'
+
 
 class AlreadyWaiting(ValueError):
     pass
@@ -268,7 +274,9 @@ class LockRequest(object):
             self.cancel_advise_retry()
             self.state = rs.HELD
         elif self.state is rs.ABSENT_WAITING:
-            logging.info('%s acquired (in absentia) %s', _ds(self.client_id), _ds(self.key))
+            logging.info(
+                '%s acquired (in absentia) %s', _ds(self.client_id), _ds(self.key)
+            )
             self.cancel_give_up()
             self.schedule_timeout_release(MAX_ABSENT_TIME)
             self.state = rs.ABSENT_HELD
@@ -403,50 +411,6 @@ class LockRequest(object):
 
     def _cleanup(self):
         del self.server.active_requests[self.key, self.client_id]
-
-
-class Task(object):
-    def __init__(self, due_in, func, *args, **kwargs):
-        """Wrapper for a function call to be executed after a specified time interval.
-        due_in is how long in the future, in seconds, the function should be called,
-        func is the function to call. All subsequent arguments and keyword arguments
-        will be passed to the function."""
-        self.due_at = monotonic() + due_in
-        self.func = func
-        self.args = args
-        self.kwargs = kwargs
-        self.called = False
-
-    def due_in(self):
-        """The time interval in seconds until the task is due"""
-        return self.due_at - monotonic()
-
-    def __call__(self):
-        if self.called:
-            raise RuntimeError('Task has already been called')
-        self.called = True
-        return self.func(*self.args, **self.kwargs)
-
-    def __gt__(self, other):
-        # Tasks due sooner are 'greater than' tasks due later. This is necessary for
-        # insort() and pop() as used with TaskQueue.
-        return self.due_at < other.due_at
-
-
-class TaskQueue(list):
-    """A list of pending tasks due at certain times. Tasks are stored with the soonest
-    due at the end of the list, to be removed with pop()"""
-
-    def add(self, task):
-        """Insert the task into the queue, maintaining sort order"""
-        insort(self, task)
-
-    def next(self):
-        """Return the next due task, without removing it from the queue"""
-        return self[-1]
-
-    def cancel(self, task):
-        self.remove(task)
 
 
 class ZMQLockServer(object):
