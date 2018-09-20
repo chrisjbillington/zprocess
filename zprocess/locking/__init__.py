@@ -81,7 +81,6 @@ class ZMQLockClient(object):
         # We'll store one zmq socket/poller for each thread, with thread
         # local storage:
         self.local = threading.local()
-        self.shutdown_complete = threading.Event()
 
     def new_socket(self):
         # Every time the REQ/REP cadence is broken, we need to create
