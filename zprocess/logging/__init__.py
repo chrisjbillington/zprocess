@@ -20,6 +20,7 @@ import threading
 import time
 from textwrap import dedent
 from logging import Handler
+import builtins
 
 PY2 = sys.version_info.major == 2
 if PY2:
@@ -68,7 +69,7 @@ class ZMQLogClient(object):
                 raise zmq.ZMQError('No response from zlog server: timed out')
             response = self.local.sock.recv_multipart()
             if len(response) != 2 or response[0] != b'':
-                raise zmq.ZMQError('Malformed message from server: ' + response)
+                raise zmq.ZMQError('Malformed message from server: ' + str(response))
             return response[1]
         except:
             self.local.sock.close(linger=False)
@@ -97,8 +98,19 @@ class ZMQLogClient(object):
             filepath = filepath.encode('utf8')
         self._send(b'check_access', filepath)
         response = self._recv(timeout).decode('utf8')
-        if response != 'ok':
-            raise OSError(response)
+        print(response)
+        if response == 'ok':
+            return
+        # Raise the exception returned by the server:
+        try:
+            exc_class_name, message = response.split(': ', 1)
+            exc_class = getattr(builtins, exc_class_name, OSError)
+        except ValueError:
+            exc_class = OSError
+            message = response
+        if not issubclass(exc_class, OSError):
+            exc_class = OSError
+        raise exc_class(message)
 
     def log(self, client_id, filepath, message):
         """Send a message to the logging server, asking it to write it to the specified
@@ -117,13 +129,13 @@ class ZMQLogClient(object):
                     functional\n"""
                 sys.stderr.write(dedent(msg))
 
-    def close(self, client_id, filepath, timeout=None):
+    def done(self, client_id, filepath, timeout=None):
         """Tell the server a client is done with the file"""
         if not isinstance(filepath, bytes):
             filepath = filepath.encode('utf8')
-        self._send(b'close', client_id, filepath)
-        response = self._recv(timeout)
-        if response != b'ok':
+        self._send(b'done', client_id, filepath)
+        response = self._recv(timeout).decode('utf8')
+        if response != 'ok':
             raise zmq.ZMQError('Invalid response from server: ' + response)
 
 
@@ -135,6 +147,7 @@ class ZMQLoggingHandler(Handler):
         # A unique ID so that the server can identify us:
         self.client_id = os.urandom(32)
         Handler.__init__(self)
+        check_access(self.filepath)
 
     def close(self):
         """Tell the server we're done with the file. It will know to close the file once
@@ -142,11 +155,11 @@ class ZMQLoggingHandler(Handler):
         Handler.close(self)
         if _zmq_log_client is None:
             raise RuntimeError('Not connected to a zlog server')
-        _zmq_log_client.close(self.client_id, self.filepath)
+        _zmq_log_client.done(self.client_id, self.filepath)
 
     def emit(self, record):
         """Format and send the record to the server"""
-        msg = self.format(record) + '\n'
+        msg = self.format(record)
         if _zmq_log_client is None:
             raise RuntimeError('Not connected to a zlog server')
         _zmq_log_client.log(self.client_id, self.filepath, msg)
@@ -188,4 +201,6 @@ if __name__ == '__main__':
     logger = logging.Logger('test')
     logger.setLevel(logging.DEBUG)
     logger.addHandler(ZMQLoggingHandler('test.log'))
-    logger.info('this is a log message')
+    while True:
+        time.sleep(1)
+        logger.info(str(time.time()) + ': this is a log message')
