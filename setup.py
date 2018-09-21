@@ -11,7 +11,7 @@
 from setuptools import setup
 import os
 
-VERSION = '2.8.0'
+VERSION = '2.8.1'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
@@ -33,6 +33,6 @@ setup(name='zprocess',
       author_email='chrisjbillington@gmail.com',
       url='https://bitbucket.org/cbillington/zprocess/',
       license="BSD",
-      packages=['zprocess', 'zprocess.locking'],
+      packages=['zprocess', 'zprocess.locking', 'zprocess.zlog'],
       install_requires=dependencies
      )
