@@ -20,7 +20,10 @@ import threading
 import time
 from textwrap import dedent
 from logging import Handler
-import builtins
+try:
+    import builtins
+except ImportError:
+    import __builtin__ as builtins
 
 PY2 = sys.version_info.major == 2
 if PY2:
