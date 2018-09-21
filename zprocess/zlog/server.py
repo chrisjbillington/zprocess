@@ -14,7 +14,7 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
 from zprocess.tasks import Task, TaskQueue
 
 # If no client writes to a file in this time, we close it:
-FILE_CLOSE_TIMEOUT = 15
+FILE_CLOSE_TIMEOUT = 5
 
 ERR_INVALID_COMMAND = b'error: invalid command'
 ERR_WRONG_NUM_ARGS = b'error: wrong number of arguments'
