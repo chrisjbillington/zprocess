@@ -13,17 +13,19 @@
 from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
 import os
-if sys.version_info[0] == 2:
-    import ConfigParser as configparser
-else:
-    import configparser
+import argparse
 
 # Ensure zprocess is in the path if we are running from this directory
 if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
-import zprocess.logging as zlog
-from zprocess.logging.server import ZMQLogServer
+from zprocess.logging import DEFAULT_PORT
+from zprocess.logging.server import (
+    ZMQLogServer,
+    FileHandler,
+    RotatingFileHandler,
+    TimedRotatingFileHandler,
+)
 
 
 # Protocol description:
@@ -100,8 +102,79 @@ from zprocess.logging.server import ZMQLogServer
 
 
 def main():
-    port = zlog.DEFAULT_PORT
-    server = ZMQLogServer(port)
+
+    parser = argparse.ArgumentParser(description="zlog server.")
+
+    parser.add_argument('-p', '--port', type=int, default=DEFAULT_PORT,
+                        help='The port to listen on. Default: %d' % DEFAULT_PORT)
+
+    parser.add_argument(
+        '-c',
+        '--cls',
+        type=str,
+        choices=['FileHandler', 'RotatingFileHandler', 'TimedRotatingFileHandler'],
+        default='FileHandler',
+        help="""Type of file handler to use, must be one of 'FileHandler',
+            'RotatingFileHandler', or 'TimedRotatingFileHandler'. Default:
+            'FileHandler'""",
+    )
+
+    parser.add_argument(
+        '-n',
+        '--backupCount',
+        type=int,
+        default=0,
+        help="""If using RotatingFileHandler or TimedRotatingFileHandler, the
+           value of 'backupCount' to pass to its constructor. Default: 0.""",
+    )
+
+    parser.add_argument(
+        '-b',
+        '--maxBytes',
+        type=int,
+        default=0,
+        help="""If using RotatingFileHandler, the value of 'maxBytes' to pass
+           to its constructor. Default: 0 (no rollover).""",
+    )
+
+    parser.add_argument(
+        '-w',
+        '--when',
+        type=str,
+        default='h',
+        help="""If using TimedRotatingFileHandler, the value of 'when' to
+           pass to its constructor. Default: 'h' (hours).""",
+    )
+
+    parser.add_argument(
+        '-i',
+        '--interval',
+        type=int,
+        default=1,
+        help="""If using TimedRotatingFileHandler, the value of 'interval'
+           to pass to its constructor. Default: 1.""",
+    )
+
+    args = parser.parse_args()
+
+    port = args.port
+    if args.cls == 'FileHandler':
+        handler_class = FileHandler
+        handler_kwargs = {}
+    elif args.cls == 'RotatingFileHandler':
+        handler_class = RotatingFileHandler
+        handler_kwargs = {'maxBytes': args.maxBytes, 'backupCount': args.backupCount}
+    elif args.cls == 'TimedRotatingFileHandler':
+        handler_class = TimedRotatingFileHandler
+        handler_kwargs = {
+            'when': args.when,
+            'interval': args.interval,
+            'backupCount': args.backupCount,
+        }
+    
+    server = ZMQLogServer(
+        port, handler_class=handler_class, handler_kwargs=handler_kwargs
+    )
     try:
         server.run()
     except KeyboardInterrupt:
