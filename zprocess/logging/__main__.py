@@ -48,20 +48,20 @@ from zprocess.logging.server import ZMQLogServer
 #
 # To confirm the server is running, clients may send
 #
-# ['', hello']
+# ['', 'hello']
 #
 # The server will respond with
 #
-# ['', hello']
+# ['', 'hello']
 #
 # Clients can confirm that the server can open a file in append mode by sending a
-# message on a zmq REQ socket:
+# message:
 #
-# ['', check_access', filepath]
+# ['', 'check_access', filepath]
 #
 # The server will respond with
 #
-# ['', ok'] 
+# ['', 'ok'] 
 # 
 # if it can open the file in append mode, or
 #
@@ -75,22 +75,22 @@ from zprocess.logging.server import ZMQLogServer
 # no way for clients to guarantee in an ongoing way that the log messages are being
 # written successfully.
 #
-# When a client is done with a log file, it should send a message on a REQ socket:
+# When a client is done with a log file, it should send a message:
 #
-# ['', close', client_id, filepath]
+# ['', 'done', client_id, filepath]
 #
 # The server will respond with
 #
-# ['', ok']
+# ['', 'ok']
 # 
 # Once all clients writing to the same file send such a message without sending
 # subsequent 'log' or 'check_access' messages, the zlog server will close the file.
 # Although files will be closed anyway after a time as described above, it is good to
-# send explicit 'close' messages to have the file be closed as soon as possible.
+# send explicit 'done' messages to have the file be closed as soon as possible.
 #
 # clients may also request the protocol version by sending
 #
-# ['', protocol']
+# ['', 'protocol']
 #
 # The server will respond with
 #

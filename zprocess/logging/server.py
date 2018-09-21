@@ -3,7 +3,7 @@ import sys
 import os
 import threading
 import logging
-from logging.handlers import RotatingFileHandler
+import logging.handlers
 
 import zmq
 
@@ -30,7 +30,9 @@ def setup_logging():
         logpath = '/var/log/zlog.log'
     handlers = []
     try:
-        handler = RotatingFileHandler(logpath, maxBytes=50 * 1024 ** 2, backupCount=1)
+        handler = logging.handlers.RotatingFileHandler(
+            logpath, maxBytes=50 * 1024 ** 2, backupCount=1
+        )
         handlers.append(handler)
         file_handler_success = True
     except IOError:
@@ -48,49 +50,80 @@ def setup_logging():
         logging.warning(msg)
 
 
-class LogFile(object):
+class FileHandler(logging.FileHandler):
     instances = {}
-    def __init__(self, filepath):
-        self.filepath = filepath
-        self.file = None
+
+    def __init__(self, filepath, **kwargs):
+        super(FileHandler, self).__init__(filepath, **kwargs)
         self.clients = set()
 
     @classmethod
-    def instance(cls, filepath):
+    def instance(cls, filepath, **kwargs):
         if filepath not in cls.instances:
-            cls.instances[filepath] = cls(filepath)
+            cls.instances[filepath] = cls(filepath, **kwargs)
+            logging.info("Opening %s", filepath)
         return cls.instances[filepath]
 
     def log(self, client_id, message):
-        self.clients.add(client_id)
-        if self.file is None:
+        if client_id not in self.clients:
+            self.clients.add(client_id)
+            msg = "New client (total: %d) for %s"
+            logging.info(msg, len(self.clients), self.baseFilename)
+        if hasattr(self, 'shouldRollover') and self.shouldRollover(message):
+            logging.info("Rolling over %s", self.baseFilename)
+            self.doRollover()
+        if self.stream is None:
             try:
-                self.file = open(self.filepath, 'a')
+                self.stream = self._open()
             except OSError:
                 # Nothing to be done.
-                return 
-        self.file.write(message)
+                return
+        try:
+            self.stream.write(message + '\n')
+        except OSError:
+            # Nothing to be done.
+            return
 
-    def close(self, client_id):
+    def format(self, record):
+        return record
+
+    def client_done(self, client_id):
         if client_id in self.clients:
             self.clients.remove(client_id)
+            msg = "Client done (remaining: %d) with %s"
+            logging.info(msg, len(self.clients), self.baseFilename)
         if not self.clients:
-            # If all clients are done with the file, close it and clean up:
-            if self.file is not None:
-                self.file.flush()
-                self.file.close()
-            del self.instances[self.filepath]
+            del self.instances[self.baseFilename]
+            self.close()
+            logging.info("No more clients, closing %s", self.baseFilename)
+
+
+class RotatingFileHandler(FileHandler, logging.handlers.RotatingFileHandler):
+    pass
+
+
+class TimedRotatingFileHandler(FileHandler, logging.handlers.TimedRotatingFileHandler):
+    pass
 
 
 class ZMQLogServer(object):
-    def __init__(self, port=None, bind_address='tcp://127.0.0.1', silent=False):
+    def __init__(
+        self,
+        port=None,
+        bind_address='tcp://127.0.0.1',
+        silent=False,
+        handler_class=FileHandler,
+        handler_kwargs=None,
+    ):
         self.port = port
         self._initial_port = port
         self.bind_address = bind_address
+        self.handler_class = handler_class
+        self.handler_kwargs = handler_kwargs if handler_kwargs is not None else {}
         self.context = None
         self.router = None
         self.tasks = TaskQueue()
-        self.autoclose_tasks = {}
+        self.timeout_tasks = {}
 
         self.run_thread = None
         self.stopping = False
@@ -109,10 +142,10 @@ class ZMQLogServer(object):
             message = message.decode('utf8')
         except UnicodeDecodeError:
             return
-        logfile = LogFile.instance(filepath)
-        logfile.log(client_id, message)
-        self.cancel_autoclose(client_id)
-        self.set_autoclose(client_id, filepath)
+        handler = self.handler_class.instance(filepath, **self.handler_kwargs)
+        handler.log(client_id, message)
+        self.cancel_timeout(client_id)
+        self.set_timeout(client_id, filepath)
 
     def check_access(self, routing_id, args):
         if len(args) != 1:
@@ -124,36 +157,57 @@ class ZMQLogServer(object):
         except UnicodeDecodeError:
             self.send(routing_id, ERR_BAD_ENCODING)
         try:
-            with open(filepath.decode('utf8'), 'a') as _:
+            with open(filepath, 'a') as _:
                 pass
-        except OSError as e:
-            self.send(routing_id, b'error opening file: ' + str(e).encode('utf8'))
+        except OSError:
+            exc_class, message, _ = sys.exc_info()
+            message = '%s: %s' % (exc_class.__name__, str(message))
+            self.send(routing_id, message.encode('utf8'))
+            logging.warning('Access denied for %s', filepath)
+        else:
+            self.send(routing_id, b'ok')
+            logging.info('Access confirmed for %s', filepath)
 
-    def close(self, routing_id, args):
+    def done(self, routing_id, args):
         if len(args) != 2:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
-        client_id, filepath = args[0]
+        client_id, filepath = args
         try:
             filepath = filepath.decode('utf8')
         except UnicodeDecodeError:
             self.send(routing_id, ERR_BAD_ENCODING)
             return
-        self.cancel_autoclose(client_id)
-        logfile = LogFile.instance(client_id)
-        logfile.close(client_id)
+        self.cancel_timeout(client_id)
+        try:
+            handler = self.handler_class.instance(filepath, **self.handler_kwargs)
+        except OSError:
+            logging.warning('done() called for inaccessible file %s', filepath)
+        else:
+            handler.client_done(client_id)
+        self.send(routing_id, b'ok')
 
-    def set_autoclose(self, client_id, logfile):
-        """Add a task to close the file for the client after a timeout"""
-        task = Task(FILE_CLOSE_TIMEOUT, logfile.close, client_id)
+    def set_timeout(self, client_id, filepath):
+        """Add a task to say the client is done with the file after a timeout"""
+        task = Task(FILE_CLOSE_TIMEOUT, self.do_timeout, client_id, filepath)
         self.tasks.add(task)
-        self.autoclose_tasks[client_id] = task
+        self.timeout_tasks[client_id] = task
 
-    def cancel_autoclose(self, client_id):
+    def cancel_timeout(self, client_id):
         """Cancel the scheduled auto-closing of the file for the client"""
-        task = self.autoclose_tasks.pop(client_id, None)
+        task = self.timeout_tasks.pop(client_id, None)
         if task is not None:
-            self.tasks.cancel(self.autoclose_tasks[client_id])
+            self.tasks.cancel(task)
+
+    def do_timeout(self, client_id, filepath):
+        logging.info("Client timed out for %s", filepath)
+        try:
+            handler = self.handler_class.instance(filepath, **self.handler_kwargs)
+        except OSError:
+            logging.warning('do_timeout() called for inaccessible file %s', filepath)
+        else:
+            handler.client_done(client_id)
+        del self.timeout_tasks[client_id]
 
     def run(self):
         self.context = zmq.Context.instance()
@@ -180,7 +234,6 @@ class ZMQLogServer(object):
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
-                print(request)
                 if len(request) < 3 or request[1] != b'':  # pragma: no cover
                     # Not well formed as [routing_id, '', command, ...]
                     continue  # pragma: no cover
@@ -195,8 +248,8 @@ class ZMQLogServer(object):
                     logging.info("Someone requested the protocol version")
                 elif command == b'check_access':
                     self.check_access(routing_id, args)
-                elif command == b'close':
-                    self.close(routing_id, args)
+                elif command == b'done':
+                    self.done(routing_id, args)
                 elif command == b'stop' and self.stopping:
                     self.send(routing_id, b'ok')
                     break
@@ -235,11 +288,14 @@ class ZMQLogServer(object):
         self.stopping = False
 
     def send(self, routing_id, message):
-        print('sending:', message)
         self.router.send_multipart([routing_id, b'', message])
 
 
 if __name__ == '__main__':
     port = 7340
-    server = ZMQLogServer(port)
+    server = ZMQLogServer(
+        port,
+        handler_class=RotatingFileHandler,
+        handler_kwargs={'maxBytes': 256, 'backupCount': 3},
+    )
     server.run()
