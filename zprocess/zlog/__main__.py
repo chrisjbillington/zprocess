@@ -71,11 +71,11 @@ from zprocess.zlog.server import (
 #
 # if it cannot, with the error message that resulted from attempting to open the file.
 # The zlog server will not open the file again until logging messages are received, and
-# will close log files if no clients send data for zprocess.zlog.FILE_CLOSE_TIMEOUT,
-# so confirming the file can be opened initially does not guarantee subsequent writes
-# will succeed. Furthermore, since the server does not respond to log messages, there is
-# no way for clients to guarantee in an ongoing way that the log messages are being
-# written successfully.
+# will close log files if no clients send data for
+# zprocess.zlog.server.FILE_CLOSE_TIMEOUT, so confirming the file can be opened
+# initially does not guarantee subsequent writes will succeed. Furthermore, since the
+# server does not respond to log messages, there is no way for clients to guarantee in
+# an ongoing way that the log messages are being written successfully.
 #
 # When a client is done with a log file, it should send a message:
 #
