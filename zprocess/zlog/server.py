@@ -75,12 +75,12 @@ class FileHandler(logging.FileHandler):
         if self.stream is None:
             try:
                 self.stream = self._open()
-            except OSError:
+            except (OSError, IOError):
                 # Nothing to be done.
                 return
         try:
             self.stream.write(message + '\n')
-        except OSError:
+        except (OSError, IOError):
             # Nothing to be done.
             return
 
@@ -159,7 +159,7 @@ class ZMQLogServer(object):
         try:
             with open(filepath, 'a') as _:
                 pass
-        except OSError:
+        except (OSError, IOError):
             exc_class, message, _ = sys.exc_info()
             message = '%s: %s' % (exc_class.__name__, str(message))
             self.send(routing_id, message.encode('utf8'))
@@ -181,7 +181,7 @@ class ZMQLogServer(object):
         self.cancel_timeout(client_id)
         try:
             handler = self.handler_class.instance(filepath, **self.handler_kwargs)
-        except OSError:
+        except (OSError, IOError):
             logging.warning('done() called for inaccessible file %s', filepath)
         else:
             handler.client_done(client_id)
@@ -203,7 +203,7 @@ class ZMQLogServer(object):
         logging.info("Client timed out for %s", filepath)
         try:
             handler = self.handler_class.instance(filepath, **self.handler_kwargs)
-        except OSError:
+        except (OSError, IOError):
             logging.warning('do_timeout() called for inaccessible file %s', filepath)
         else:
             handler.client_done(client_id)
