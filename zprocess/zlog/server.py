@@ -1,9 +1,11 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import sys
 import os
+import traceback
 import threading
 import logging
 import logging.handlers
+import uuid
 
 import zmq
 
@@ -35,7 +37,7 @@ def setup_logging():
         )
         handlers.append(handler)
         file_handler_success = True
-    except IOError:
+    except (OSError, IOError):
         file_handler_success = False
     if sys.stdout is not None and sys.stdout.isatty():
         handlers.append(logging.StreamHandler(sys.stdout))
@@ -50,10 +52,18 @@ def setup_logging():
         logging.warning(msg)
 
 
+def _format_exc():
+    """Format just the last line of the current exception, not the whole traceback"""
+    exc_type, exc_value, _ = sys.exc_info()
+    return traceback.format_exception_only(exc_type, exc_value)[0].strip()
+
+
 class FileHandler(logging.FileHandler):
     instances = {}
 
     def __init__(self, filepath, **kwargs):
+        # Don't open the file until logging is requested:
+        kwargs['delay'] = True
         super(FileHandler, self).__init__(filepath, **kwargs)
         self.clients = set()
 
@@ -69,14 +79,23 @@ class FileHandler(logging.FileHandler):
             self.clients.add(client_id)
             msg = "New client (total: %d) for %s"
             logging.info(msg, len(self.clients), self.baseFilename)
-        if hasattr(self, 'shouldRollover') and self.shouldRollover(message):
+        if hasattr(self, 'shouldRollover'):
             logging.info("Rolling over %s", self.baseFilename)
-            self.doRollover()
+            try:
+                if self.shouldRollover(message):
+                    self.doRollover()
+            except (OSError, IOError):
+                logging.warning(
+                    "Failed to rollover %s:\n    %s", self.baseFilename, _format_exc()
+                )
+                return
         if self.stream is None:
             try:
                 self.stream = self._open()
             except (OSError, IOError):
-                # Nothing to be done.
+                logging.warning(
+                    "Failed to open %s:\n    %s", self.baseFilename, _format_exc()
+                )
                 return
         try:
             self.stream.write(message + '\n')
@@ -94,9 +113,10 @@ class FileHandler(logging.FileHandler):
             logging.info(msg, len(self.clients), self.baseFilename)
         if not self.clients:
             del self.instances[self.baseFilename]
-            self.close()
-            logging.info("No more clients, closing %s", self.baseFilename)
-
+            if self.stream is not None:
+                logging.info("No more clients, closing %s", self.baseFilename)
+                self.close()
+                
 
 class RotatingFileHandler(FileHandler, logging.handlers.RotatingFileHandler):
     pass
@@ -151,19 +171,35 @@ class ZMQLogServer(object):
         if len(args) != 1:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
-        filepath = args[0]
         try:
-            filepath = filepath.decode('utf8')
+            filepath = args[0].decode('utf8')
         except UnicodeDecodeError:
             self.send(routing_id, ERR_BAD_ENCODING)
+            return
+        filepath = os.path.abspath(filepath)
+        dirname = os.path.dirname(filepath)
         try:
+            # Check we can open the file in append mode:
             with open(filepath, 'a') as _:
                 pass
+            if self.handler_class in [RotatingFileHandler, TimedRotatingFileHandler]:
+                # Check we can create files in the directory, so that we can make backup
+                # log files in the directory (not a guarantee obviously, but pretty
+                # good):
+                test_filename = 'test_can_create_file-' + uuid.uuid4().hex
+                try:
+                    with open(os.path.join(dirname, test_filename), 'w'):
+                        pass
+                finally:
+                    try:
+                        os.unlink(test_filename)
+                    except (OSError, IOError):
+                        pass
+            
         except (OSError, IOError):
-            exc_class, message, _ = sys.exc_info()
-            message = '%s: %s' % (exc_class.__name__, str(message))
+            message = _format_exc()
             self.send(routing_id, message.encode('utf8'))
-            logging.warning('Access denied for %s', filepath)
+            logging.warning('Access denied for %s: \n    %s', filepath, message)
         else:
             self.send(routing_id, b'ok')
             logging.info('Access confirmed for %s', filepath)
@@ -179,12 +215,8 @@ class ZMQLogServer(object):
             self.send(routing_id, ERR_BAD_ENCODING)
             return
         self.cancel_timeout(client_id)
-        try:
-            handler = self.handler_class.instance(filepath, **self.handler_kwargs)
-        except (OSError, IOError):
-            logging.warning('done() called for inaccessible file %s', filepath)
-        else:
-            handler.client_done(client_id)
+        handler = self.handler_class.instance(filepath, **self.handler_kwargs)
+        handler.client_done(client_id)
         self.send(routing_id, b'ok')
 
     def set_timeout(self, client_id, filepath):
@@ -201,12 +233,8 @@ class ZMQLogServer(object):
 
     def do_timeout(self, client_id, filepath):
         logging.info("Client timed out for %s", filepath)
-        try:
-            handler = self.handler_class.instance(filepath, **self.handler_kwargs)
-        except (OSError, IOError):
-            logging.warning('do_timeout() called for inaccessible file %s', filepath)
-        else:
-            handler.client_done(client_id)
+        handler = self.handler_class.instance(filepath, **self.handler_kwargs)
+        handler.client_done(client_id)
         del self.timeout_tasks[client_id]
 
     def run(self):

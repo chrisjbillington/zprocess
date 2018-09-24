@@ -20,6 +20,7 @@ import threading
 import time
 from textwrap import dedent
 from logging import Handler
+import uuid
 try:
     import builtins
 except ImportError:
@@ -148,7 +149,7 @@ class ZMQLoggingHandler(Handler):
     def __init__(self, filepath):
         self.filepath = os.path.abspath(filepath)
         # A unique ID so that the server can identify us:
-        self.client_id = os.urandom(32)
+        self.client_id = uuid.uuid4().hex.encode('utf8')
         Handler.__init__(self)
         check_access(self.filepath)
 
