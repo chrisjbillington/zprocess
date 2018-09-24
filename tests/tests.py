@@ -26,6 +26,7 @@ from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import _default_process_tree, EventBroker
 shared_secret = _default_process_tree.shared_secret
 from zprocess.security import SecureContext
+from zprocess.tasks import Task, TaskQueue
 
 
 class TestError(Exception):
@@ -350,6 +351,36 @@ class EventTests(unittest.TestCase):
             self.assertEqual(data, u'boo')
         finally:
             proc.terminate()
+
+
+class TaskTests(unittest.TestCase):
+    def test_cant_call_task_twice(self):
+        task = Task(1, lambda: None)
+        task()
+        with self.assertRaises(RuntimeError):
+            task()
+
+    def test_queue(self):
+        # Test insert order:
+        queue = TaskQueue()
+        task1 = Task(1, lambda: None)
+        task2 = Task(2, lambda: None)
+        task3 = Task(3, lambda: None)
+
+        queue.add(task1)
+        queue.add(task3)
+        queue.add(task2)
+
+        self.assertIs(queue[0], task3)
+        self.assertIs(queue[1], task2)
+        self.assertIs(queue[2], task1)
+
+        # Test correct task pops:
+        self.assertIs(queue.pop(), task1)
+
+        # test cancel:
+        queue.cancel(task2)
+        self.assertEqual(queue, [task3])
 
 
 class ClientServerTests(unittest.TestCase):
