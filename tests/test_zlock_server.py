@@ -15,8 +15,6 @@ sys.path.insert(0, parent_dir)
 
 from zprocess.locking.server import (
     ZMQLockServer,
-    Task,
-    TaskQueue,
     Lock,
     NotHeld,
     AlreadyWaiting,
@@ -566,33 +564,6 @@ class ZLockServerTests(unittest.TestCase):
 
 
 class ImplementationUnitTests(unittest.TestCase):
-    def test_cant_call_task_twice(self):
-        task = Task(1, lambda: None)
-        task()
-        with self.assertRaises(RuntimeError):
-            task()
-
-    def test_queue(self):
-        # Test insert order:
-        queue = TaskQueue()
-        task1 = Task(1, lambda: None)
-        task2 = Task(2, lambda: None)
-        task3 = Task(3, lambda: None)
-
-        queue.add(task1)
-        queue.add(task3)
-        queue.add(task2)
-
-        self.assertIs(queue[0], task3)
-        self.assertIs(queue[1], task2)
-        self.assertIs(queue[2], task1)
-
-        # Test correct task pops:
-        self.assertIs(queue.pop(), task1)
-
-        # test cancel:
-        queue.cancel(task2)
-        self.assertEqual(queue, [task3])
 
     def test_lock_errors(self):
         class FakeServer(object):
