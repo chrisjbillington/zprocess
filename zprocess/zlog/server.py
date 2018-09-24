@@ -20,33 +20,38 @@ FILE_CLOSE_TIMEOUT = 5
 
 ERR_INVALID_COMMAND = b'error: invalid command'
 ERR_WRONG_NUM_ARGS = b'error: wrong number of arguments'
-ERR_BAD_ENCODING = b'error: filepath not UTF8 encoded'
-
+ERR_BAD_ENCODING = b'error: filepath not UTF8 encoded or contains nulls'
 PROTOCOL_VERSION = '1.0.0'
 
 
-def setup_logging():
+def setup_logging(silent=False):
     if os.name == 'nt':
         logpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zlog.log')
     else:
         logpath = '/var/log/zlog.log'
+
     handlers = []
-    try:
-        handler = logging.handlers.RotatingFileHandler(
-            logpath, maxBytes=50 * 1024 ** 2, backupCount=1
-        )
-        handlers.append(handler)
-        file_handler_success = True
-    except (OSError, IOError):
-        file_handler_success = False
-    if sys.stdout is not None and sys.stdout.isatty():
-        handlers.append(logging.StreamHandler(sys.stdout))
-    logging.basicConfig(
+    if not silent:
+        try:
+            handler = logging.handlers.RotatingFileHandler(
+                logpath, maxBytes=50 * 1024 ** 2, backupCount=1
+            )
+            handlers.append(handler)
+            file_handler_success = True
+        except (OSError, IOError):
+            file_handler_success = False
+        if sys.stdout is not None and sys.stdout.isatty():
+            handlers.append(logging.StreamHandler(sys.stdout))
+    kwargs = dict(
         format='[%(asctime)s] %(levelname)s: %(message)s',
         level=logging.DEBUG,
         handlers=handlers,
     )
-    if not file_handler_success:
+    if silent:
+        del kwargs['handlers']
+        kwargs['filename'] = os.devnull
+    logging.basicConfig(**kwargs)
+    if not silent and file_handler_success:
         msg = 'Can\'t open or do not have permission to write to log file '
         msg += logpath + '. Only terminal logging will be output.'
         logging.warning(msg)
@@ -116,7 +121,7 @@ class FileHandler(logging.FileHandler):
             if self.stream is not None:
                 logging.info("No more clients, closing %s", self.baseFilename)
                 self.close()
-                
+
 
 class RotatingFileHandler(FileHandler, logging.handlers.RotatingFileHandler):
     pass
@@ -157,26 +162,39 @@ class ZMQLogServer(object):
         if len(args) != 3:
             return
         client_id, filepath, message = args
+        filepath = self._check_filepath(filepath)
+        if filepath is None:
+            return
         try:
-            filepath = filepath.decode('utf8')
             message = message.decode('utf8')
         except UnicodeDecodeError:
             return
+        filepath = os.path.abspath(filepath)
         handler = self.handler_class.instance(filepath, **self.handler_kwargs)
         handler.log(client_id, message)
         self.cancel_timeout(client_id)
         self.set_timeout(client_id, filepath)
 
+    def _check_filepath(self, filepath):
+        """UTF8-decode a filepath, convert it to an absolute filepath, check it has no
+        nulls, and return the result. If the filepath is invalid (can't be decoded or
+        has nulls), returns None."""
+        if b'\0' in filepath:
+            return
+        try:
+            filepath = filepath.decode('utf8')
+        except UnicodeDecodeError:
+            return
+        return os.path.abspath(filepath)
+
     def check_access(self, routing_id, args):
         if len(args) != 1:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
-        try:
-            filepath = args[0].decode('utf8')
-        except UnicodeDecodeError:
+        filepath = self._check_filepath(args[0])
+        if filepath is None:
             self.send(routing_id, ERR_BAD_ENCODING)
             return
-        filepath = os.path.abspath(filepath)
         dirname = os.path.dirname(filepath)
         try:
             # Check we can open the file in append mode:
@@ -195,7 +213,6 @@ class ZMQLogServer(object):
                         os.unlink(test_filename)
                     except (OSError, IOError):
                         pass
-            
         except (OSError, IOError):
             message = _format_exc()
             self.send(routing_id, message.encode('utf8'))
@@ -209,9 +226,8 @@ class ZMQLogServer(object):
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
         client_id, filepath = args
-        try:
-            filepath = filepath.decode('utf8')
-        except UnicodeDecodeError:
+        filepath = self._check_filepath(filepath)
+        if filepath is None:
             self.send(routing_id, ERR_BAD_ENCODING)
             return
         self.cancel_timeout(client_id)
@@ -246,10 +262,9 @@ class ZMQLogServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        if not self.silent:  # pragma: no cover
-            setup_logging()
-            msg = 'This is zlog server, running on %s:%d'
-            logging.info(msg, self.bind_address, self.port)
+        setup_logging(self.silent)
+        msg = 'This is zlog server, running on %s:%d'
+        logging.info(msg, self.bind_address, self.port)
         self.running = True
         self.started.set()
         while True:
