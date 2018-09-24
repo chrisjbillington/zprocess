@@ -11,7 +11,7 @@ PYTHON3 = 'python3'
 PYTHONS = {'2': PYTHON2,
            '3': PYTHON3}
 
-test_files = ['tests.py', 'test_zlock_server.py']#, 'test_zlog_server.py']
+test_files = ['test_zlog_server.py']  # , 'tests.py', 'test_zlock_server.py']
 
 def mkdir_p(path):
     try:

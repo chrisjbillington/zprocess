@@ -2,6 +2,7 @@ from __future__ import unicode_literals, print_function, division
 import sys
 import os
 import time
+import uuid
 import zmq
 import unittest
 import xmlrunner
@@ -15,19 +16,8 @@ sys.path.insert(0, parent_dir)
 
 from zprocess.zlog.server import (
     ZMQLogServer,
-    # Task,
-    # TaskQueue,
-    # Lock,
-    # NotHeld,
-    # AlreadyWaiting,
-    # InvalidReentry,
-    # ERR_NOT_HELD,
-    # ERR_INVALID_REENTRY,
-    # ERR_CONCURRENT,
-    # ERR_INVALID_COMMAND,
-    # ERR_WRONG_NUM_ARGS,
-    # ERR_TIMEOUT_INVALID,
-    # ERR_READ_ONLY_WRONG,
+    ERR_INVALID_COMMAND,
+    ERR_WRONG_NUM_ARGS,
 )
 
 class Client(object):
@@ -35,27 +25,32 @@ class Client(object):
 
     def __init__(self, testcase, port, filepath):
         context = zmq.Context.instance()
-        self.sock = context.socket(zmq.REQ)
+        self.sock = context.socket(zmq.DEALER)
         self.port = port
-        self.key = filepath
-        self.client_id = os.urandom(32)
+        self.filepath = filepath
+        self.client_id = uuid.uuid4().hex.encode('utf8')
         self.testcase = testcase
 
     def __enter__(self):
         self.sock.connect('tcp://127.0.0.1:%d' % self.port)
         return self
 
-    def send(self, *args, **kwargs):
-        return self.sock.send(*args, **kwargs)
+    def send(self, msg, *args, **kwargs):
+        return self.sock.send_multipart([b'', msg], *args, **kwargs)
 
-    def send_multipart(self, *args, **kwargs):
-        return self.sock.send_multipart(*args, **kwargs)
+    def send_multipart(self, msg, *args, **kwargs):
+        return self.sock.send_multipart([b''] + msg, *args, **kwargs)
 
     def recv(self, *args, **kwargs):
-        return self.sock.recv(*args, **kwargs)
+        response = self.sock.recv_multipart(*args, **kwargs)
+        self.testcase.assertEqual(response[0], b'')
+        self.testcase.assertEqual(len(response), 2)
+        return response[1]
 
     def recv_multipart(self, *args, **kwargs):
-        return self.sock.recv_multipart(*args, **kwargs)
+        response = self.sock.recv_multipart(*args, **kwargs)
+        self.testcase.assertEqual(response[0], b'')
+        return response[1:]
 
     def poll(self, *args, **kwargs):
         return self.sock.poll(*args, **kwargs)
@@ -82,6 +77,18 @@ class ZLogServerTests(unittest.TestCase):
         self.server = None
         self.port = None
 
+    def client(self, filepath):
+        return Client(self, self.port, filepath)
+
+    def test_hello(self):
+        with self.client(None) as client:
+            client.send(b'hello')
+            client.assertReceived(b'hello')
+
+    def test_protocol(self):
+        with self.client(None) as client:
+            client.send(b'protocol')
+            client.assertReceived(b'1.0.0')
 
 if __name__ == '__main__':
     output = 'test-reports'
