@@ -85,13 +85,15 @@ class FileHandler(logging.FileHandler):
             msg = "New client (total: %d) for %s"
             logging.info(msg, len(self.clients), self.baseFilename)
         if hasattr(self, 'shouldRollover'):
-            logging.info("Rolling over %s", self.baseFilename)
             try:
                 if self.shouldRollover(message):
+                    logging.info("Rolling over %s", self.baseFilename)
                     self.doRollover()
             except (OSError, IOError):
                 logging.warning(
-                    "Failed to rollover %s:\n    %s", self.baseFilename, _format_exc()
+                    "Failed to check/rollover %s:\n    %s",
+                    self.baseFilename,
+                    _format_exc(),
                 )
                 return
         if self.stream is None:
