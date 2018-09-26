@@ -624,7 +624,7 @@ class Process(object):
     its methods other than run()."""
 
     def __init__(self, process_tree, output_redirection_port=None,
-                 remote_process_client=None):
+                 remote_process_client=None, subclass_path=None):
         self._redirection_port = output_redirection_port
         self.process_tree = process_tree
         self.to_child = None
@@ -634,6 +634,11 @@ class Process(object):
         self.from_parent = None
         self.kill_lock = None
         self.remote_process_client = remote_process_client
+        self.subclass_path = subclass_path
+        if subclass_path is not None:
+            if self.__class__ is not Process:
+                msg = "Can only pass subclass_path to Process directly, not a subclass"
+                raise ValueError(msg)
 
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and
@@ -646,26 +651,40 @@ class Process(object):
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
-        module_file = os.path.abspath(sys.modules[self.__module__].__file__)
-        basepath, extension = os.path.splitext(module_file)
-        if extension == '.pyc':
-            module_file = basepath + '.py'
-        if not os.path.exists(module_file):
-            # Nope? How about this extension then?
-            module_file = basepath + '.pyw'
-        if not os.path.exists(module_file):
-            # Still no? Well I can't really work out what the extension is then,
-            # can I?
-            msg = ("Can't find module file, what's going on, does " +
-                   "it have an unusual extension?")
-            raise NotImplementedError(msg)
-        # Send it to the child process so it can execute it in __main__,
-        # otherwise class definitions from the users __main__ module will not be
-        # unpickleable. Note that though executed in __main__, the code's
-        # __name__ will not be __main__, and so any main block won't execute,
-        # which is good!
-        self.to_child.put([self.__module__, module_file, sys.path])
-        self.to_child.put(self.__class__)
+        if self.subclass_path is None:
+            module_file = os.path.abspath(sys.modules[self.__module__].__file__)
+            basepath, extension = os.path.splitext(module_file)
+            if extension == '.pyc':
+                module_file = basepath + '.py'
+            if not os.path.exists(module_file):
+                # Nope? How about this extension then?
+                module_file = basepath + '.pyw'
+            if not os.path.exists(module_file):
+                # Still no? Well we can't really work out what the extension is then,
+                # can we?
+                msg = ("Can't find module file, what's going on, does " +
+                       "it have an unusual extension?")
+                raise NotImplementedError(msg)
+        else:
+            module_file = None # Will be found with import machinery in the subprocess
+
+        if module_file is not None:
+            # Send it to the child process so it can execute it in __main__, otherwise
+            # class definitions from the users __main__ module will not be unpickleable.
+            # Note that though executed in __main__, the code's __name__ will not be
+            # __main__, and so any main block won't execute, which is good!
+            self.to_child.put([self.__module__, module_file, sys.path])
+            self.to_child.put(self.__class__)
+        else:
+            # No module info - the child process will find the class all on its own
+            # from the fully qualified name:
+            self.to_child.put([None, None, None])
+            self.to_child.put(self.subclass_path)
+
+        response = self.from_child.get(timeout=5)
+        if response != 'ok':
+            raise Exception("Exception in child process: %s" % str(response))
+            
         self.to_child.put([args, kwargs])
         return self.to_child, self.from_child
 
