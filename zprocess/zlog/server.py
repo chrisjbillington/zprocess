@@ -207,12 +207,13 @@ class ZMQLogServer(object):
                 # log files in the directory (not a guarantee obviously, but pretty
                 # good):
                 test_filename = 'test_can_create_file-' + uuid.uuid4().hex
+                test_filepath = os.path.join(dirname, test_filename)
                 try:
-                    with open(os.path.join(dirname, test_filename), 'w'):
+                    with open(test_filepath, 'w'):
                         pass
                 finally:
                     try:
-                        os.unlink(test_filename)
+                        os.unlink(test_filepath)
                     except (OSError, IOError):
                         pass
         except (OSError, IOError):
