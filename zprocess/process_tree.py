@@ -624,7 +624,7 @@ class Process(object):
     its methods other than run()."""
 
     def __init__(self, process_tree, output_redirection_port=None,
-                 remote_process_client=None, subclass_path=None):
+                 remote_process_client=None, subclass_fullname=None):
         self._redirection_port = output_redirection_port
         self.process_tree = process_tree
         self.to_child = None
@@ -634,10 +634,11 @@ class Process(object):
         self.from_parent = None
         self.kill_lock = None
         self.remote_process_client = remote_process_client
-        self.subclass_path = subclass_path
-        if subclass_path is not None:
+        self.subclass_fullname = subclass_fullname
+        if subclass_fullname is not None:
             if self.__class__ is not Process:
-                msg = "Can only pass subclass_path to Process directly, not a subclass"
+                msg = ("Can only pass subclass_fullname to Process directly, " +
+                       "not to a subclass")
                 raise ValueError(msg)
 
     def start(self, *args, **kwargs):
@@ -651,7 +652,7 @@ class Process(object):
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
-        if self.subclass_path is None:
+        if self.subclass_fullname is None:
             module_file = os.path.abspath(sys.modules[self.__module__].__file__)
             basepath, extension = os.path.splitext(module_file)
             if extension == '.pyc':
@@ -679,11 +680,12 @@ class Process(object):
             # No module info - the child process will find the class all on its own
             # from the fully qualified name:
             self.to_child.put([None, None, None])
-            self.to_child.put(self.subclass_path)
+            self.to_child.put(self.subclass_fullname)
 
         response = self.from_child.get(timeout=5)
         if response != 'ok':
-            raise Exception("Exception in child process: %s" % str(response))
+            msg = "Could not find subclass in child process:\n\n%s" % str(response)
+            raise Exception(msg)
             
         self.to_child.put([args, kwargs])
         return self.to_child, self.from_child
