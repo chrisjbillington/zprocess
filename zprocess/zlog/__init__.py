@@ -18,9 +18,9 @@ import os
 import socket
 import threading
 import time
-from textwrap import dedent
 from logging import Handler
 import uuid
+
 try:
     import builtins
 except ImportError:
@@ -34,6 +34,10 @@ import zmq
 DEFAULT_PORT = 7340
 
 _zmq_log_client = None
+
+
+def dedent(s):
+    return ' '.join(s.split())
 
 
 class ZMQLogClient(object):
@@ -67,7 +71,7 @@ class ZMQLogClient(object):
             if timeout is None:
                 timeout = self.RESPONSE_TIMEOUT
             else:
-                timeout = 1000 * timeout  # convert to ms 
+                timeout = 1000 * timeout  # convert to ms
             events = self.local.poller.poll(timeout)
             if not events:
                 raise zmq.ZMQError('No response from zlog server: timed out')
@@ -89,7 +93,7 @@ class ZMQLogClient(object):
         if response == 'hello':
             return round((time.time() - start_time) * 1000, 2)
         raise zmq.ZMQError('Invalid response from server: ' + response)
-            
+
     def get_protocol_version(self, timeout=None):
         """Ask the server what protocol version it is running"""
         self._send(b'protocol')
@@ -128,9 +132,8 @@ class ZMQLogClient(object):
         except zmq.Again:
             if not self.supress_further_warnings:
                 self.supress_further_warnings = True
-                msg = """\
-                    Warning: zlog server not receiving log messages. Logging may not be
-                    functional\n"""
+                msg = """Warning: zlog server not receiving log messages. Logging may
+                    not be functional\n"""
                 sys.stderr.write(dedent(msg))
 
     def done(self, client_id, filepath, timeout=None):
@@ -202,6 +205,7 @@ if __name__ == '__main__':
     connect()
     print(get_protocol_version())
     import logging
+
     logger = logging.Logger('test')
     logger.setLevel(logging.DEBUG)
     logger.addHandler(ZMQLoggingHandler('test.log'))
