@@ -106,7 +106,6 @@ class ZMQLogClient(object):
             filepath = filepath.encode('utf8')
         self._send(b'check_access', filepath)
         response = self._recv(timeout).decode('utf8')
-        print(response)
         if response == 'ok':
             return
         # Raise the exception returned by the server:
