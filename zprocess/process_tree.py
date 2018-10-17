@@ -684,8 +684,8 @@ class Process(object):
 
         response = self.from_child.get(timeout=5)
         if response != 'ok':
-            msg = "Could not find subclass in child process:\n\n%s" % str(response)
-            raise Exception(msg)
+            msg = "Error in child process importing specified Process subclass:\n\n%s"
+            raise Exception(msg % str(response))
             
         self.to_child.put([args, kwargs])
         return self.to_child, self.from_child
