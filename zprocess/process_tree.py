@@ -179,6 +179,7 @@ class Event(object):
             broker_in_port = external_broker.in_port
             broker_out_port = external_broker.out_port
         else:
+            process_tree.check_broker()
             broker_host = process_tree.broker_host
             broker_in_port = process_tree.broker_in_port
             broker_out_port = process_tree.broker_out_port
@@ -784,7 +785,7 @@ class ProcessTree(object):
         self.from_parent = None
         self.kill_lock = None
 
-    def _check_broker(self):
+    def check_broker(self):
         if self.broker_in_port is None:
             # We don't have a parent with a broker: it is our responsibility to
             # make a broker:
@@ -795,8 +796,6 @@ class ProcessTree(object):
             self.broker_out_port = self.broker.out_port
 
     def event(self, event_name, role='wait', external_broker=None):
-        if external_broker is None:
-            self._check_broker()
         return Event(self, event_name, role=role, external_broker=external_broker)
 
     def subprocess(self, path, output_redirection_port=None,
@@ -809,7 +808,7 @@ class ProcessTree(object):
         from_child_port = from_child.bind_to_random_port('tcp://127.0.0.1')
         to_self.connect('tcp://127.0.0.1:%s' % from_child_port)
         to_child_port = to_child.bind_to_random_port('tcp://127.0.0.1')
-        self._check_broker()
+        self.check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
             self.heartbeat_server = HeartbeatServer(
