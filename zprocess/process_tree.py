@@ -625,7 +625,8 @@ class Process(object):
     its methods other than run()."""
 
     def __init__(self, process_tree, output_redirection_port=None,
-                 remote_process_client=None, subclass_fullname=None):
+                 remote_process_client=None, subclass_fullname=None,
+                 startup_timeout=5):
         self._redirection_port = output_redirection_port
         self.process_tree = process_tree
         self.to_child = None
@@ -636,6 +637,7 @@ class Process(object):
         self.kill_lock = None
         self.remote_process_client = remote_process_client
         self.subclass_fullname = subclass_fullname
+        self.startup_timeout = startup_timeout
         if subclass_fullname is not None:
             if self.__class__ is not Process:
                 msg = ("Can only pass subclass_fullname to Process directly, " +
@@ -683,7 +685,7 @@ class Process(object):
             self.to_child.put([None, None, None])
             self.to_child.put(self.subclass_fullname)
 
-        response = self.from_child.get(timeout=5)
+        response = self.from_child.get(timeout=self.startup_timeout)
         if response != 'ok':
             msg = "Error in child process importing specified Process subclass:\n\n%s"
             raise Exception(msg % str(response))
