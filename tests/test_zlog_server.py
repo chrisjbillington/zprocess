@@ -1,7 +1,6 @@
 from __future__ import unicode_literals, print_function, division
 import sys
 import os
-import time
 import uuid
 import shutil
 import zmq
@@ -177,4 +176,4 @@ if __name__ == '__main__':
     if PY2:
         output = output.encode('utf8')
     testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=3)
-    unittest.main(verbosity=3, testRunner=testRunner, exit=False)
+    unittest.main(verbosity=3, testRunner=testRunner, exit=not sys.flags.interactive)

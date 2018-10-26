@@ -208,11 +208,14 @@ class Event(object):
             unique_id = os.urandom(32)
             self.sub.setsockopt(zmq.SUBSCRIBE,
                                 EventBroker.WELCOME_MESSAGE + unique_id)
-            # Allow 5 seconds to connect to the Broker:
-            events = self.sub.poll(flags=zmq.POLLIN, timeout=5000)
-            if not events:
-                raise TimeoutError("Could not connect to event broker")
-            assert self.sub.recv() == EventBroker.WELCOME_MESSAGE + unique_id
+            # Wait until we receive the welcome message. Throw out any messages
+            # prior to it. Timeout if we get nothing for 5 seconds:
+            while True:
+                events = self.sub.poll(flags=zmq.POLLIN, timeout=5000)
+                if not events:
+                    raise TimeoutError("Could not connect to event broker")
+                if self.sub.recv() == EventBroker.WELCOME_MESSAGE + unique_id:
+                    break
             # Great, we're definitely connected to the broker now, and it has
             # processed our subscription. Remove the welcome event subscription
             # and proceed:
