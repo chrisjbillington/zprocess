@@ -319,13 +319,13 @@ class TestEventProcess(Process):
     def run(self):
         event = self.process_tree.event('hello', role='post')
         event.post('1', data=u'boo')
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 class TestExternalEventProcess(Process):
     def run(self, broker_details):
         event = self.process_tree.event('hello', role='post', external_broker=broker_details)
         event.post('1', data=u'boo')
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 
 
