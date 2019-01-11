@@ -23,6 +23,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
     # development:
     sys.path.insert(0, _path)
 
+import ipaddress
 import zprocess
 from zprocess.clientserver import ZMQClient
 from zprocess.security import SecureContext
@@ -60,6 +61,14 @@ class HeartbeatServer(object):
 
 
 class HeartbeatClient(object):
+
+    # How long between heartbeats?
+    HEARTBEAT_INTERVAL = 1
+    # How long without a heartbeat until we kill the process? Wait longer when the
+    # heartbeat server is remote to be more forgiving of the network:
+    LOCALHOST_TIMEOUT = 1
+    REMOTE_TIMEOUT = 10
+
     """A heartbeating thread that terminates the process if it doesn't get the
     heartbeats back within one second, unless a lock is held."""
     def __init__(self, server_host, server_port, lock=False,
@@ -76,14 +85,20 @@ class HeartbeatClient(object):
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
+        if isinstance(server_ip, bytes):
+            server_ip = server_ip.decode()
+        if ipaddress.ip_address(server_ip).is_loopback:
+            self.timeout = self.LOCALHOST_TIMEOUT
+        else:
+            self.timeout = self.REMOTE_TIMEOUT
 
     def mainloop(self):
         try:
             pid = str(os.getpid()).encode('utf8')
             while True:
-                time.sleep(1)
+                time.sleep(self.HEARTBEAT_INTERVAL)
                 self.sock.send(pid, zmq.NOBLOCK)
-                if not self.sock.poll(1000):
+                if not self.sock.poll(self.timeout * 1000):
                     break
                 msg = self.sock.recv()
                 if not msg == pid:
@@ -627,10 +642,17 @@ class Process(object):
     rather than by forking (or imitation forking as in Windows). Do not override
     its methods other than run()."""
 
-    def __init__(self, process_tree, output_redirection_port=None,
-                 remote_process_client=None, subclass_fullname=None,
-                 startup_timeout=5):
+    def __init__(
+        self,
+        process_tree,
+        output_redirection_port=None,
+        output_redirection_host=None,
+        remote_process_client=None,
+        subclass_fullname=None,
+        startup_timeout=5,
+    ):
         self._redirection_port = output_redirection_port
+        self._redirection_host = output_redirection_host
         self.process_tree = process_tree
         self.to_child = None
         self.from_child = None
@@ -643,8 +665,10 @@ class Process(object):
         self.startup_timeout = startup_timeout
         if subclass_fullname is not None:
             if self.__class__ is not Process:
-                msg = ("Can only pass subclass_fullname to Process directly, " +
-                       "not to a subclass")
+                msg = (
+                    "Can only pass subclass_fullname to Process directly, "
+                    + "not to a subclass"
+                )
                 raise ValueError(msg)
 
     def start(self, *args, **kwargs):
@@ -654,7 +678,9 @@ class Process(object):
                             'process_class_wrapper.py')
         child_details = self.process_tree.subprocess(path,
                             output_redirection_port=self._redirection_port,
-                            remote_process_client=self.remote_process_client)
+                            output_redirection_host=self._redirection_host,
+                            remote_process_client=self.remote_process_client,
+                            startup_timeout=self.startup_timeout)
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
@@ -737,13 +763,10 @@ class RemoteChildProxy(object):
         if timeout is not None:
             end_time = time.time() + timeout
         while True:
-            try:
-                return self.client.request('wait', self.pid)
-            except TimeoutError:
-                if timeout is not None and time.time() > end_time:
-                    raise
-                else:
-                    time.sleep(0.1)
+            result = self.client.request('wait', self.pid)
+            if result is not None or (timeout is not None and time.time() > end_time):
+                return result
+            time.sleep(0.1)
 
     def poll(self):
         return self.client.request('poll', self.pid)
@@ -753,13 +776,15 @@ class RemoteChildProxy(object):
         return self.client.request('returncode', self.pid)
 
     def __del__(self):
-        print('del!')
-        self.client.request('__del__', self.pid)
+        try:
+            self.client.request('__del__', self.pid)
+        except Exception:
+            pass
 
 
 class RemoteProcessClient(zprocess.clientserver.ZMQClient):
     """A class to represent communication with a RemoteProcessServer"""
-    def __init__(self, host, port=7340, shared_secret=None, allow_insecure=False):
+    def __init__(self, host, port=7341, shared_secret=None, allow_insecure=False):
         zprocess.clientserver.ZMQClient.__init__(self, shared_secret=shared_secret,
                                                  allow_insecure=allow_insecure)
         self.host = host
@@ -772,8 +797,13 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
                         timeout=5)
 
     def Popen(self, command):
+        """Launch a remote process and return a proxy object for interacting with it"""
         pid = self.request('Popen', command)
         return RemoteChildProxy(self, pid)
+
+    def get_external_IP(self):
+        """Ask the RemoteProcessServer what our IP address is from its perspective"""
+        return self.request('whoami')
 
 
 class ProcessTree(object):
@@ -786,6 +816,8 @@ class ProcessTree(object):
         self.broker_out_port = None
         self.heartbeat_server = None
         self.heartbeat_client = None
+        self.output_redirection_host = None
+        self.output_redirection_port = None
         self.to_parent = None
         self.from_parent = None
         self.kill_lock = None
@@ -803,8 +835,21 @@ class ProcessTree(object):
     def event(self, event_name, role='wait', external_broker=None):
         return Event(self, event_name, role=role, external_broker=external_broker)
 
-    def subprocess(self, path, output_redirection_port=None,
-                   remote_process_client=None):
+    def subprocess(
+        self,
+        path,
+        output_redirection_port=None,
+        output_redirection_host=None,
+        remote_process_client=None,
+        startup_timeout=5,
+        pymodule=False,
+    ):
+        """Start a subprocess and set up communication with it. Path can be either a
+        path to a Python script to be executed with 'python some_path.py, or a fully
+        qualified module path to be executed as 'python -m some.path'. Path will be
+        interpreted as the latter only if pymodule=True. If output_redirection_port is
+        not None, then all stdout and stderr of the child process will be sent on a
+        zmq.PUSH socket to the given port. TODO finish this and other docstrings."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
@@ -819,24 +864,33 @@ class ProcessTree(object):
             self.heartbeat_server = HeartbeatServer(
                                         shared_secret=self.shared_secret)
 
-        #TODO: fix this:
-        # If a custom process identifier has been set in zlock, ensure the child
-        # inherits it:
         try:
             zlock = sys.modules['zprocess.zlock']
             zlock_process_identifier_prefix = zlock.process_identifier_prefix
         except KeyError:
             zlock_process_identifier_prefix = ''
 
+        if output_redirection_host is None:
+            if output_redirection_port is not None:
+                # Port provided but no host. Assume this host.
+                output_redirection_host = 'localhost'
+            else:
+                # No output redirection specified. Use existing redirection, if any.
+                output_redirection_host = self.output_redirection_host
+                output_redirection_port = self.output_redirection_port
+
+        # Note. Any entries in the below dict containing a hostname or IP address must
+        # have a key ending in '_host', in order for the below code to translate them
+        # into externally valid IP addresses.
         parentinfo = {'parent_host': 'localhost',
                       'to_parent_port': from_child_port,
                       'from_parent_port': to_child_port,
                       'heartbeat_server_host': 'localhost',
                       'heartbeat_server_port': self.heartbeat_server.port,
-                      'broker_host': 'localhost',
+                      'broker_host': self.broker_host,
                       'broker_in_port': self.broker_in_port,
                       'broker_out_port': self.broker_out_port,
-                      'output_redirection_host': 'localhost',
+                      'output_redirection_host': output_redirection_host,
                       'output_redirection_port': output_redirection_port,
                       'shared_secret': self.shared_secret,
                       'allow_insecure': self.allow_insecure,
@@ -844,17 +898,32 @@ class ProcessTree(object):
                           zlock_process_identifier_prefix,
                       }
 
-        command = [sys.executable, os.path.abspath(path),
-                   '--zprocess-parentinfo', json.dumps(parentinfo)]
+        if remote_process_client is not None:
+            # Translate any internal hostnames or IP addresses in parentinfo into our
+            # external IP address as seen from the remote process server:
+            external_ip = remote_process_client.get_external_IP()
+            for key, value in parentinfo.items():
+                if key.endswith('_host'):
+                    ip = gethostbyname(value)
+                    if isinstance(ip, bytes):
+                        ip = ip.decode()
+                    if ipaddress.ip_address(ip).is_loopback:
+                        parentinfo['key'] = external_ip
+
+        # Build command line args:
+        if pymodule:
+            args = ['-m', path]
+        else:
+            args = [os.path.abspath(path)]
+        args += ['--zprocess-parentinfo', json.dumps(parentinfo)]
 
         if remote_process_client is None:
-            child = subprocess.Popen(command)
+            child = subprocess.Popen([sys.executable] + args)
         else:
-            raise NotImplementedError("This feature is not yet complete")
-            child = remote_process_client.Popen(command)
+            # The remote server will prefix the path to its own Python interpreter:
+            child = remote_process_client.Popen(args, prepend_sys_executable=True)
 
-        # The child has 15 seconds to connect to us:
-        events = from_child.poll(15000)
+        events = from_child.poll(startup_timeout*1000)
         if not events:
             raise RuntimeError('child process did not connect within the timeout.')
         assert from_child.recv() == b'hello'
@@ -894,15 +963,15 @@ class ProcessTree(object):
         self.from_parent = ReadQueue(from_parent, to_self)
         self.to_parent = WriteQueue(to_parent)
 
-        output_redirection_host = parentinfo.get('output_redirection_host', None)
-        output_redirection_port = parentinfo.get('output_redirection_port', None)
-        if output_redirection_port is not None:
-            stdout = OutputInterceptor(output_redirection_host,
-                                       output_redirection_port,
+        self.output_redirection_host = parentinfo.get('output_redirection_host', None)
+        self.output_redirection_port = parentinfo.get('output_redirection_port', None)
+        if self.output_redirection_port is not None:
+            stdout = OutputInterceptor(self.output_redirection_host,
+                                       self.output_redirection_port,
                                        shared_secret=self.shared_secret,
                                        allow_insecure=self.allow_insecure)
-            stderr = OutputInterceptor(output_redirection_host,
-                                       output_redirection_port,
+            stderr = OutputInterceptor(self.output_redirection_host,
+                                       self.output_redirection_port,
                                        streamname='stderr',
                                        shared_secret=self.shared_secret,
                                        allow_insecure=self.allow_insecure)
