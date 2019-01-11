@@ -14,6 +14,8 @@ if PY2:
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
+BITBUCKET = os.getenv('CI', False)
+
 from zprocess.zlog.server import (
     ZMQLogServer,
     ERR_INVALID_COMMAND,
@@ -129,12 +131,16 @@ class ZLogServerTests(unittest.TestCase):
             client.send_multipart([b'check_access', b'\xff'])
             client.assertReceived(ERR_BAD_ENCODING)
 
+    # The following two tests fail on Bitbucket pipelines, because for some reason
+    # creating and accessing files always succeeds in the CI environment even if there
+    # are insufficient permissions.
+    @unittest.skipIf(BITBUCKET or os.name == 'nt', 'Skip on Windows and BitBucket')
     def test_no_access(self):
         with self.client(None) as client:
             client.send_multipart([b'check_access', b'/test.log'])
             self.assertIn(b'[Errno 13] Permission denied', client.recv())
 
-    @unittest.skipIf(os.name != 'posix', 'Unix only')
+    @unittest.skipIf(BITBUCKET or os.name == 'nt', 'Skip on Windows and BitBucket')
     def test_cant_create_files(self):
         os.mkdir('testdir')
         os.system('touch testdir/foo.log')
