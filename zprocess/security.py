@@ -87,22 +87,29 @@ def _unpack_shared_secret(shared_secret):
 
 
 class SecureSocket(zmq.Socket):
-    """A Socket that configures as a CurveZMQ server upon bind() and as a
-    CurveZMQ client upon connect(), using the keys held by the parent
-    SecureContext to authenticate and be authenticated by its peer. If the
-    shared_secret passed to the parent SecureContext() was None, then
-    plaintext sockets will be used, but InsecureConnection will be raised if
-    send() or recv() are called when bound or connected to an external network
-    interface. This can be suppressed by passing allow_insecure=True to the
-    Context.socket() call. inproc:// connections are not secured."""
+    """A Socket that configures as a CurveZMQ server upon bind() and as a CurveZMQ
+    client upon connect(), using the keys held by the parent SecureContext to
+    authenticate and be authenticated by its peer. If the shared_secret passed to the
+    parent SecureContext() was None, then plaintext sockets will be used, but
+    InsecureConnection will be raised if send() or recv() are called when bound or
+    connected to an external network interface. This can be suppressed by passing
+    allow_insecure=True to the Context.socket() call. inproc:// connections are not
+    secured. For TCP connections, the IP address of the sender is saved as self.peer_ip
+    after each message is received."""
 
     # Dummy class attrs to distinguish from zmq options:
     secure = None
     allow_insecure = None
+    peer_ip = None
+    tcp = None
 
     def __init__(self, *args, **kwargs):
         self.allow_insecure = kwargs.pop('allow_insecure', False)
         zmq.Socket.__init__(self, *args, **kwargs)
+        # The IP address, if any, of the peer we last received a message from:
+        self.peer_ip = None
+        # Whether the socket is using tcp transport:
+        self.tcp = False
 
     def _is_internal(self, endpoint):
         """Return whether a bind or connect endpoint is on an internal
@@ -140,19 +147,25 @@ class SecureSocket(zmq.Socket):
         method = zmq.Socket.bind if bind else zmq.Socket.connect
         if addr.startswith('inproc://'):
             # No crypto/auth on inproc:
+            result = method(self, addr)
             self.secure = True
-            return method(self, addr)
-        if self.context.secure:
-            prev_setting = self._configure_curve(server=bind)
-        try:
-            return method(self, addr)
-        except:
+            self.tcp = False
+            return result
+        elif addr.startswith('tcp://'):
             if self.context.secure:
-                # Roll back configuration:
-                self._configure_curve(server=prev_setting)
-            raise
-        finally:
+                prev_setting = self._configure_curve(server=bind)
+            try:
+                result = method(self, addr)
+            except:
+                if self.context.secure:
+                    # Roll back configuration:
+                    self._configure_curve(server=prev_setting)
+                raise
             self.secure = self.context.secure or self._is_internal(addr)
+            self.tcp = True
+            return result
+        else:
+            raise ValueError(addr)
 
     def bind(self, addr):
         return self._bind_or_connect(addr, bind=True)
@@ -160,16 +173,29 @@ class SecureSocket(zmq.Socket):
     def connect(self, addr):
         return self._bind_or_connect(addr, connect=True)
 
-    def _checkinsecure(self, method, *args, **kwargs):
+    def _checkinsecure(self):
         if not (self.secure or self.allow_insecure):
             raise InsecureConnection(INSECURE_ERROR)
-        return method(self, *args, **kwargs)
 
     def send(self, *args, **kwargs):
-        return self._checkinsecure(zmq.Socket.send, *args, **kwargs)
+        self._checkinsecure()
+        return zmq.Socket.send(self, *args, **kwargs)
 
-    def recv(self, *args, **kwargs):
-        return self._checkinsecure(zmq.Socket.recv, *args, **kwargs)
+    def recv(self, flags=0, copy=True, track=False):
+        self._checkinsecure()
+        msg = zmq.Socket.recv(self, flags=flags, copy=False, track=track)
+        if self.tcp:
+            try:
+                self.peer_ip = msg.get('Peer-Address')
+            except zmq.error.ZMQError:
+                # Sent by a non-TCP client, even though we are a TCP socket. This is
+                # possible sometimes. For example, XPUB seems to receive unsubscribe
+                # messages via some internal mechanism if a subscriber disconnects.
+                self.peer_ip = None
+        if copy:
+            return msg.bytes
+        else:
+            return msg
 
 
 class SecureContext(zmq.Context):

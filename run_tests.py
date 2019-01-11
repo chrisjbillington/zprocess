@@ -6,7 +6,7 @@ import errno
 from os.path import dirname
 
 
-PYTHON2 = 'python'
+PYTHON2 = 'python2'
 PYTHON3 = 'python3'
 
 
