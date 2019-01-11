@@ -344,8 +344,8 @@ class EventTests(unittest.TestCase):
         broker = EventBroker(bind_address='tcp://127.0.0.1')
         broker_details = ExternalBroker('localhost', broker.in_port, broker.out_port)
         proc = TestExternalEventProcess()
-        proc.start(broker_details)
         event = _default_process_tree.event('hello', role='wait', external_broker=broker_details)
+        proc.start(broker_details)
         try:
             data = event.wait('1', timeout=1)
             self.assertEqual(data, u'boo')
