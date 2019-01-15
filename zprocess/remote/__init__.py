@@ -1,3 +1,8 @@
+from __future__ import unicode_literals, print_function, division
+import sys
+PY2 = sys.version_info.major == 2
+if PY2:
+    str = unicode
 import zprocess
 import time
 
@@ -62,6 +67,9 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
     def request(self, command, *args, **kwargs):
         return self.get(self.port, self.host, data=[command, args, kwargs], timeout=5)
 
+    def say_hello(self):
+        return self.request('hello')
+
     def Popen(self, cmd, *args, **kwargs):
         """Launch a remote process and return a proxy object for interacting with it. If
         prepend_sys_executable=True, command will have sys.executable prefixed to it on
@@ -73,3 +81,6 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
     def get_external_IP(self):
         """Ask the RemoteProcessServer what our IP address is from its perspective"""
         return self.request('whoami')
+
+    def get_protocol(self):
+        return self.request('protocol')

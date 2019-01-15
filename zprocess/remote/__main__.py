@@ -1,81 +1,57 @@
-from __future__ import division, unicode_literals, print_function, absolute_import
+from __future__ import unicode_literals, print_function, division
 import sys
 PY2 = sys.version_info.major == 2
-import os
 if PY2:
-    import subprocess32 as subprocess
-else:
-    import subprocess
+    str = unicode
+import os
+import argparse
 
-_splitcwd = os.getcwd().split(os.path.sep)
-_path = os.path.join(*_splitcwd[:-2])
-_cwd = os.path.join(*_splitcwd[-2:])
-
-if _cwd == os.path.join('zprocess', 'remote') and _path not in sys.path:
-    # Running from within zprocess dir? Add to sys.path for testing during
-    # development:
-    print(_path)
-    sys.path.insert(0, _path)
+if __package__ is None:
+    sys.path.insert(0, os.path.abspath('../..'))
 
 
-import zprocess
-from zprocess import ZMQServer
+from zprocess.remote import DEFAULT_PORT
+from zprocess.remote.server import RemoteProcessServer
 
+def main():
 
-class RemoteProcessServer(ZMQServer):
-    DEFAULT_PORT = 7341
-    def __init__(self, port, bind_address='tcp://0.0.0.0', shared_secret=None,
-                 allow_insecure=True):
-        ZMQServer.__init__(self, port, bind_address=bind_address,
-                           shared_secret=shared_secret,
-                           allow_insecure=allow_insecure)
-        # Entries should be removed from this dict if the parent calls __del__ on
-        # the proxy, or if the child dies for some other reason.
-        self.children = {}
+    parser = argparse.ArgumentParser(description="zprocess.remote server.")
 
-    def proxy_terminate(self, pid):
-        return self.children[pid].terminate()
+    parser.add_argument('-p', '--port', type=int, default=DEFAULT_PORT,
+                        help='The port to listen on. Default: %d' % DEFAULT_PORT)
 
-    def proxy_kill(self, pid):
-        return self.children[pid].kill()
+    parser.add_argument(
+        '-i',
+        '--allow-insecure',
+        action='store_true',
+        help="""Must be set to acknowledge that communication will be insecure if not
+        using a shared secret.""",
+    )
 
-    def proxy_wait(self, pid):
-        # We only wait for 10ms - the client can implement a blocking wait by
-        # calling multiple times, we don't want to be blocked here:
-        try:
-            self.children[pid].wait(0.01)
-        except subprocess.TimeoutExpired:
-            return None
+    parser.add_argument(
+        '-s',
+        '--shared-secret-file',
+        type=str,
+        default=None,
+        help="""Filepath to the shared secret used for secure communication.""",
+    )
+    args = parser.parse_args()
 
-    def proxy_poll(self, pid):
-        return self.children[pid].poll()
+    port = args.port
+    if args.shared_secret_file is None:
+        shared_secret = None
+    else:
+        shared_secret = open(args.shared_secret_file).read().strip()
+    allow_insecure = args.allow_insecure
 
-    def proxy_returncode(self):
-        return self.client.returncode
+    if not allow_insecure and shared_secret is None:
+        parser.error('Must either provide shared secret file or specify --allow-insecure.')
 
-    def proxy___del__(self, pid):
-        del self.children[pid]
-
-    def proxy_Popen(self, cmd, *args, **kwargs):
-        cmd, kwargs = args
-        if kwargs.pop('prepend_sys_executable', False):
-            cmd = [sys.executable] + cmd
-        child = subprocess.Popen(cmd, *args, **kwargs)
-        self.children[child.pid] = child
-        return child.pid
-
-    def handler(self, data):
-        command, args, kwargs = data
-        print(command, args, kwargs)
-        if hasattr(self, 'proxy_' + command):
-            return getattr(self, 'proxy_' + command)(*args, **kwargs)
-        elif command == 'whoami':
-            # Client is requesting its IP address from our perspective
-            return self.sock.peer_ip
+    server = RemoteProcessServer(
+        port=port, shared_secret=shared_secret, allow_insecure=allow_insecure
+    )
+    server.shutdown_on_interrupt()
 
 
 if __name__ == '__main__':
-    print("Starting RemoteProcessServer on port", RemoteProcessServer.DEFAULT_PORT)
-    server = RemoteProcessServer(RemoteProcessServer.DEFAULT_PORT)
-    print('Press Ctrl-C to shutdown')
-    server.shutdown_on_interrupt()
+    main()
