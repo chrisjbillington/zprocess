@@ -28,6 +28,7 @@ import zprocess
 from zprocess.clientserver import ZMQClient
 from zprocess.security import SecureContext
 from zprocess.utils import TimeoutError
+from zprocess.remote import RemoteProcessClient, DEFAULT_PORT as REMOTE_DEFAULT_PORT
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -179,7 +180,7 @@ class Event(object):
     def __init__(self, process_tree, event_name, role='wait', external_broker=None):
         self.event_name = event_name
         # We null terminate the event name otherwise any subscriber subscribing to
-        # and event *starting* with our event name will also receive it, which
+        # an event *starting* with our event name will also receive it, which
         # we do not want:
         self._encoded_event_name = self.event_name.encode('utf8') + b'\0'
         self.role = role
@@ -589,7 +590,7 @@ class RichStreamHandler(logging.StreamHandler):
     connected to a qtutils.OutputBox, The OutputBox will format different log levels
     depending on severity. This is designed both to work with an OutputBox as the
     stream, or with a zprocess.StreamProxy. Thus zprocess subprocesses using a logger
-    with a OutputBoxHandler set to sys.stdout or sys.stderr will have colourised log
+    with a RichStreamHandler set to sys.stdout or sys.stderr will have colourised log
     output, as will any loggers in the same process as the OutputBox with the stream set
     to the OutputBox."""
 
@@ -645,8 +646,8 @@ class Process(object):
     def __init__(
         self,
         process_tree,
-        output_redirection_port=None,
         output_redirection_host=None,
+        output_redirection_port=None,
         remote_process_client=None,
         subclass_fullname=None,
         startup_timeout=5,
@@ -744,68 +745,6 @@ class Process(object):
         pass
 
 
-class RemoteChildProxy(object):
-    def __init__(self, remote_process_client, pid):
-        """Class to wrap operations on a remote subprocess"""
-        self.client = remote_process_client
-        self.pid = pid
-
-    def terminate(self):
-        return self.client.request('terminate', self.pid)
-
-    def kill(self):
-        return self.client.request('kill', self.pid)
-
-    def wait(self, timeout=None):
-        # The server will only do 0.01 second timeouts at a time to not be blocked
-        # from other requests, so we will make requests at 0.1 second intervals to
-        # reach whatever the requested timeout was:
-        if timeout is not None:
-            end_time = time.time() + timeout
-        while True:
-            result = self.client.request('wait', self.pid)
-            if result is not None or (timeout is not None and time.time() > end_time):
-                return result
-            time.sleep(0.1)
-
-    def poll(self):
-        return self.client.request('poll', self.pid)
-
-    @property
-    def returncode(self):
-        return self.client.request('returncode', self.pid)
-
-    def __del__(self):
-        try:
-            self.client.request('__del__', self.pid)
-        except Exception:
-            pass
-
-
-class RemoteProcessClient(zprocess.clientserver.ZMQClient):
-    """A class to represent communication with a RemoteProcessServer"""
-    def __init__(self, host, port=7341, shared_secret=None, allow_insecure=False):
-        zprocess.clientserver.ZMQClient.__init__(self, shared_secret=shared_secret,
-                                                 allow_insecure=allow_insecure)
-        self.host = host
-        self.port = port
-        self.shared_secret = shared_secret
-
-    def request(self, command, *args, **kwargs):
-        return self.get(self.port, host=self.host,
-                        data=[command, args, kwargs],
-                        timeout=5)
-
-    def Popen(self, command):
-        """Launch a remote process and return a proxy object for interacting with it"""
-        pid = self.request('Popen', command)
-        return RemoteChildProxy(self, pid)
-
-    def get_external_IP(self):
-        """Ask the RemoteProcessServer what our IP address is from its perspective"""
-        return self.request('whoami')
-
-
 class ProcessTree(object):
     def __init__(self, shared_secret=None, allow_insecure=False):
         self.shared_secret = shared_secret
@@ -835,11 +774,21 @@ class ProcessTree(object):
     def event(self, event_name, role='wait', external_broker=None):
         return Event(self, event_name, role=role, external_broker=external_broker)
 
+    def remote_process_client(self, host, port=REMOTE_DEFAULT_PORT):
+        """Return a RemoteProcessClient configured with this ProcessTree's security
+        settings"""
+        return RemoteProcessClient(
+            host,
+            port=port,
+            shared_secret=self.shared_secret,
+            allow_insecure=self.allow_insecure,
+        )
+
     def subprocess(
         self,
         path,
-        output_redirection_port=None,
         output_redirection_host=None,
+        output_redirection_port=None,
         remote_process_client=None,
         startup_timeout=5,
         pymodule=False,
@@ -912,16 +861,16 @@ class ProcessTree(object):
 
         # Build command line args:
         if pymodule:
-            args = ['-m', path]
+            cmd = ['-m', path]
         else:
-            args = [os.path.abspath(path)]
-        args += ['--zprocess-parentinfo', json.dumps(parentinfo)]
+            cmd = [os.path.abspath(path)]
+        cmd += ['--zprocess-parentinfo', json.dumps(parentinfo)]
 
         if remote_process_client is None:
-            child = subprocess.Popen([sys.executable] + args)
+            child = subprocess.Popen([sys.executable] + cmd)
         else:
             # The remote server will prefix the path to its own Python interpreter:
-            child = remote_process_client.Popen(args, prepend_sys_executable=True)
+            child = remote_process_client.Popen(cmd, prepend_sys_executable=True)
 
         events = from_child.poll(startup_timeout*1000)
         if not events:
@@ -1035,7 +984,13 @@ class Event(_Event):
 _Process = Process
 class Process(_Process):
     def __init__(self, *args, **kwargs):
-        if not args or not isinstance(args[0], ProcessTree):
+        # Backward compat for redirection port as sole positional arg:
+        if len(args) == 1 and not isinstance(args[0], ProcessTree) and not kwargs:
+            kwargs['output_redirection_port'] = args[0]
+            args = ()
+        if 'process_tree' not in kwargs and (
+            not args or not isinstance(args[0], ProcessTree)
+        ):
             args = (_default_process_tree,) + args
         _Process.__init__(self, *args, **kwargs)
         
@@ -1063,10 +1018,11 @@ def setup_connection_with_parent(lock=False):
 # New way is to instantiate a ProcessTree and call
 # process_tree.subprocess(). Old way is:
 def subprocess_with_queues(path, output_redirection_port=None):
-    if output_redirection_port == 0: # This used to mean no redirection
+    if output_redirection_port == 0:  # This used to mean no redirection
         output_redirection_port = None
-    return _default_process_tree.subprocess(path, output_redirection_port)
-
+    return _default_process_tree.subprocess(
+        path, output_redirection_port=output_redirection_port
+    )
 
 
 __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
