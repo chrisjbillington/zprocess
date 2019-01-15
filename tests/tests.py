@@ -149,7 +149,7 @@ class ProcessClassTests(unittest.TestCase):
         self.redirection_sock = context.socket(zmq.PULL)
         redirection_port = self.redirection_sock.bind_to_random_port(
                                'tcp://127.0.0.1')
-        self.process = TestProcess(redirection_port)
+        self.process = TestProcess(output_redirection_port=redirection_port)
 
     def test_process(self):
         to_child, from_child = self.process.start()

@@ -82,13 +82,14 @@ def _typecheck_or_convert_data(data, dtype):
 
 class ZMQServer(object):
     """Wrapper around a zmq.REP or zmq.PULL socket"""
-    def __init__(self, port, dtype='pyobj', pull_only=False, 
+    def __init__(self, port=None, dtype='pyobj', pull_only=False, 
                  bind_address='tcp://127.0.0.1', shared_secret=None,
                  allow_insecure=False):
         self.port = port
         self.dtype = dtype
         self.pull_only = pull_only
         self.bind_address = bind_address
+        self._crashed = threading.Event()
 
         if 'setup_auth' in self.__class__.__dict__:
             # Backward compatibility for subclasses implementing their own
@@ -111,7 +112,10 @@ class ZMQServer(object):
 
         self.sock.setsockopt(zmq.LINGER, 0)
 
-        self.sock.bind('%s:%s' % (str(self.bind_address), str(self.port)))
+        if self.port is not None:
+            self.sock.bind('%s:%d' % (self.bind_address, self.port))
+        else:
+            self.port = self.sock.bind_to_random_port(self.bind_address)
 
         if self.dtype == 'raw':
             self.send = self.sock.send
@@ -143,8 +147,8 @@ class ZMQServer(object):
 
     def shutdown_on_interrupt(self):
         try:
-            while True:
-                time.sleep(3600)
+            # Return if mainloop crashes
+            self._crashed.wait()
         except KeyboardInterrupt:
             sys.stderr.write('Interrupted, shutting down\n')
         finally:
@@ -157,6 +161,10 @@ class ZMQServer(object):
             except zmq.ContextTerminated:
                 self.sock.close(linger=0)
                 return
+            except Exception:
+                self._crashed.set()
+                self.sock.close(linger=0)
+                raise
             try:
                 response_data = self.handler(request_data)
                 if self.pull_only and response_data is not None:
