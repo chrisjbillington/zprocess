@@ -851,13 +851,13 @@ class ProcessTree(object):
             # Translate any internal hostnames or IP addresses in parentinfo into our
             # external IP address as seen from the remote process server:
             external_ip = remote_process_client.get_external_IP()
-            for key, value in parentinfo.items():
-                if key.endswith('_host'):
+            for key, value in list(parentinfo.items()):
+                if key.endswith('_host') and value is not None:
                     ip = gethostbyname(value)
                     if isinstance(ip, bytes):
                         ip = ip.decode()
                     if ipaddress.ip_address(ip).is_loopback:
-                        parentinfo['key'] = external_ip
+                        parentinfo[key] = external_ip
 
         # Build command line args:
         if pymodule:
