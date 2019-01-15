@@ -17,7 +17,7 @@ class RemoteChildProxy(object):
         self.pid = pid
 
     def request(self, funcname, *args, **kwargs):
-        return self.client.request(funcname, (self.pid,) + args, kwargs)
+        return self.client.request(funcname, self.pid, *args, **kwargs)
 
     def terminate(self):
         return self.request('terminate')
