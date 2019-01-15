@@ -56,8 +56,11 @@ class RemoteProcessServer(ZMQServer):
     def proxy___del__(self, pid):
         del self.children[pid]
 
-    def proxy_Popen(self, args):
-        child = subprocess.Popen([sys.executable] + args)
+    def proxy_Popen(self, cmd, *args, **kwargs):
+        cmd, kwargs = args
+        if kwargs.pop('prepend_sys_executable', False):
+            cmd = [sys.executable] + cmd
+        child = subprocess.Popen(cmd, *args, **kwargs)
         self.children[child.pid] = child
         return child.pid
 
