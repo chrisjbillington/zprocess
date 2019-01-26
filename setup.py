@@ -11,7 +11,7 @@
 from setuptools import setup
 import os
 
-VERSION = '2.9.3'
+VERSION = '2.10.0'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
@@ -25,6 +25,8 @@ if sys.version_info.major == 2:
     dependencies.append('ipaddress')
     dependencies.append('subprocess32')
     dependencies.append('enum34')
+if os.name == 'nt':
+    dependencies.append('pywin32')
 
 setup(name='zprocess',
       version=VERSION,

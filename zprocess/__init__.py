@@ -47,7 +47,13 @@ if 'zprocess' in  os.getenv('COVERAGE_PROCESS_START', ''):
     signal.signal(signal.SIGTERM, sigterm_handler)
 
 
-from zprocess.utils import TimeoutError, start_daemon, embed, raise_exception_in_thread
+from zprocess.utils import (
+    TimeoutError,
+    start_daemon,
+    embed,
+    raise_exception_in_thread,
+    disable_quick_edit,
+)
 
 from zprocess.clientserver import (
     ZMQServer,

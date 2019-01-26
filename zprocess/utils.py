@@ -55,6 +55,31 @@ def start_daemon(cmd_args):
             os._exit(0)
 
 
+def disable_quick_edit():
+    """Disable the 'quick-edit' misfeature of Windows' cmd.exe, in which a single click
+    on the console puts it in 'select' mode indefinitely, causing writes to stdout from
+    the program to block, freezing the program. The program remains paused like this
+    even if the window is no longer focused, until the user sends a keypress to the
+    console. This breaks so many things and is easy to do without realising it. This
+    function disables the feature, and and adds an atexit() hook to set it back back to
+    its initial configuration when Python exits.
+    """
+    if os.name == 'nt' and sys.stdin is not None and sys.stdin.isatty():
+        import win32console
+        import atexit
+
+        ENABLE_QUICK_EDIT = 0x0040
+        ENABLE_EXTENDED_FLAGS = 0x0080
+        console = win32console.GetStdHandle(win32console.STD_INPUT_HANDLE)
+        orig_mode = console.GetConsoleMode()
+        if (orig_mode & ENABLE_EXTENDED_FLAGS) and not (orig_mode & ENABLE_QUICK_EDIT):
+            # Already disabled, nothing for us to do.
+            return
+        new_mode = (orig_mode | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT
+        console.SetConsoleMode(new_mode)
+        atexit.register(console.SetConsoleMode, orig_mode)
+
+        
 def embed():
     """embeds an IPython qt console in the calling scope.
     Intended for debugging. May cause strange interpreter behaviour."""
