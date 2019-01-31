@@ -1,13 +1,15 @@
 from __future__ import print_function, unicode_literals, division
 import sys
-import os
 import ctypes
 import base64
 import weakref
+import time
 
 import ipaddress
 import zmq
 import zmq.auth.thread
+from zmq.utils.monitor import recv_monitor_message
+
 
 if sys.version_info[0] == 2:
     str = unicode
@@ -49,7 +51,33 @@ def _check_versions():
         zmq.curve_public = _curve_public
 
 
+# Constants in zeromq 4.3.0 but not yet present in pyzmq at tine of writing:
+zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL = 0x0800
+zmq.EVENT_HANDSHAKE_SUCCEEDED = 0x1000
+zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL = 0x2000
+zmq.EVENT_HANDSHAKE_FAILED_AUTH = 0x4000
+
+
+if zmq.zmq_version_info() >= (4, 3, 0):
+    # Events to tell when a conneciton has succeeded, including authentication:
+    CONN_SUCCESS_EVENTS = {zmq.EVENT_HANDSHAKE_SUCCEEDED}
+    CONN_FAIL_EVENTS = {
+        zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL,
+        zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL,
+        zmq.EVENT_HANDSHAKE_FAILED_AUTH,
+    }
+else:
+    # Authentication failure is not detectable on zmq < 4.3. Failure will just look like
+    # success. Too bad.
+    CONN_SUCCESS_EVENTS = {zmq.CONNECTED}
+    CONN_FAIL_EVENTS = set()
+
+
 class InsecureConnection(RuntimeError):
+    pass
+
+
+class AuthenticationFailure(RuntimeError):
     pass
 
 
@@ -168,10 +196,45 @@ class SecureSocket(zmq.Socket):
             raise ValueError(addr)
 
     def bind(self, addr):
+        """wrapper around bind, configuring security"""
         return self._bind_or_connect(addr, bind=True)
 
-    def connect(self, addr):
-        return self._bind_or_connect(addr, connect=True)
+    def connect(self, addr, timeout=None):
+        """Wrapper around connect, configuring security. If timeout is not None, then
+        this method will block until the given timeout in seconds (or forever if
+        timeout=-1) or until the connection is sucessful. When called in this blocking
+        way, failed authentication will be raised as an exception if on zeromq >= 4.3,
+        otherwise authentication failure is not detectable. Do not set timeout if you
+        already have a monitor socket for this socket, in this case you should monitor
+        for connection events yourself."""
+        if timeout is not None:
+            monitor = self.get_monitor_socket()
+        try:
+            result = self._bind_or_connect(addr, connect=True)
+            if timeout is None:
+                return result
+
+            # Block until we get an authentication success or failure
+            end_time = time.time() + timeout
+            while timeout == -1 or time.time() < end_time:
+                remaining = int(min(0, end_time - time.time()) * 1000)
+                if timeout == -1:
+                    remaining = -1
+                events = monitor.poll(remaining)
+                if events:
+                    event = recv_monitor_message(monitor)['event']
+                    # print(event)
+                    if event in CONN_SUCCESS_EVENTS:
+                        return result
+                    elif event in CONN_FAIL_EVENTS:
+                        msg = ("Failed to authenticate with server. Ensure both client "
+                               + "and server have the same shared secret.")
+                        raise AuthenticationFailure(msg)
+        finally:
+            if timeout is not None:
+                self.disable_monitor()
+                monitor.close()
+
 
     def _checkinsecure(self):
         if not (self.secure or self.allow_insecure):
@@ -241,3 +304,17 @@ class SecureContext(zmq.Context):
             instance = cls(io_threads, shared_secret=shared_secret)
             cls._instances[shared_secret] = instance
             return instance
+
+
+# if __name__ == '__main__':
+#     shared_secret = generate_shared_secret()
+#     other_secret = generate_shared_secret()
+
+#     server_ctx = SecureContext.instance(shared_secret=shared_secret)
+#     client_ctx = SecureContext.instance(shared_secret=shared_secret)
+
+#     server = server_ctx.socket(zmq.REP)
+#     client = client_ctx.socket(zmq.REQ)
+
+#     # server.bind("tcp://127.0.0.1:6666")
+#     client.connect("tcp://127.0.0.1:6666", timeout=-1)
