@@ -19,6 +19,7 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from zprocess.tasks import Task, TaskQueue
+from zprocess.security import SecureContext
 
 MAX_RESPONSE_TIME = 1  # second
 MAX_ABSENT_TIME = 1  # second
@@ -252,6 +253,7 @@ class LockRequest(object):
         self.advise_retry_task = None
         self.give_up_task = None
         self.timeout_task = None
+        self.ip = None
 
     @classmethod
     def instance(cls, key, client_id, server):
@@ -269,13 +271,14 @@ class LockRequest(object):
         one or more other clients"""
         if self.state is rs.PRESENT_WAITING:
             self.server.send(self.routing_id, b'ok')
-            logging.info('%s acquired %s', _ds(self.client_id), _ds(self.key))
+            msg = '[%s] %s acquired %s'
+            logging.info(msg, self.ip, _ds(self.client_id), _ds(self.key))
             self.schedule_timeout_release(self.timeout)
             self.cancel_advise_retry()
             self.state = rs.HELD
         elif self.state is rs.ABSENT_WAITING:
             logging.info(
-                '%s acquired (in absentia) %s', _ds(self.client_id), _ds(self.key)
+                '[in absentia] %s acquired %s', _ds(self.client_id), _ds(self.key)
             )
             self.cancel_give_up()
             self.schedule_timeout_release(MAX_ABSENT_TIME)
@@ -283,25 +286,31 @@ class LockRequest(object):
         else:
             raise ValueError(self.state)  # pragma: no cover
 
-    def _initial_acquisition(self, routing_id, timeout, read_only):
+    def _initial_acquisition(self, routing_id, ip, timeout, read_only):
         self.routing_id = routing_id
         self.timeout = timeout
         self.read_only = read_only
         lock = Lock.instance(self.key, self.server)
         if lock.acquire(self.client_id, read_only):
             self.server.send(routing_id, b'ok')
-            logging.info('%s acquired %s', _ds(self.client_id), _ds(self.key))
+            logging.info('[%s] %s acquired %s', ip, _ds(self.client_id), _ds(self.key))
             self.schedule_timeout_release(timeout)
             self.state = rs.HELD
         else:
             self.schedule_advise_retry()
             self.state = rs.PRESENT_WAITING
+            self.ip = ip
 
-    def release(self, fully=False):
+    def release(self, fully=False, ip=None):
         """Release the lock for the client, and process any triggered acquisitions. If
         fully is True, the lock will be completely released, regardless of the current
         reentrancy level. Return whether the lock is still held."""
-        logging.info('%s released %s', _ds(self.client_id), _ds(self.key))
+        msg = '%s released %s'
+        if ip is None:
+            msg = '[in absentia] ' + msg
+        else:
+            msg = '[%s] ' % ip + msg
+        logging.info(msg, _ds(self.client_id), _ds(self.key))
         lock = Lock.instance(self.key, self.server)
         acquirers = lock.release(self.client_id, fully=fully)
         for client_id in acquirers:
@@ -313,18 +322,19 @@ class LockRequest(object):
             self._cleanup()
         return still_held
 
-    def acquire_request(self, routing_id, timeout, read_only):
+    def acquire_request(self, routing_id, ip, timeout, read_only):
         """A client has requested to acquire the lock"""
         if self.state is rs.INITIAL:
             # First attempt to acquire the lock:
-            self._initial_acquisition(routing_id, timeout, read_only)
+            self._initial_acquisition(routing_id, ip, timeout, read_only)
         elif self.state is rs.HELD:
             # A reentry of an already held lock:
             lock = Lock.instance(self.key, self.server)
             try:
                 assert lock.acquire(self.client_id, read_only)
                 self.server.send(routing_id, b'ok')
-                logging.info('%s acquired %s', _ds(self.client_id), _ds(self.key))
+                msg = '[%s] %s acquired %s'
+                logging.info(msg, ip, _ds(self.client_id), _ds(self.key))
                 # Extend the timeout if necessary:
                 if monotonic() + timeout > self.timeout_task.due_at:
                     self.cancel_timeout_release()
@@ -344,7 +354,7 @@ class LockRequest(object):
                 # Client has changed their mind about whether they want a read_only
                 # lock. Give up and start again:
                 self.give_up(cleanup=False)
-                self._initial_acquisition(routing_id, timeout, read_only)
+                self._initial_acquisition(routing_id, ip, timeout, read_only)
             else:
                 self.timeout = timeout
                 self.routing_id = routing_id
@@ -356,16 +366,16 @@ class LockRequest(object):
         else:
             raise ValueError(self.state)  # pragma: no cover
 
-    def release_request(self, routing_id):
+    def release_request(self, routing_id, ip):
         if self.state is rs.HELD:
             self.server.send(routing_id, b'ok')
-            still_held = self.release()
+            still_held = self.release(ip=ip)
             if not still_held:
                 self.cancel_timeout_release()
         elif self.state is rs.ABSENT_HELD:
             # A lie, but the client didn't follow protocol, so no lock for you:
             self.server.send(routing_id, ERR_NOT_HELD)
-            self.release()
+            self.release(ip=ip)
             self.cancel_timeout_release()
         elif self.state is rs.PRESENT_WAITING:
             # Client not allowed to make two requests without waiting for a response:
@@ -385,6 +395,7 @@ class LockRequest(object):
     def advise_retry(self):
         """Tell the client to retry acquiring the lock"""
         self.server.send(self.routing_id, b'retry')
+        self.ip = None
         self.schedule_give_up()
         self.state = rs.ABSENT_WAITING
 
@@ -414,10 +425,19 @@ class LockRequest(object):
 
 
 class ZMQLockServer(object):
-    def __init__(self, port=None, bind_address='tcp://0.0.0.0', silent=False):
+    def __init__(
+        self,
+        port=None,
+        bind_address='tcp://0.0.0.0',
+        silent=False,
+        shared_secret=None,
+        allow_insecure=True,
+    ):
         self.port = port
         self._initial_port = port
         self.bind_address = bind_address
+        self.shared_secret = shared_secret
+        self.allow_insecure = allow_insecure
         self.context = None
         self.router = None
         self.tasks = TaskQueue()
@@ -433,8 +453,10 @@ class ZMQLockServer(object):
         self.silent = silent
 
     def run(self):
-        self.context = zmq.Context.instance()
-        self.router = self.context.socket(zmq.ROUTER)
+        self.context = SecureContext.instance(shared_secret=self.shared_secret)
+        self.router = self.context.socket(
+            zmq.ROUTER, allow_insecure=self.allow_insecure
+        )
         poller = zmq.Poller()
         poller.register(self.router, zmq.POLLIN)
         if self.port is not None:
@@ -461,21 +483,23 @@ class ZMQLockServer(object):
                     # Not well formed as [routing_id, '', command, ...]
                     continue  # pragma: no cover
                 routing_id, command, args = request[0], request[2], request[3:]
+                ip = self.router.peer_ip
                 if command == b'acquire':
-                    self.acquire_request(routing_id, args)
+                    self.acquire_request(routing_id, ip, args)
                 elif command == b'release':
-                    self.release_request(routing_id, args)
+                    self.release_request(routing_id, ip, args)
                 elif command == b'hello':
                     self.send(routing_id, b'hello')
-                    logging.info("Someone said hello")
+                    logging.info("[%s] said hello", ip)
                 elif command == b'protocol':
                     self.send(routing_id, PROTOCOL_VERSION.encode('utf8'))
-                    logging.info("Someone requested the protocol version")
+                    logging.info("[%s] requested the protocol version", ip)
                 elif command == b'stop' and self.stopping:
                     self.send(routing_id, b'ok')
                     break
                 else:
                     self.send(routing_id, ERR_INVALID_COMMAND)
+                    logging.info("[%s] sent an invalid command", ip)
             else:
                 # A task is due:
                 task = self.tasks.pop()
@@ -499,7 +523,7 @@ class ZMQLockServer(object):
         if not self.running:
             raise RuntimeError('Not running')
         self.stopping = True
-        sock = self.context.socket(zmq.REQ)
+        sock = self.context.socket(zmq.REQ, allow_insecure=self.allow_insecure)
         sock.connect('tcp://127.0.0.1:%d' % self.port)
         sock.send(b'stop')
         assert sock.recv() == b'ok'
@@ -511,7 +535,7 @@ class ZMQLockServer(object):
     def send(self, routing_id, message):
         self.router.send_multipart([routing_id, b'', message])
 
-    def acquire_request(self, routing_id, args):
+    def acquire_request(self, routing_id, ip, args):
         if not 3 <= len(args) <= 4:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
@@ -532,15 +556,15 @@ class ZMQLockServer(object):
         else:
             read_only = False
         request = LockRequest.instance(key, client_id, self)
-        request.acquire_request(routing_id, timeout, read_only)
+        request.acquire_request(routing_id, ip, timeout, read_only)
 
-    def release_request(self, routing_id, args):
+    def release_request(self, routing_id, ip, args):
         if not len(args) == 2:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
         key, client_id = args
         request = LockRequest.instance(key, client_id, self)
-        request.release_request(routing_id)
+        request.release_request(routing_id, ip)
 
 
 if __name__ == '__main__':

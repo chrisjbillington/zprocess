@@ -30,7 +30,7 @@ PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
 import zmq
-
+from zprocess.security import SecureContext
 DEFAULT_PORT = 7340
 
 _zmq_log_client = None
@@ -44,17 +44,19 @@ class ZMQLogClient(object):
 
     RESPONSE_TIMEOUT = 5000
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, shared_secret=None, allow_insecure=True):
         self.host = socket.gethostbyname(host)
         self.port = port
+        self.shared_secret = shared_secret
+        self.allow_insecure = allow_insecure
         # We'll store one zmq socket for each thread, with thread local storage:
         self.local = threading.local()
         self.supress_further_warnings = False
 
     def _new_socket(self):
         # We have a separate push socket for each thread that needs to push:
-        context = zmq.Context.instance()
-        self.local.sock = context.socket(zmq.DEALER)
+        context = SecureContext.instance(shared_secret=self.shared_secret)
+        self.local.sock = context.socket(zmq.DEALER, allow_insecure=self.allow_insecure)
         self.local.sock.setsockopt(zmq.LINGER, 0)
         self.local.sock.set_hwm(1000)
         self.local.sock.connect('tcp://%s:%s' % (self.host, str(self.port)))
