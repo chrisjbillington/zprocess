@@ -24,6 +24,7 @@ PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
 import zmq
+from zprocess.security import SecureContext
 
 DEFAULT_TIMEOUT = 30  # seconds
 DEFAULT_PORT = 7339
@@ -74,9 +75,11 @@ class ZMQLockClient(object):
 
     RESPONSE_TIMEOUT = 5000
 
-    def __init__(self, host, port):
+    def __init__(self, host, port, shared_secret=None, allow_insecure=True):
         self.host = socket.gethostbyname(host)
         self.port = port
+        self.shared_secret = shared_secret
+        self.allow_insecure = allow_insecure
         self.lock = threading.Lock()
         # We'll store one zmq socket/poller for each thread, with thread
         # local storage:
@@ -86,8 +89,8 @@ class ZMQLockClient(object):
         # Every time the REQ/REP cadence is broken, we need to create
         # and bind a new socket to get it back on track. Also, we have
         # a separate socket for each thread:
-        context = zmq.Context.instance()
-        self.local.sock = context.socket(zmq.REQ)
+        context = SecureContext.instance(shared_secret=self.shared_secret)
+        self.local.sock = context.socket(zmq.REQ, allow_insecure=self.allow_insecure)
         self.local.sock.setsockopt(zmq.LINGER, 0)
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)

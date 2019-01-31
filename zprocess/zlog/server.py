@@ -14,6 +14,7 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from zprocess.tasks import Task, TaskQueue
+from zprocess.security import SecureContext
 
 # If no client writes to a file in this time, we close it:
 FILE_CLOSE_TIMEOUT = 5
@@ -113,10 +114,12 @@ class FileHandler(logging.FileHandler):
     def format(self, record):
         return record
 
-    def client_done(self, client_id):
+    def client_done(self, client_id, ip=None):
         if client_id in self.clients:
             self.clients.remove(client_id)
             msg = "Client done (remaining: %d) with %s"
+            if ip is not None:
+                msg = '[%s] ' % ip + msg
             logging.info(msg, len(self.clients), self.baseFilename)
         if not self.clients:
             del self.instances[self.baseFilename]
@@ -141,11 +144,15 @@ class ZMQLogServer(object):
         silent=False,
         handler_class=FileHandler,
         handler_kwargs=None,
+        shared_secret=None,
+        allow_insecure=True
     ):
         self.port = port
         self._initial_port = port
         self.bind_address = bind_address
         self.handler_class = handler_class
+        self.shared_secret = shared_secret
+        self.allow_insecure = allow_insecure
         self.handler_kwargs = handler_kwargs if handler_kwargs is not None else {}
         self.context = None
         self.router = None
@@ -189,7 +196,7 @@ class ZMQLogServer(object):
             return
         return os.path.abspath(filepath)
 
-    def check_access(self, routing_id, args):
+    def check_access(self, routing_id, ip, args):
         if len(args) != 1:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
@@ -219,12 +226,13 @@ class ZMQLogServer(object):
         except (OSError, IOError):
             message = _format_exc()
             self.send(routing_id, message.encode('utf8'))
-            logging.warning('Access denied for %s: \n    %s', filepath, message)
+            msg = '[%s] Access denied for %s: \n    %s'
+            logging.warning(msg, ip, filepath, message)
         else:
             self.send(routing_id, b'ok')
-            logging.info('Access confirmed for %s', filepath)
+            logging.info('[%s] Access confirmed for %s', ip, filepath)
 
-    def done(self, routing_id, args):
+    def done(self, routing_id, ip, args):
         if len(args) != 2:
             self.send(routing_id, ERR_WRONG_NUM_ARGS)
             return
@@ -235,7 +243,7 @@ class ZMQLogServer(object):
             return
         self.cancel_timeout(client_id)
         handler = self.handler_class.instance(filepath, **self.handler_kwargs)
-        handler.client_done(client_id)
+        handler.client_done(client_id, ip=ip)
         self.send(routing_id, b'ok')
 
     def set_timeout(self, client_id, filepath):
@@ -257,8 +265,10 @@ class ZMQLogServer(object):
         del self.timeout_tasks[client_id]
 
     def run(self):
-        self.context = zmq.Context.instance()
-        self.router = self.context.socket(zmq.ROUTER)
+        self.context = SecureContext.instance(shared_secret=self.shared_secret)
+        self.router = self.context.socket(
+            zmq.ROUTER, allow_insecure=self.allow_insecure
+        )
         poller = zmq.Poller()
         poller.register(self.router, zmq.POLLIN)
         if self.port is not None:
@@ -284,23 +294,25 @@ class ZMQLogServer(object):
                     # Not well formed as [routing_id, '', command, ...]
                     continue  # pragma: no cover
                 routing_id, command, args = request[0], request[2], request[3:]
+                ip = self.router.peer_ip
                 if command == b'log':
                     self.log(args)
                 elif command == b'hello':
                     self.send(routing_id, b'hello')
-                    logging.info("Someone said hello")
+                    logging.info("[%s] said hello", ip)
                 elif command == b'protocol':
                     self.send(routing_id, PROTOCOL_VERSION.encode('utf8'))
-                    logging.info("Someone requested the protocol version")
+                    logging.info("[%s] requested the protocol version", ip)
                 elif command == b'check_access':
-                    self.check_access(routing_id, args)
+                    self.check_access(routing_id, ip, args)
                 elif command == b'done':
-                    self.done(routing_id, args)
+                    self.done(routing_id, ip, args)
                 elif command == b'stop' and self.stopping:
                     self.send(routing_id, b'ok')
                     break
                 else:
                     self.send(routing_id, ERR_INVALID_COMMAND)
+                    logging.info("[%s] sent an invalid command", ip)
             else:
                 # A task is due:
                 task = self.tasks.pop()
@@ -324,7 +336,7 @@ class ZMQLogServer(object):
         if not self.running:
             raise RuntimeError('Not running')
         self.stopping = True
-        sock = self.context.socket(zmq.REQ)
+        sock = self.context.socket(zmq.REQ, allow_insecure=self.allow_insecure)
         sock.connect('tcp://127.0.0.1:%d' % self.port)
         sock.send(b'stop')
         assert sock.recv() == b'ok'
