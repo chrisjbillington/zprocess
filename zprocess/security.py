@@ -69,7 +69,7 @@ if zmq.zmq_version_info() >= (4, 3, 0):
 else:
     # Authentication failure is not detectable on zmq < 4.3. Failure will just look like
     # success. Too bad.
-    CONN_SUCCESS_EVENTS = {zmq.CONNECTED}
+    CONN_SUCCESS_EVENTS = {zmq.EVENT_CONNECTED}
     CONN_FAIL_EVENTS = set()
 
 
