@@ -40,7 +40,7 @@ def dedent(s):
     return ' '.join(s.split())
 
 
-class ZMQLogClient(object):
+class ZLogClient(object):
 
     RESPONSE_TIMEOUT = 5000
 
@@ -51,7 +51,7 @@ class ZMQLogClient(object):
         self.allow_insecure = allow_insecure
         # We'll store one zmq socket for each thread, with thread local storage:
         self.local = threading.local()
-        self.supress_further_warnings = False
+        self.suppress_further_warnings = False
 
     def _new_socket(self):
         # We have a separate push socket for each thread that needs to push:
@@ -87,7 +87,7 @@ class ZMQLogClient(object):
             del self.local.poller
             raise
 
-    def say_hello(self, timeout=None):
+    def ping(self, timeout=None):
         """Ping the server for a response."""
         start_time = time.time()
         self._send(b'hello')
@@ -131,8 +131,8 @@ class ZMQLogClient(object):
         try:
             self._send(b'log', client_id, filepath, message)
         except zmq.Again:
-            if not self.supress_further_warnings:
-                self.supress_further_warnings = True
+            if not self.suppress_further_warnings:
+                self.suppress_further_warnings = True
                 msg = """Warning: zlog server not receiving log messages. Logging may
                     not be functional\n"""
                 sys.stderr.write(dedent(msg))
@@ -176,14 +176,14 @@ class ZMQLoggingHandler(Handler):
 def ping(timeout=None):
     if _zmq_log_client is None:
         raise RuntimeError('Not connected to a zlog server')
-    return _zmq_log_client.say_hello(timeout)
+    return _zmq_log_client.ping(timeout)
 
 
 def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
     """This method should be called at program startup, it establishes
     communication with the server and ensures it is responding"""
     global _zmq_log_client
-    _zmq_log_client = ZMQLogClient(host, port)
+    _zmq_log_client = ZLogClient(host, port)
     # We ping twice since the first does initialisation and so takes
     # longer. The second will be more accurate:
     ping(timeout)

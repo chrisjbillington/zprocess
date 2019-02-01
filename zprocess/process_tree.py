@@ -29,6 +29,8 @@ from zprocess.clientserver import ZMQClient
 from zprocess.security import SecureContext
 from zprocess.utils import TimeoutError
 from zprocess.remote import RemoteProcessClient, DEFAULT_PORT as REMOTE_DEFAULT_PORT
+from zprocess.locking import ZLockClient, DEFAULT_PORT as ZLOCK_DEFAULT_PORT
+from zprocess.zlog import ZLogClient, DEFAULT_PORT as ZLOG_DEFAULT_PORT
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -746,9 +748,21 @@ class Process(object):
 
 
 class ProcessTree(object):
-    def __init__(self, shared_secret=None, allow_insecure=False):
+    def __init__(
+        self,
+        shared_secret=None,
+        allow_insecure=False,
+        zlock_host=None,
+        zlock_port=ZLOCK_DEFAULT_PORT,
+        zlog_host=None,
+        zlog_port=ZLOG_DEFAULT_PORT,
+    ):
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
+        self.zlock_host = zlock_host
+        self.zlock_port = zlock_port
+        self.zlog_host = zlog_host
+        self.zlog_port = zlog_port
         self.broker = None
         self.broker_host = None
         self.broker_in_port = None
@@ -760,6 +774,24 @@ class ProcessTree(object):
         self.to_parent = None
         self.from_parent = None
         self.kill_lock = None
+
+        self.zlock_client = None
+        if self.zlock_host is not None:
+            self.zlock_client = ZLockClient(
+                self.zlock_host,
+                self.zlock_port,
+                shared_secret=self.shared_secret,
+                allow_insecure=self.allow_insecure,
+            )
+
+        self.zlog_client = None
+        if self.zlog_host is not None:
+            self.zlog_client = ZLogClient(
+                self.zlog_host,
+                self.zlog_port,
+                shared_secret=self.shared_secret,
+                allow_insecure=self.allow_insecure,
+            )
 
     def check_broker(self):
         if self.broker_in_port is None:
@@ -783,6 +815,24 @@ class ProcessTree(object):
             shared_secret=self.shared_secret,
             allow_insecure=self.allow_insecure,
         )
+
+    def lock(self, key, read_only=False):
+        """Return a zprocess.locking.Lock for a resource identified by the given key.
+        This lock is exclusive among all processes configured to use the same key and
+        same zlock server as this ProcessTree."""
+        if self.zlock_client is None:
+            msg = "ProcessTree not configured to connect to a zlock server"
+            raise RuntimeError(msg)
+        return self.zlock_client.lock(key, read_only=read_only)
+
+    def logging_handler(self, filepath):
+        """Return a zprocess.zlog.ZMQLoggingHandler for the given filepath. All loggers
+        using the same file and zlog server as this ProcessTree will log to the same
+        file in a race-free way."""
+        if self.zlog_host is None:
+            msg = "ProcessTree not configured to connect to a zlog server"
+            raise RuntimeError(msg)
+        return self.zlog_client.handler(filepath)
 
     def subprocess(
         self,
@@ -813,11 +863,10 @@ class ProcessTree(object):
             self.heartbeat_server = HeartbeatServer(
                                         shared_secret=self.shared_secret)
 
-        try:
-            zlock = sys.modules['zprocess.zlock']
-            zlock_process_identifier_prefix = zlock.process_identifier_prefix
-        except KeyError:
-            zlock_process_identifier_prefix = ''
+        if self.zlock_client is not None:
+            zlock_process_name = self.zlock_client.process_name
+        else:
+            zlock_process_name = ''
 
         if output_redirection_host is None:
             if output_redirection_port is not None:
@@ -831,21 +880,25 @@ class ProcessTree(object):
         # Note. Any entries in the below dict containing a hostname or IP address must
         # have a key ending in '_host', in order for the below code to translate them
         # into externally valid IP addresses.
-        parentinfo = {'parent_host': 'localhost',
-                      'to_parent_port': from_child_port,
-                      'from_parent_port': to_child_port,
-                      'heartbeat_server_host': 'localhost',
-                      'heartbeat_server_port': self.heartbeat_server.port,
-                      'broker_host': self.broker_host,
-                      'broker_in_port': self.broker_in_port,
-                      'broker_out_port': self.broker_out_port,
-                      'output_redirection_host': output_redirection_host,
-                      'output_redirection_port': output_redirection_port,
-                      'shared_secret': self.shared_secret,
-                      'allow_insecure': self.allow_insecure,
-                      'zlock_process_identifier_prefix':
-                          zlock_process_identifier_prefix,
-                      }
+        parentinfo = {
+            'parent_host': 'localhost',
+            'to_parent_port': from_child_port,
+            'from_parent_port': to_child_port,
+            'heartbeat_server_host': 'localhost',
+            'heartbeat_server_port': self.heartbeat_server.port,
+            'broker_host': self.broker_host,
+            'broker_in_port': self.broker_in_port,
+            'broker_out_port': self.broker_out_port,
+            'output_redirection_host': output_redirection_host,
+            'output_redirection_port': output_redirection_port,
+            'shared_secret': self.shared_secret,
+            'allow_insecure': self.allow_insecure,
+            'zlock_host': self.zlock_host,
+            'zlock_port': self.zlock_port,
+            'zlock_process_name': zlock_process_name,
+            'zlog_host': self.zlock_host,
+            'zlog_port': self.zlock_port,
+        }
 
         if remote_process_client is not None:
             # Translate any internal hostnames or IP addresses in parentinfo into our
@@ -884,19 +937,12 @@ class ProcessTree(object):
 
     def _connect_to_parent(self, lock, parentinfo):
 
-        # If a custom process identifier has been set in zlock, ensure we
-        # inherit it:
-        zlock_pid_prefix = parentinfo.get('zlock_process_identifier_prefix', None)
-        if zlock_pid_prefix is not None:
-            import zprocess.locking
-            # Append '-sub' to indicate we're a subprocess, if it's not already
-            # there
-            if not zlock_pid_prefix.endswith('sub'):
-                zlock_pid_prefix += 'sub'
-            # Only set it if the user has not already set it to something in
-            # this process:
-            if not zprocess.locking.process_identifier_prefix:
-                zprocess.locking.set_client_process_name(zlock_pid_prefix)
+        if self.zlock_client is not None:
+            name = parentinfo['zlock_process_name']
+            # Append '-sub' to indicate we're a subprocess of the other process.
+            if not name.endswith('-sub'):
+                name += '-sub'
+            self.zlock_client.set_process_name(name)
 
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
@@ -950,8 +996,14 @@ class ProcessTree(object):
             msg = "No zprocess parent info in command line args"
             raise RuntimeError(msg)
 
-        process_tree = cls(shared_secret=parentinfo['shared_secret'],
-                           allow_insecure=parentinfo['allow_insecure'])
+        process_tree = cls(
+            shared_secret=parentinfo['shared_secret'],
+            allow_insecure=parentinfo['allow_insecure'],
+            zlock_host=parentinfo['zlock_host'],
+            zlock_port=parentinfo['zlock_port'],
+            zlog_host=parentinfo['zlog_host'],
+            zlog_port=parentinfo['zlog_port'],
+        )
 
         process_tree._connect_to_parent(lock, parentinfo)
 
