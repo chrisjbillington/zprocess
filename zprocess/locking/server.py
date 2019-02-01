@@ -479,10 +479,15 @@ class ZMQLockServer(object):
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
-                if len(request) < 3 or request[1] != b'':  # pragma: no cover
-                    # Not well formed as [routing_id, '', command, ...]
-                    continue  # pragma: no cover
-                routing_id, command, args = request[0], request[2], request[3:]
+                if b'' not in request:
+                    #  Malformed.
+                    continue
+                nroutes = request.index(b'')
+                routing_id, msg = request[:nroutes], request[nroutes+1:]
+                if not msg:  # pragma: no cover
+                    # Malformed
+                    continue
+                command, args = msg[0], msg[1:]
                 ip = self.router.peer_ip
                 if command == b'acquire':
                     self.acquire_request(routing_id, ip, args)
@@ -533,7 +538,7 @@ class ZMQLockServer(object):
         self.stopping = False
 
     def send(self, routing_id, message):
-        self.router.send_multipart([routing_id, b'', message])
+        self.router.send_multipart(routing_id + [b'', message])
 
     def acquire_request(self, routing_id, ip, args):
         if not 3 <= len(args) <= 4:
