@@ -128,6 +128,10 @@ class TestProcess(Process):
         sys.stderr.write(y)
         self.to_parent.put(item)
         os.system('echo hello from echo')
+        # Wait some time here to reduce the chance of output arriving out of order,
+        # which would break the tests even though we don't actually guarantee that the
+        # order will come out right.
+        time.sleep(0.2)
 
         # And now test logging:
         import logging
