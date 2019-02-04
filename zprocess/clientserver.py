@@ -84,12 +84,15 @@ class ZMQServer(object):
     """Wrapper around a zmq.REP or zmq.PULL socket"""
     def __init__(self, port=None, dtype='pyobj', pull_only=False, 
                  bind_address='tcp://127.0.0.1', shared_secret=None,
-                 allow_insecure=False):
+                 allow_insecure=False, timeout_interval=None):
+        if timeout_interval is None:
+            raise ValueError
         self.port = port
         self.dtype = dtype
         self.pull_only = pull_only
         self.bind_address = bind_address
         self._crashed = threading.Event()
+        self.timeout_interval = timeout_interval
 
         if 'setup_auth' in self.__class__.__dict__:
             # Backward compatibility for subclasses implementing their own
@@ -145,6 +148,11 @@ class ZMQServer(object):
         and no shared secret authentication will be used."""
         pass
 
+    def timeout(self):
+        """A function to call every self.timeout_interval seconds in the same thread as
+        the handler. Subclasses should implement this for cleanups and the like"""
+        pass
+
     def shutdown_on_interrupt(self):
         try:
             # Return if mainloop crashes
@@ -155,8 +163,22 @@ class ZMQServer(object):
             self.shutdown()
             
     def mainloop(self):
+        if self.timeout_interval is not None:
+            next_timeout = time.time() + self.timeout_interval
+        else:
+            next_timeout = None
         while True:
             try:
+                if next_timeout is not None:
+                    timeout = next_timeout - time.time()
+                    timeout = max(0, timeout)
+                    events = self.sock.poll(int(timeout*1000))
+                    if not events:
+                        # Timed out. Run our timeout method
+                        self.timeout()
+                        # Compute next timeout time
+                        next_timeout = time.time() + self.timeout_interval
+                        continue
                 request_data = self.recv()
             except zmq.ContextTerminated:
                 self.sock.close(linger=0)
@@ -327,7 +349,8 @@ class ZMQServer(_ZMQServer):
         _ZMQServer.__init__(self, port, dtype=dtype, pull_only=pull_only,
                             bind_address=bind_address,
                             shared_secret=shared_secret,
-                            allow_insecure=allow_insecure)
+                            allow_insecure=allow_insecure,
+                            **kwargs)
 
 
 # methods for a default insecure client
