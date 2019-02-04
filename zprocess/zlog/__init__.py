@@ -63,6 +63,10 @@ class ZLogClient(object):
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)
 
+    def handler(self, filepath):
+        """Return a logging handler configured to communicate with this server"""
+        return ZMQLoggingHandler(self, filepath)
+
     def _send(self, *messages):
         if not hasattr(self.local, 'sock'):
             self._new_socket()
@@ -150,7 +154,8 @@ class ZLogClient(object):
 class ZMQLoggingHandler(Handler):
     """Logging handler that sends log messages to a zlog server"""
 
-    def __init__(self, filepath):
+    def __init__(self, zlog_client, filepath):
+        self.client = zlog_client
         self.filepath = os.path.abspath(filepath)
         # A unique ID so that the server can identify us:
         self.client_id = uuid.uuid4().hex.encode('utf8')
@@ -161,45 +166,61 @@ class ZMQLoggingHandler(Handler):
         """Tell the server we're done with the file. It will know to close the file once
         all clients are done with it."""
         Handler.close(self)
-        if _zmq_log_client is None:
-            raise RuntimeError('Not connected to a zlog server')
-        _zmq_log_client.done(self.client_id, self.filepath)
+        self.client.done(self.client_id, self.filepath)
 
     def emit(self, record):
         """Format and send the record to the server"""
         msg = self.format(record)
-        if _zmq_log_client is None:
-            raise RuntimeError('Not connected to a zlog server')
-        _zmq_log_client.log(self.client_id, self.filepath, msg)
+        self.client.log(self.client_id, self.filepath, msg)
+
+
+
+# Backwards compatibility follots
+
+_default_zlog_client = None
+
+_ZMQLoggingHandler = ZMQLoggingHandler
+"""Backward compatibility to allow instantiating a lock without a ZLockClient as the
+first argument"""
+class ZMQLoggingHandler(_ZMQLoggingHandler):
+    def __init__(self, *args, **kwargs):
+        if not args or not isinstance(args[0], ZLogClient):
+            if _default_zlog_client is None:
+                raise RuntimeError('Not connected to a zlog server')
+            args = (_default_zlog_client,) + args
+        _ZMQLoggingHandler.__init__(self, *args, **kwargs)
 
 
 def ping(timeout=None):
-    if _zmq_log_client is None:
+    """Deprecated. Instantiate a ZLogClient and call its ping() method instead."""
+    if _default_zlog_client is None:
         raise RuntimeError('Not connected to a zlog server')
-    return _zmq_log_client.ping(timeout)
+    return _default_zlog_client.ping(timeout)
 
 
 def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
-    """This method should be called at program startup, it establishes
-    communication with the server and ensures it is responding"""
-    global _zmq_log_client
-    _zmq_log_client = ZLogClient(host, port)
+    """Deprecated. Instantiate a ZlogClient and call its ping() method to check
+    connectivity instead"""
+    global _default_zlog_client
+    _default_zlog_client = ZLogClient(host, port)
     # We ping twice since the first does initialisation and so takes
     # longer. The second will be more accurate:
-    ping(timeout)
-    return ping(timeout)
+    _default_zlog_client.ping(timeout)
+    return _default_zlog_client.ping(timeout)
 
 
 def get_protocol_version(timeout=None):
-    if _zmq_log_client is None:
+    """Deprecated. Instantiate a ZLogClient and call its method instead"""
+    if _default_zlog_client is None:
         raise RuntimeError('Not connected to a zlog server')
-    return _zmq_log_client.get_protocol_version(timeout)
+    return _default_zlog_client.get_protocol_version(timeout)
 
 
 def check_access(filepath, timeout=None):
-    if _zmq_log_client is None:
+    """Deprecated. Instantiate a ZLogClient and call its method instead"""
+    if _default_zlog_client is None:
         raise RuntimeError('Not connected to a zlog server')
-    return _zmq_log_client.check_access(filepath, timeout)
+    return _default_zlog_client.check_access(filepath, timeout)
 
 
 if __name__ == '__main__':

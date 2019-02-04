@@ -255,8 +255,8 @@ class Lock(_Lock):
 
 
 def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
-    """Deprecated function. Creates a default global zlock client and
-    pings it to make sure it's responding."""
+    """Deprecated. Instantiate a ZlockClient and call its ping() method to check
+    connectivity instead"""
     global _default_zlock_client
     kwargs = {}
     if _DEFAULT_TIMEOUT is not None:
@@ -271,15 +271,14 @@ def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
 
 
 def ping(timeout=None):
-    """Deprecated. Ping the server of the default zlock client as created by
-    connect()"""
+    """Deprecated. Instantiate a ZLockClient and call its ping() method instead."""
     if _default_zlock_client is None:
         raise RuntimeError('Not connected to a zlock server')
     return _default_zlock_client.ping(timeout)
 
 
 def get_protocol_version(timeout=None):
-    """Deprecated. Call get_protocol_version on the default zlock client"""
+    """Deprecated. Instantiate a ZLockClient and call its method instead"""
     if _default_zlock_client is None:
         raise RuntimeError('Not connected to a zlock server')
     return _default_zlock_client.get_protocol_version(timeout)
@@ -297,19 +296,20 @@ def set_default_timeout(timeout):
 
 
 def set_client_process_name(name):
+    """Deprecated. Instantiate a ZLockClient and call its method instead"""
     name += '-'
-    global _process_identifier_prefix
+    global _process_name
     if _default_zlock_client is not None:
         _default_zlock_client.set_process_name(name)
     else:
-        _process_identifier_prefix = name
-    process_identifier_prefix = name + '-'
+        _process_name = name
 
 
 def set_client_thread_name(name):
-    _name_change_checks()
-    thread_identifier_prefix.prefix = name + '-'
-
+    """Deprecated. Instantiate a ZLockClient and call its method instead"""
+    if _default_zlock_client is not None:
+        raise RuntimeError("Can't set thread name before instantiating ZLogClient")
+    _default_zlock_client.set_thread_name(name)
 
 
 if __name__ == '__main__':
