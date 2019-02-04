@@ -85,8 +85,6 @@ class ZMQServer(object):
     def __init__(self, port=None, dtype='pyobj', pull_only=False, 
                  bind_address='tcp://127.0.0.1', shared_secret=None,
                  allow_insecure=False, timeout_interval=None):
-        if timeout_interval is None:
-            raise ValueError
         self.port = port
         self.dtype = dtype
         self.pull_only = pull_only
