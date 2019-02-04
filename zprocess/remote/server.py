@@ -54,17 +54,44 @@ def setup_logging(silent=False):
 
 
 class RemoteProcessServer(ZMQServer):
-    def __init__(self, port=None, bind_address='tcp://0.0.0.0', shared_secret=None,
-                 allow_insecure=True, silent=False):
-        ZMQServer.__init__(self, port=port, bind_address=bind_address,
-                           shared_secret=shared_secret,
-                           allow_insecure=allow_insecure)
-        setup_logging(silent)
-        msg = 'This is zprocess-remote server, running on %s:%d'
-        logging.info(msg, self.bind_address, self.port)
+    def __init__(
+        self,
+        port=None,
+        bind_address='tcp://0.0.0.0',
+        shared_secret=None,
+        allow_insecure=True,
+        silent=False,
+    ):
         # Entries should be removed from this dict if the parent calls __del__ on
         # the proxy, or if the child dies for some other reason.
         self.children = {}
+        # IP address from which the request for each child process came:
+        self.parents = {}
+        # Children whose parents have called __del__ but which are still alive:
+        self.orphans = set()
+
+        ZMQServer.__init__(
+            self,
+            port=port,
+            bind_address=bind_address,
+            shared_secret=shared_secret,
+            allow_insecure=allow_insecure,
+            timeout_interval=1,
+        )
+        setup_logging(silent)
+        msg = 'This is zprocess-remote server, running on %s:%d'
+        logging.info(msg, self.bind_address, self.port)
+
+    def timeout(self):
+        # Poll orphans so we can delete them if they are closed
+        for pid in self.orphans.copy():
+            rc = self.children[pid].poll()
+            if rc is not None:
+                logging.info('orphan %d exited', pid)
+                # Child is dead, clean up:
+                del self.children[pid]
+                del self.parents[pid]
+                self.orphans.remove(pid)
 
     def proxy_terminate(self, pid):
         return self.children[pid].terminate()
@@ -87,18 +114,32 @@ class RemoteProcessServer(ZMQServer):
         return self.client.returncode
 
     def proxy___del__(self, pid):
-        del self.children[pid]
+        child = self.children[pid]
+        rc = child.poll()
+        if rc is None:
+            # Process still running, but deleted by parent. Mark it as an orphan for
+            # later cleanup
+            logging.info('%d is an orphan', pid)
+            self.orphans.add(pid)
+        else:
+            del self.children[pid]
+            del self.parents[pid]
 
     def proxy_Popen(self, cmd, *args, **kwargs):
         if kwargs.pop('prepend_sys_executable', False):
             cmd = [sys.executable] + cmd
+        if any(kwarg in kwargs for kwarg in ['stdout', 'stdin', 'stderr']):
+            msg = "Cannot specify stdout, stdin or stderr for remote process."
+            raise ValueError(msg)
+        kwargs['stdout'] = kwargs['stdin'] = kwargs['stderr'] = subprocess.DEVNULL
         child = subprocess.Popen(cmd, *args, **kwargs)
         self.children[child.pid] = child
+        self.parents[child.pid] = self.sock.peer_ip
         return child.pid
 
     def handler(self, data):
         command, args, kwargs = data
-        logging.info('%s: %s' % (self.sock.peer_ip, command))
+        logging.info('%s: %s', self.sock.peer_ip, command)
         if hasattr(self, 'proxy_' + command):
             return getattr(self, 'proxy_' + command)(*args, **kwargs)
         elif command == 'whoami':
