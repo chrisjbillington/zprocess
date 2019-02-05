@@ -13,6 +13,7 @@ if __package__ is None:
 
 from zprocess.remote import DEFAULT_PORT
 from zprocess.remote.server import RemoteProcessServer
+from zprocess.utils import disable_quick_edit
 
 
 def main():
@@ -31,7 +32,7 @@ def main():
     )
 
     parser.add_argument(
-        '-t',
+        '-tui',
         '--text-interface',
         action='store_true',
         help="""Run as a text-based interface showing subprocesses and clients""",
@@ -76,6 +77,8 @@ def main():
         )
         server.shutdown_on_interrupt()
 
+    disable_quick_edit()
+    
     if args.text_interface:
         import curses
         locale.setlocale(locale.LC_ALL, '')

@@ -26,6 +26,7 @@ from zprocess.zlog.server import (
     RotatingFileHandler,
     TimedRotatingFileHandler,
 )
+from zprocess.utils import disable_quick_edit
 
 
 # Protocol description:
@@ -175,6 +176,7 @@ def main():
     server = ZMQLogServer(
         port, handler_class=handler_class, handler_kwargs=handler_kwargs
     )
+    disable_quick_edit()
     try:
         server.run()
     except KeyboardInterrupt:
