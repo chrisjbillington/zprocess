@@ -110,6 +110,15 @@ def main():
                         help='The port to listen on. Default: %d' % DEFAULT_PORT)
 
     parser.add_argument(
+        '-a',
+        '--bind-address',
+        type=str,
+        default='0.0.0.0',
+        help="""Interface to listen on. Set to 0.0.0.0 (default) for all interfaces, or
+        127.0.0.1 for localhost only.""",
+    )
+
+    parser.add_argument(
         '-c',
         '--cls',
         type=str,
@@ -148,12 +157,30 @@ def main():
     )
 
     parser.add_argument(
-        '-i',
+        '-t',
         '--interval',
         type=int,
         default=1,
         help="""If using TimedRotatingFileHandler, the value of 'interval'
            to pass to its constructor. Default: 1.""",
+    )
+
+    parser.add_argument(
+        '-s',
+        '--shared-secret-file',
+        type=str,
+        default=None,
+        help="""Filepath to the shared secret used for secure communication.""",
+    )
+
+    parser.add_argument(
+        '-i',
+        '--allow-insecure',
+        action='store_true',
+        help="""Must be set to acknowledge that communication will be insecure if
+        listening on public interfaces and not using a shared secret. Currently set to
+        True by default for compatibility, but this will be set to False in zprocess
+        version 3.""",
     )
 
     args = parser.parse_args()
@@ -173,8 +200,20 @@ def main():
             'backupCount': args.backupCount,
         }
     
+    if args.shared_secret_file is None:
+        shared_secret = None
+    else:
+        shared_secret = open(args.shared_secret_file).read().strip()
+    allow_insecure = args.allow_insecure
+    bind_address ='tcp://' + args.bind_address
+
     server = ZMQLogServer(
-        port, handler_class=handler_class, handler_kwargs=handler_kwargs
+        port=port,
+        bind_address=bind_address,
+        handler_class=handler_class,
+        handler_kwargs=handler_kwargs,
+        shared_secret=shared_secret,
+        allow_insecure=True # TODO deprecate in zprocess 3
     )
     disable_quick_edit()
     try:

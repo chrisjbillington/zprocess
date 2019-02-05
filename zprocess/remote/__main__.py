@@ -24,18 +24,20 @@ def main():
                         help='The port to listen on. Default: %d' % DEFAULT_PORT)
 
     parser.add_argument(
+        '-a',
+        '--bind-address',
+        type=str,
+        default='0.0.0.0',
+        help="""Interface to listen on. Set to 0.0.0.0 (default) for all interfaces, or
+        127.0.0.1 for localhost only.""",
+    )
+
+    parser.add_argument(
         '-i',
         '--allow-insecure',
         action='store_true',
         help="""Must be set to acknowledge that communication will be insecure if not
         using a shared secret.""",
-    )
-
-    parser.add_argument(
-        '-tui',
-        '--text-interface',
-        action='store_true',
-        help="""Run as a text-based interface showing subprocesses and clients""",
     )
 
     parser.add_argument(
@@ -45,6 +47,14 @@ def main():
         default=None,
         help="""Filepath to the shared secret used for secure communication.""",
     )
+
+    parser.add_argument(
+        '-tui',
+        '--text-interface',
+        action='store_true',
+        help="""Run as a text-based interface showing subprocesses and clients""",
+    )
+
     args = parser.parse_args()
 
     port = args.port
@@ -54,8 +64,12 @@ def main():
         shared_secret = open(args.shared_secret_file).read().strip()
     allow_insecure = args.allow_insecure
 
-    if not allow_insecure and shared_secret is None:
-        parser.error('Must either provide shared secret file or specify --allow-insecure.')
+    if args.shared_secret_file is None:
+        shared_secret = None
+    else:
+        shared_secret = open(args.shared_secret_file).read().strip()
+    allow_insecure = args.allow_insecure
+    bind_address ='tcp://' + args.bind_address
 
 
     def run_curses(stdscr):
@@ -72,20 +86,25 @@ def main():
         server = RemoteProcessServerCurses(
             stdscr,
             port=port,
+            bind_address=bind_address,
             shared_secret=shared_secret,
-            allow_insecure=allow_insecure,
+            allow_insecure=True, # TODO deprecate in zprocess 3
         )
         server.shutdown_on_interrupt()
 
     disable_quick_edit()
-    
+
     if args.text_interface:
         import curses
+    
         locale.setlocale(locale.LC_ALL, '')
         curses.wrapper(run_curses)
     else:
         server = RemoteProcessServer(
-            port=port, shared_secret=shared_secret, allow_insecure=allow_insecure
+            port=port,
+            bind_address=bind_address,
+            shared_secret=shared_secret,
+            allow_insecure=True, # TODO deprecate in zprocess 3
         )
         server.shutdown_on_interrupt()
 
