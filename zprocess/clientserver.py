@@ -110,13 +110,14 @@ class ZMQServer(object):
             else:
                 self.sock = self.context.socket(zmq.REP,
                                                 allow_insecure=allow_insecure)
-
+        self.poller = zmq.Poller()
         self.sock.setsockopt(zmq.LINGER, 0)
 
         if self.port is not None:
             self.sock.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.sock.bind_to_random_port(self.bind_address)
+        self.poller.register(self.sock, zmq.POLLIN)
 
         if self.dtype == 'raw':
             self.send = self.sock.send
@@ -170,7 +171,7 @@ class ZMQServer(object):
                 if next_timeout is not None:
                     timeout = next_timeout - time.time()
                     timeout = max(0, timeout)
-                    events = self.sock.poll(int(timeout*1000))
+                    events = self.poller.poll(int(timeout*1000))
                     if not events:
                         # Timed out. Run our timeout method
                         self.timeout()
@@ -213,7 +214,11 @@ class ZMQServer(object):
                     response_data = _typecheck_or_convert_data(response_data,
                                                                self.dtype)
             if not self.pull_only:
-                self.send(response_data)
+                try:
+                    self.send(response_data)
+                except zmq.ContextTerminated:
+                    self.sock.close(linger=0)
+                    return
 
     def shutdown(self):
         self.context.term()
