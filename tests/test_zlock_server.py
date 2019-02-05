@@ -13,7 +13,7 @@ if PY2:
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-from zprocess.locking.server import (
+from zprocess.zlock.server import (
     ZMQLockServer,
     Lock,
     NotHeld,
@@ -27,7 +27,7 @@ from zprocess.locking.server import (
     ERR_TIMEOUT_INVALID,
     ERR_READ_ONLY_WRONG,
 )
-import zprocess.locking.server
+import zprocess.zlock.server
 
 
 class monkeypatch(object):
@@ -242,7 +242,7 @@ class ZLockServerTests(unittest.TestCase):
             reader.acquire(read_only=True)
             reader.assertReceived(b'ok')
             # Speed up the response:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Another writer tries to acquire but is told to retry
                 mind_changer.acquire()
                 mind_changer.assertReceived(b'retry')
@@ -264,7 +264,7 @@ class ZLockServerTests(unittest.TestCase):
             writer1.acquire()
             writer1.assertReceived(b'ok')
             # Speed up the response:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Another client tries to acquire but is told to retry
                 writer2.acquire()
                 writer2.assertReceived(b'retry')
@@ -286,13 +286,13 @@ class ZLockServerTests(unittest.TestCase):
             client1.acquire()
             client1.assertReceived(b'ok')
             # Speed up the response:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Second client tries to acquire the lock, but is told to retry:
                 client2.acquire()
             client2.assertReceived(b'retry')
             # Before the second client retries, the first client releases the lock.
             # The second client should now have the lock in absentia.
-            with monkeypatch(zprocess.locking.server, 'MAX_ABSENT_TIME', 0.2):
+            with monkeypatch(zprocess.zlock.server, 'MAX_ABSENT_TIME', 0.2):
                 client1.release()
                 client1.assertReceived(b'ok')
             # Before the second client retries, the first client asks for the lock
@@ -347,7 +347,7 @@ class ZLockServerTests(unittest.TestCase):
         reader = self.client(b'key_foo', b'reader')
         writer = self.client(b'key_foo', b'writer')
         with reader, writer:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Reader acquires the lock:
                 reader.acquire()
                 reader.assertReceived(b'ok')
@@ -381,7 +381,7 @@ class ZLockServerTests(unittest.TestCase):
         reader = self.client(b'key_foo', b'reader')
         writer = self.client(b'key_foo', b'writer')
         with reader, writer:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Reader acquires the lock:
                 reader.acquire(read_only=True)
                 reader.assertReceived(b'ok')
@@ -468,7 +468,7 @@ class ZLockServerTests(unittest.TestCase):
             client1.acquire()
             client1.assertReceived(b'ok')
             # Speed up the response:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Second client tries to acquire the lock, but is told to retry:
                 client2.acquire()
             client2.assertReceived(b'retry')
@@ -487,7 +487,7 @@ class ZLockServerTests(unittest.TestCase):
             writer1.acquire()
             writer1.assertReceived(b'ok')
             # Speed up the response:
-            with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
+            with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
                 # Second client tries to acquire the lock but is told to retry:
                 writer2.acquire()
                 writer2.assertReceived(b'retry')
@@ -508,8 +508,8 @@ class ZLockServerTests(unittest.TestCase):
                 client1.acquire()
                 client1.assertReceived(b'ok')
                 # Speed up the response and away timeout:
-                with monkeypatch(zprocess.locking.server, 'MAX_RESPONSE_TIME', 0.1):
-                    with monkeypatch(zprocess.locking.server, 'MAX_ABSENT_TIME', 0.1):
+                with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
+                    with monkeypatch(zprocess.zlock.server, 'MAX_ABSENT_TIME', 0.1):
                         # Second client tries to acquire the lock but is told to retry:
                         client2.acquire(read_only=read_only)
                         client2.assertReceived(b'retry')
