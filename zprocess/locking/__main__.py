@@ -25,6 +25,7 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
 
 import zprocess.locking as zlock
 from zprocess.locking.server import ZMQLockServer
+from zprocess.utils import disable_quick_edit
 
 
 # Protocol description:
@@ -118,6 +119,7 @@ def main():
         port = zlock.DEFAULT_PORT
 
     server = ZMQLockServer(port)
+    disable_quick_edit()
     try:
         server.run()
     except KeyboardInterrupt:
