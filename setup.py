@@ -26,7 +26,9 @@ if sys.version_info.major == 2:
     dependencies.append('subprocess32')
     dependencies.append('enum34')
 if os.name == 'nt':
+    # Windows-specific modules:
     dependencies.append('pywin32')
+    dependencies.append('windows-curses')
 
 setup(name='zprocess',
       version=VERSION,
