@@ -14,10 +14,7 @@ from __future__ import division, unicode_literals, print_function, absolute_impo
 import sys
 import os
 
-if sys.version_info[0] == 2:
-    import ConfigParser as configparser
-else:
-    import configparser
+import argparse
 
 # Ensure zprocess is in the path if we are running from this directory
 if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
@@ -110,15 +107,55 @@ from zprocess.utils import disable_quick_edit
 #
 
 def main():
-    try:
-        from labscript_utils.labconfig import LabConfig
-        port = int(LabConfig().get('ports', 'zlock'))
-    except (ImportError, IOError, configparser.NoOptionError, ValueError):
-        msg = "Couldn't get port setting from LabConfig. Using default port."
-        print(msg, file=sys.stderr)
-        port = zlock.DEFAULT_PORT
 
-    server = ZMQLockServer(port)
+    parser = argparse.ArgumentParser(description="zprocess.locking server.")
+
+    parser.add_argument('-p', '--port', type=int, default=zlock.DEFAULT_PORT,
+                        help='The port to listen on. Default: %d' % zlock.DEFAULT_PORT)
+
+    parser.add_argument(
+        '-a',
+        '--bind-address',
+        type=str,
+        default='0.0.0.0',
+        help="""Interface to listen on. Set to 0.0.0.0 (default) for all interfaces, or
+        127.0.0.1 for localhost only.""",
+    )
+
+    parser.add_argument(
+        '-s',
+        '--shared-secret-file',
+        type=str,
+        default=None,
+        help="""Filepath to the shared secret used for secure communication.""",
+    )
+
+    parser.add_argument(
+        '-i',
+        '--allow-insecure',
+        action='store_true',
+        help="""Must be set to acknowledge that communication will be insecure if
+        listening on public interfaces and not using a shared secret. Currently set to
+        True by default for compatibility, but this will be set to False in zprocess
+        version 3.""",
+    )
+
+    args = parser.parse_args()
+
+    port = args.port
+    if args.shared_secret_file is None:
+        shared_secret = None
+    else:
+        shared_secret = open(args.shared_secret_file).read().strip()
+    allow_insecure = args.allow_insecure
+    bind_address ='tcp://' + args.bind_address
+
+    server = ZMQLockServer(
+        port=port,
+        bind_address=bind_address,
+        shared_secret=shared_secret,
+        allow_insecure=True, # TODO: deprecate in zprocess 3
+    )
     disable_quick_edit()
     try:
         server.run()
