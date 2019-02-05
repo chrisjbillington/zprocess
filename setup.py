@@ -37,6 +37,6 @@ setup(name='zprocess',
       author_email='chrisjbillington@gmail.com',
       url='https://bitbucket.org/cbillington/zprocess/',
       license="BSD",
-      packages=['zprocess', 'zprocess.locking', 'zprocess.zlog'],
+      packages=['zprocess', 'zprocess.locking', 'zprocess.zlog', 'zprocess.remote'],
       install_requires=dependencies
      )
