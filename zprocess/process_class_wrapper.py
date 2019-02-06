@@ -26,7 +26,7 @@ def _setup():
         sys.path.insert(0, parent_dir)
 
     from zprocess import ProcessTree
-    process_tree = ProcessTree.connect_to_parent(lock=True)
+    process_tree = ProcessTree.connect_to_parent()
     module_name, module_filepath, syspath = process_tree.from_parent.get()
     if (module_name, module_filepath, syspath) != (None, None, None):
         # Set sys.path so that all modules imported in the user's code are

@@ -62,6 +62,9 @@ class ZLockClient(object):
         self.process_name = process_name
         self.thread_name = threading.local()
 
+    def set_default_timeout(self, timeout):
+        self.default_timeout = timeout
+        
     def _new_socket(self):
         # Every time the REQ/REP cadence is broken, we need to create
         # and bind a new socket to get it back on track. Also, we have
