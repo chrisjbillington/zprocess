@@ -11,7 +11,7 @@
 from setuptools import setup
 import os
 
-VERSION = '2.11.0'
+VERSION = '2.11.1'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
@@ -30,13 +30,20 @@ if os.name == 'nt':
     dependencies.append('pywin32')
     dependencies.append('windows-curses')
 
-setup(name='zprocess',
-      version=VERSION,
-      description="A set of utilities for multiprocessing using zeromq.",
-      author='Chris Billington',
-      author_email='chrisjbillington@gmail.com',
-      url='https://bitbucket.org/cbillington/zprocess/',
-      license="BSD",
-      packages=['zprocess', 'zprocess.locking', 'zprocess.zlog', 'zprocess.remote'],
-      install_requires=dependencies
-     )
+setup(
+    name='zprocess',
+    version=VERSION,
+    description="A set of utilities for multiprocessing using zeromq.",
+    author='Chris Billington',
+    author_email='chrisjbillington@gmail.com',
+    url='https://bitbucket.org/cbillington/zprocess/',
+    license="BSD",
+    packages=[
+        'zprocess',
+        'zprocess.zlock',
+        'zprocess.locking',
+        'zprocess.zlog',
+        'zprocess.remote',
+    ],
+    install_requires=dependencies,
+)
