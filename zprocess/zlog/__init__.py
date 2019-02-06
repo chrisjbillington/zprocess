@@ -84,6 +84,8 @@ class ZLogClient(object):
             response = self.local.sock.recv_multipart()
             if len(response) != 2 or response[0] != b'':
                 raise zmq.ZMQError('Malformed message from server: ' + str(response))
+            if response[1].startswith(b'error:'):
+                raise ValueError(response[1].decode('utf8'))
             return response[1]
         except:
             self.local.sock.close(linger=False)
@@ -160,7 +162,7 @@ class ZMQLoggingHandler(Handler):
         # A unique ID so that the server can identify us:
         self.client_id = uuid.uuid4().hex.encode('utf8')
         Handler.__init__(self)
-        check_access(self.filepath)
+        self.client.check_access(self.filepath)
 
     def close(self):
         """Tell the server we're done with the file. It will know to close the file once

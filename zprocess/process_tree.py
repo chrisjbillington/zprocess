@@ -74,12 +74,9 @@ class HeartbeatClient(object):
 
     """A heartbeating thread that terminates the process if it doesn't get the
     heartbeats back within one second, unless a lock is held."""
-    def __init__(self, server_host, server_port, lock=False,
+    def __init__(self, server_host, server_port,
                  shared_secret=None, allow_insecure=False):
-        if lock:
-            self.lock = threading.Lock()
-        else:
-            self.lock = None
+        self.lock = threading.Lock()
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REQ, allow_insecure=allow_insecure)
         self.sock.setsockopt(zmq.LINGER, 0)
@@ -107,10 +104,7 @@ class HeartbeatClient(object):
                 if not msg == pid:
                     break
             # sys.stderr.write('Heartbeat failure\n')
-            if self.lock is not None:
-                with self.lock:
-                    os.kill(os.getpid(), signal.SIGTERM)
-            else:
+            with self.lock:
                 os.kill(os.getpid(), signal.SIGTERM)
         except zmq.ContextTerminated:
             # Shutting down:
@@ -748,6 +742,11 @@ class Process(object):
 
 
 class ProcessTree(object):
+    # __instance will be set to an an instance of ProcessTree after a subprocess sets up
+    # its connection with the parent, configured with the details inherited from the
+    # parent process. It will not be set in the top-level process. It can be accessed
+    # with ProcessTree.instance() and is name-mangled to be class-private.
+    __instance = None
     def __init__(
         self,
         shared_secret=None,
@@ -792,6 +791,10 @@ class ProcessTree(object):
                 shared_secret=self.shared_secret,
                 allow_insecure=self.allow_insecure,
             )
+
+    @classmethod
+    def instance(cls):
+        return ProcessTree.__instance
 
     def check_broker(self):
         if self.broker_in_port is None:
@@ -896,8 +899,8 @@ class ProcessTree(object):
             'zlock_host': self.zlock_host,
             'zlock_port': self.zlock_port,
             'zlock_process_name': zlock_process_name,
-            'zlog_host': self.zlock_host,
-            'zlog_port': self.zlock_port,
+            'zlog_host': self.zlog_host,
+            'zlog_port': self.zlog_port,
         }
 
         if remote_process_client is not None:
@@ -935,7 +938,7 @@ class ProcessTree(object):
 
         return to_child, from_child, child
 
-    def _connect_to_parent(self, lock, parentinfo):
+    def _connect_to_parent(self, parentinfo):
 
         if self.zlock_client is not None:
             name = parentinfo['zlock_process_name']
@@ -975,11 +978,12 @@ class ProcessTree(object):
 
         heartbeat_server_host = parentinfo['heartbeat_server_host']
         heartbeat_server_port = parentinfo['heartbeat_server_port']
-        self.heartbeat_client = HeartbeatClient(heartbeat_server_host,
-                                                heartbeat_server_port,
-                                                shared_secret=self.shared_secret,
-                                                allow_insecure=self.allow_insecure,
-                                                lock=lock)
+        self.heartbeat_client = HeartbeatClient(
+            heartbeat_server_host,
+            heartbeat_server_port,
+            shared_secret=self.shared_secret,
+            allow_insecure=self.allow_insecure,
+        )
 
         self.broker_host = parentinfo['broker_host']
         self.broker_in_port = parentinfo['broker_in_port']
@@ -987,7 +991,10 @@ class ProcessTree(object):
         self.kill_lock = self.heartbeat_client.lock
 
     @classmethod
-    def connect_to_parent(cls, lock=False):
+    def connect_to_parent(cls):
+        if ProcessTree.__instance is not None:
+            msg = "Cannot connect_to_parent() twice"
+            raise ValueError(msg)
         for i, arg in enumerate(sys.argv):
             if arg == '--zprocess-parentinfo':
                 parentinfo = json.loads(sys.argv[i+1])
@@ -1005,8 +1012,9 @@ class ProcessTree(object):
             zlog_port=parentinfo['zlog_port'],
         )
 
-        process_tree._connect_to_parent(lock, parentinfo)
+        process_tree._connect_to_parent(parentinfo)
 
+        ProcessTree.__instance = process_tree
         return process_tree
 
 
@@ -1056,7 +1064,7 @@ class Process(_Process):
 # ProcessTree. This is the old way, returning queues and (optionally) a lock
 # instead:
 def setup_connection_with_parent(lock=False):
-    process_tree = ProcessTree.connect_to_parent(lock)
+    process_tree = ProcessTree.connect_to_parent()
     # Set as the default for this process:
     global _default_process_tree
     _default_process_tree = process_tree
