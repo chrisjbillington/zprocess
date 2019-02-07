@@ -759,9 +759,7 @@ class Process(object):
         self.from_parent = self.process_tree.from_parent
         self.kill_lock = self.process_tree.kill_lock
         args, kwargs = self.from_parent.get()
-        print('about to run()')
         self.run(*args, **kwargs)
-        print('ran')
 
     def terminate(self):
         try:
