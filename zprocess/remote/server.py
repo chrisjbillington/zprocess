@@ -50,7 +50,7 @@ class RemoteProcessServer(ZMQServer):
         )
         setup_logging('zprocess-remote', silent)
         if not silent:
-            self.socket.logger = logging.getLogger()
+            self.sock.logger = logging.getLogger()
         msg = 'This is zprocess-remote server, running on %s:%d'
         logging.info(msg, self.bind_address, self.port)
 
