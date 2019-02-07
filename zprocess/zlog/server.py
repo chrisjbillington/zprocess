@@ -15,6 +15,7 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
 
 from zprocess.tasks import Task, TaskQueue
 from zprocess.security import SecureContext
+from zprocess.utils import setup_logging
 
 # If no client writes to a file in this time, we close it:
 FILE_CLOSE_TIMEOUT = 5
@@ -23,39 +24,6 @@ ERR_INVALID_COMMAND = b'error: invalid command'
 ERR_WRONG_NUM_ARGS = b'error: wrong number of arguments'
 ERR_BAD_ENCODING = b'error: filepath not UTF8 encoded or contains nulls'
 PROTOCOL_VERSION = '1.0.0'
-
-
-def setup_logging(silent=False):
-    if os.name == 'nt':
-        logpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zlog.log')
-    else:
-        logpath = '/var/log/zlog.log'
-
-    handlers = []
-    if not silent:
-        try:
-            handler = logging.handlers.RotatingFileHandler(
-                logpath, maxBytes=50 * 1024 ** 2, backupCount=1
-            )
-            handlers.append(handler)
-            file_handler_success = True
-        except (OSError, IOError):
-            file_handler_success = False
-        if sys.stdout is not None and sys.stdout.isatty():
-            handlers.append(logging.StreamHandler(sys.stdout))
-    kwargs = dict(
-        format='[%(asctime)s] %(levelname)s: %(message)s',
-        level=logging.DEBUG,
-        handlers=handlers,
-    )
-    if silent:
-        del kwargs['handlers']
-        kwargs['filename'] = os.devnull
-    logging.basicConfig(**kwargs)
-    if not silent and file_handler_success:
-        msg = 'Can\'t open or do not have permission to write to log file '
-        msg += logpath + '. Only terminal logging will be output.'
-        logging.warning(msg)
 
 
 def _format_exc():
@@ -140,7 +108,7 @@ class ZMQLogServer(object):
     def __init__(
         self,
         port=None,
-        bind_address='tcp://127.0.0.1',
+        bind_address='tcp://0.0.0.0',
         silent=False,
         handler_class=FileHandler,
         handler_kwargs=None,
@@ -275,7 +243,10 @@ class ZMQLogServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        setup_logging(self.silent)
+        setup_logging('zlog', self.silent)
+        if not self.silent:
+            # Log insecure connection attempts:
+            self.router.logger = logging.getLogger()
         msg = 'This is zlog server, running on %s:%d'
         logging.info(msg, self.bind_address, self.port)
         self.running = True

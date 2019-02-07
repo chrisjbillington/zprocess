@@ -9,6 +9,8 @@ import time
 DEFAULT_PORT = 7341
 PROTOCOL_VERSION = '1.0.0'
 
+from zprocess import ZMQServer
+
 
 class RemoteChildProxy(object):
     def __init__(self, remote_process_client, pid):
@@ -84,3 +86,40 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
 
     def get_protocol(self):
         return self.request('protocol')
+
+
+class RemoteOutputReceiver(ZMQServer):
+    """Class to recieve stdout and stderr from remote subprocesses that do not otherwise
+    have output redirection configured, and print them to our stdout/stderr."""
+
+    def __init__(
+        self,
+        port=None,
+        bind_address='tcp://0.0.0.0',
+        shared_secret=None,
+        allow_insecure=False,
+    ):
+        ZMQServer.__init__(
+            self,
+            port=port,
+            dtype='multipart',
+            pull_only=True,
+            bind_address=bind_address,
+            shared_secret=shared_secret,
+            allow_insecure=allow_insecure,
+        )
+
+    def handler(self, data):
+        charformat_repr, text = data
+        # Print stderr to stderr and anything else to stdout regardless of
+        # the charformat
+        if charformat_repr == b'stderr':
+            if PY2:
+                sys.stderr.write(text)
+            else:
+                sys.stderr.buffer.write(text)  # Since it is binary data
+        else:
+            if PY2:
+                sys.stdout.write(text)
+            else:
+                sys.stdout.buffer.write(text)  # Since it is binary data

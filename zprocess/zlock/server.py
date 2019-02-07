@@ -5,7 +5,6 @@ import threading
 from collections import defaultdict
 import enum
 import logging
-from logging.handlers import RotatingFileHandler
 
 try:
     from time import monotonic
@@ -19,6 +18,7 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from zprocess.tasks import Task, TaskQueue
+from zprocess.utils import setup_logging
 from zprocess.security import SecureContext
 
 MAX_RESPONSE_TIME = 1  # second
@@ -52,31 +52,6 @@ class NotHeld(ValueError):
 def _ds(s):
     """Decode a bytestring for printing"""
     return s.decode("utf-8", "backslashreplace")
-
-
-def setup_logging():
-    if os.name == 'nt':
-        logpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zlock.log')
-    else:
-        logpath = '/var/log/zlock.log'
-    handlers = []
-    try:
-        handler = RotatingFileHandler(logpath, maxBytes=50 * 1024 ** 2, backupCount=1)
-        handlers.append(handler)
-        file_handler_success = True
-    except IOError:
-        file_handler_success = False
-    if sys.stdout is not None and sys.stdout.isatty():
-        handlers.append(logging.StreamHandler(sys.stdout))
-    logging.basicConfig(
-        format='[%(asctime)s] %(levelname)s: %(message)s',
-        level=logging.DEBUG,
-        handlers=handlers,
-    )
-    if not file_handler_success:
-        msg = 'Can\'t open or do not have permission to write to log file '
-        msg += logpath + '. Only terminal logging will be output.'
-        logging.warning(msg)
 
 
 class Lock(object):
@@ -463,10 +438,12 @@ class ZMQLockServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        if not self.silent:  # pragma: no cover
-            setup_logging()
-            msg = 'This is zlock server, running on %s:%d'
-            logging.info(msg, self.bind_address, self.port)
+        setup_logging('zlock', self.silent)
+        if not self.silent:
+            # Log insecure connection attempts:
+            self.router.logger = logging.getLogger()
+        msg = 'This is zlock server, running on %s:%d'
+        logging.info(msg, self.bind_address, self.port)
         self.running = True
         self.started.set()
         while True:
