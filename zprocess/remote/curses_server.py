@@ -189,13 +189,17 @@ class RemoteProcessServerCurses(RemoteProcessServer):
         else:
             nloglines = 0
         if nloglines:
+            log_start_pos = scr_height - 3 - nloglines
             if self.tab == SPLIT_VIEW:
-                self.addstr(scr_height - 3 - nloglines, 0, '-' * scr_width)
+                self.addstr(log_start_pos, 0, '-' * scr_width)
             loglines = self.loglines.get_tail(nloglines, scr_width)
             for i, line in enumerate(loglines):
-                self.addstr(scr_height - 2 - nloglines + i, 0, line)
-
+                self.addstr(log_start_pos + 1 + i, 0, line)
+        if self.tab == LOG_VIEW:
+            return
         lines = self.get_lines()
+        if nloglines:
+            ymax = log_start_pos - 1
         # restrict scroll area
         self.currpos[0] = max(min(self.currpos[0], max(len(lines) - (ymax - ymin + 1), 0)), 0)
         self.currpos[1] = max(min(self.currpos[1], max(self.linelen_max - scr_width, 0)), 0)
