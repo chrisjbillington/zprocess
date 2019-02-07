@@ -80,6 +80,7 @@ class RemoteProcessServerCurses(RemoteProcessServer):
         sys.stdout = OutputCapturer(self, 'stdout')
         sys.stdout = OutputCapturer(self, 'stderr')
         RemoteProcessServer.__init__(self, *args, **kwargs)
+        curses.use_default_colors()
         self.update_screen()
 
     def handler(self, *args, **kwargs):
