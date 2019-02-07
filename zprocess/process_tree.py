@@ -28,7 +28,11 @@ import zprocess
 from zprocess.clientserver import ZMQClient
 from zprocess.security import SecureContext
 from zprocess.utils import TimeoutError
-from zprocess.remote import RemoteProcessClient, DEFAULT_PORT as REMOTE_DEFAULT_PORT
+from zprocess.remote import (
+    RemoteProcessClient,
+    RemoteOutputReceiver,
+    DEFAULT_PORT as REMOTE_DEFAULT_PORT,
+)
 from zprocess.locking import ZLockClient, DEFAULT_PORT as ZLOCK_DEFAULT_PORT
 from zprocess.zlog import ZLogClient, DEFAULT_PORT as ZLOG_DEFAULT_PORT
 
@@ -333,6 +337,29 @@ class ReadQueue(object):
             self.to_self_sock.send_pyobj(obj, protocol=zprocess.PICKLE_PROTOCOL)
 
 
+class _StreamProxyBuffer(object):
+    def __init__(self, streamproxy):
+        self.streamproxy = streamproxy
+
+    def close(self):
+        return self.streamproxy.close()
+
+    def fileno(self):
+        return self.streamproxy.fileno()
+
+    def isatty(self):
+        return self.streamproxy.isatty()
+
+    def flush(self):
+        return self.streamproxy.flush()
+
+    def write(self, data):
+        """Compatibility for code calling stdout.buffer.write etc"""
+        if not isinstance(data, bytes):
+            raise TypeError("Can only write bytes to buffer")
+        return self.streamproxy.write(data)
+
+
 class StreamProxy(object):
 
     # Declare that our write() method accepts a 'charformat' kwarg for specifying
@@ -351,10 +378,16 @@ class StreamProxy(object):
             self.sched_yield = libpthread.sched_yield
         else:
             self.sched_yield = lambda: time.sleep(0)
+        self.buffer = _StreamProxyBuffer(self)
 
     def write(self, s, charformat=None):
         if isinstance(s, str):
-            s = s.encode('utf8')
+            if PY2:
+                s = s.encode('utf8')
+            else:
+                # Allow binary data embedded in the unicode string via surrogate escapes
+                # to turn back into the bytes it originally represented:
+                s = s.encode('utf8', errors='surrogateescape')
         if charformat is None:
             charformat = self.streamname_bytes
         elif isinstance(charformat, str):
@@ -726,7 +759,9 @@ class Process(object):
         self.from_parent = self.process_tree.from_parent
         self.kill_lock = self.process_tree.kill_lock
         args, kwargs = self.from_parent.get()
+        print('about to run()')
         self.run(*args, **kwargs)
+        print('ran')
 
     def terminate(self):
         try:
@@ -738,7 +773,11 @@ class Process(object):
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by
         subclasses"""
-        pass
+        print("This is the run() method of the default zprocess Process class.")
+        print("Subclass Process and override this method with your own code "
+              "to be run in a subprocess")
+        import time
+        time.sleep(1)
 
 
 class ProcessTree(object):
@@ -770,6 +809,7 @@ class ProcessTree(object):
         self.heartbeat_client = None
         self.output_redirection_host = None
         self.output_redirection_port = None
+        self.remote_output_receiver = None
         self.to_parent = None
         self.from_parent = None
         self.kill_lock = None
@@ -875,10 +915,24 @@ class ProcessTree(object):
             if output_redirection_port is not None:
                 # Port provided but no host. Assume this host.
                 output_redirection_host = 'localhost'
-            else:
-                # No output redirection specified. Use existing redirection, if any.
+            elif self.output_redirection_port is not None:
+                # No redirection specified. Use existing redirection.
                 output_redirection_host = self.output_redirection_host
                 output_redirection_port = self.output_redirection_port
+            elif remote_process_client is not None:
+                # No existing redirection, and process is remote. Redirect its output to
+                # our own stdout using a RemoteOutputReceiver.
+                if self.remote_output_receiver is None:
+                    self.remote_output_receiver = RemoteOutputReceiver(
+                        shared_secret=self.shared_secret,
+                        allow_insecure=self.allow_insecure,
+                    )
+                output_redirection_host = 'localhost'
+                output_redirection_port = self.remote_output_receiver.port
+            else:
+                # No existing redirection, process is local. Do not do any redirection.
+                output_redirection_host = None
+                output_redirection_port = None
 
         # Note. Any entries in the below dict containing a hostname or IP address must
         # have a key ending in '_host', in order for the below code to translate them

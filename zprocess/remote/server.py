@@ -16,41 +16,11 @@ if __package__ is None:
 
 import zprocess
 from zprocess import ZMQServer
-from zprocess.remote import DEFAULT_PORT, PROTOCOL_VERSION
+from zprocess.utils import setup_logging
+from zprocess.remote import PROTOCOL_VERSION
 
 ERR_INVALID_COMMAND = 'error: invalid command'
-
-def setup_logging(silent=False):
-    if os.name == 'nt':
-        logpath = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'zprocess-remote.log')
-    else:
-        logpath = '/var/log/zprocess-remote.log'
-
-    handlers = []
-    if not silent:
-        try:
-            handler = logging.handlers.RotatingFileHandler(
-                logpath, maxBytes=50 * 1024 ** 2, backupCount=1
-            )
-            handlers.append(handler)
-            file_handler_success = True
-        except (OSError, IOError):
-            file_handler_success = False
-        if sys.stdout is not None and sys.stdout.isatty():
-            handlers.append(logging.StreamHandler(sys.stdout))
-    kwargs = dict(
-        format='[%(asctime)s] %(levelname)s: %(message)s',
-        level=logging.DEBUG,
-        handlers=handlers,
-    )
-    if silent:
-        del kwargs['handlers']
-        kwargs['filename'] = os.devnull
-    logging.basicConfig(**kwargs)
-    if not silent and file_handler_success:
-        msg = 'Can\'t open or do not have permission to write to log file '
-        msg += logpath + '. Only terminal logging will be output.'
-        logging.warning(msg)
+ERR_NO_SUCH_PROCESS = 'error: no such process'
 
 
 class RemoteProcessServer(ZMQServer):
@@ -78,7 +48,9 @@ class RemoteProcessServer(ZMQServer):
             allow_insecure=allow_insecure,
             timeout_interval=1,
         )
-        setup_logging(silent)
+        setup_logging('zprocess-remote', silent)
+        if not silent:
+            self.socket.logger = logging.getLogger()
         msg = 'This is zprocess-remote server, running on %s:%d'
         logging.info(msg, self.bind_address, self.port)
 
@@ -103,15 +75,15 @@ class RemoteProcessServer(ZMQServer):
         # We only wait for 10ms - the client can implement a blocking wait by
         # calling multiple times, we don't want to be blocked here:
         try:
-            self.children[pid].wait(0.01)
+            return self.children[pid].wait(0.01)
         except subprocess.TimeoutExpired:
             return None
 
     def proxy_poll(self, pid):
         return self.children[pid].poll()
 
-    def proxy_returncode(self):
-        return self.client.returncode
+    def proxy_returncode(self, pid):
+        return self.children[pid].returncode
 
     def proxy___del__(self, pid):
         child = self.children[pid]
@@ -141,6 +113,13 @@ class RemoteProcessServer(ZMQServer):
         command, args, kwargs = data
         logging.info('%s: %s', self.sock.peer_ip, command)
         if hasattr(self, 'proxy_' + command):
+            if not args:
+                return ERR_INVALID_COMMAND
+            # Check valid pid:
+            if command != 'Popen':
+                pid = args[0]
+                if pid not in self.children:
+                    return ERR_NO_SUCH_PROCESS
             return getattr(self, 'proxy_' + command)(*args, **kwargs)
         elif command == 'whoami':
             # Client is requesting its IP address from our perspective

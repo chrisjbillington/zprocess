@@ -3,10 +3,9 @@ import sys
 import os
 import threading
 import subprocess
-import time
+import logging, logging.handlers
 
 import zmq
-from zmq.utils.monitor import recv_monitor_message
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -157,3 +156,40 @@ def embed():
         else:
             del sys.ps3
         kernel_has_quit.set()
+
+
+def setup_logging(name, silent=False):
+    """Basic logging setup used by zprocess servers. silent=True will configure logging
+    calls to be no-ops."""
+    if os.name == 'nt':
+        logpath = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), '%s.log' % name
+        )
+    else:
+        logpath = '/var/log/%s.log' % name
+
+    handlers = []
+    if not silent:
+        try:
+            handler = logging.handlers.RotatingFileHandler(
+                logpath, maxBytes=50 * 1024 ** 2, backupCount=1
+            )
+            handlers.append(handler)
+            file_handler_success = True
+        except (OSError, IOError):
+            file_handler_success = False
+        if sys.stdout is not None and sys.stdout.isatty():
+            handlers.append(logging.StreamHandler(sys.stdout))
+    kwargs = dict(
+        format='[%(asctime)s] %(levelname)s: %(message)s',
+        level=logging.DEBUG,
+        handlers=handlers,
+    )
+    if silent:
+        del kwargs['handlers']
+        kwargs['filename'] = os.devnull
+    logging.basicConfig(**kwargs)
+    if not silent and file_handler_success:
+        msg = 'Can\'t open or do not have permission to write to log file '
+        msg += logpath + '. Only terminal logging will be output.'
+        logging.warning(msg)

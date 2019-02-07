@@ -83,7 +83,7 @@ def _typecheck_or_convert_data(data, dtype):
 class ZMQServer(object):
     """Wrapper around a zmq.REP or zmq.PULL socket"""
     def __init__(self, port=None, dtype='pyobj', pull_only=False, 
-                 bind_address='tcp://127.0.0.1', shared_secret=None,
+                 bind_address='tcp://0.0.0.0', shared_secret=None,
                  allow_insecure=False, timeout_interval=None):
         self.port = port
         self.dtype = dtype
