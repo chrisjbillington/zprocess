@@ -295,14 +295,16 @@ class SecureContext(zmq.Context):
 
     @classmethod
     def instance(cls, io_threads=1, shared_secret=None):
-        """Returns a shared instance with the same shared secret, if there is
-        one, otherwise creates it. If an instance already exists, io_threads
-        will be ignored, otherwise it will be used in the new instance"""
+        """Returns a shared instance with the same shared secret, if there is one,
+        otherwise creates it. If an instance already exists, io_threads will be ignored,
+        otherwise it will be used in the new instance. Takes into account subclasses
+        such that a subclass calling this method will always get back an instance of its
+        own class"""
         try:
-            return cls._instances[shared_secret]
+            return cls._instances[cls, shared_secret]
         except KeyError:
             instance = cls(io_threads, shared_secret=shared_secret)
-            cls._instances[shared_secret] = instance
+            cls._instances[cls, shared_secret] = instance
             return instance
 
 
