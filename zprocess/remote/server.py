@@ -111,15 +111,21 @@ class RemoteProcessServer(ZMQServer):
 
     def handler(self, data):
         command, args, kwargs = data
-        logging.info('%s: %s', self.sock.peer_ip, command)
         if hasattr(self, 'proxy_' + command):
             if not args:
+                logging.info('%s: invalid command', self.sock.peer_ip)
                 return ERR_INVALID_COMMAND
             # Check valid pid:
             if command != 'Popen':
                 pid = args[0]
                 if pid not in self.children:
+                    logging.info(
+                        '%s: %s: no such process %s', self.sock.peer_ip, command, pid
+                    )
                     return ERR_NO_SUCH_PROCESS
+                logging.info('%s: %s %s', self.sock.peer_ip, command, pid)
+            else:
+                logging.info('%s: %s', self.sock.peer_ip, command)
             return getattr(self, 'proxy_' + command)(*args, **kwargs)
         elif command == 'whoami':
             # Client is requesting its IP address from our perspective

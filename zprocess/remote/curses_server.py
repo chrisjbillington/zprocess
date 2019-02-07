@@ -3,8 +3,8 @@ import curses
 import locale
 import threading
 import datetime
-import time
-
+import collections
+import textwrap
 from zprocess.remote.server import RemoteProcessServer
 
 
@@ -17,16 +17,68 @@ def ignore_curses_err(func):
     return f_new
 
 
+class OutputCapturer(object):
+    """File-like object to replace sys.stdout and sys.stderr whilst the curses interface
+    is running, so that we can print log lines to the curses screen."""
+    def __init__(self, server, streamname):
+        self.server = server
+        self.streamname = streamname
+        self.stream = getattr(sys, streamname)
+
+    def write(self, data):
+        with self.server.lock:
+            self.server.loglines.append(data)
+            self.server.update_screen()
+        return self.stream.write(data)
+
+    def flush(self):
+        return self.stream.flush()
+
+    def fileno(self):
+        return self.stream.fileno()
+
+    def isatty(self):
+        return self.stream.isatty()
+
+
+class LogLines(object):
+    """A ring-buffer of log lines to be displayed in the curses interface"""
+    def __init__(self, maxlines):
+        self.maxlines = maxlines
+        self.lines = collections.deque(maxlen=100)
+        self.lines.append('')
+
+    def append(self, data):
+        lines = data.split('\n')
+        self.lines[-1] += lines[0]
+        self.lines.extend(lines[1:])
+
+    def get_tail(self, height, width):
+        wrapped_lines = []
+        for line in self.lines:
+            wrapped_lines.extend(textwrap.wrap(line, width))
+        return wrapped_lines[-height:]
+
+
+CLIENT_LIST = 0
+SPLIT_VIEW = 1
+LOG_VIEW = 2
+
+
 class RemoteProcessServerCurses(RemoteProcessServer):
 
     def __init__(self, stdscr, *args, **kwargs):
         self.stdscr = stdscr
         self.addstr = ignore_curses_err(self.stdscr.addstr)
         self.addch = ignore_curses_err(self.stdscr.addch)
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.currpos = [0, 0]
         self.linelen_max = 0
         self.encoding = locale.getpreferredencoding()
+        self.loglines = LogLines(100)
+        self.tab = SPLIT_VIEW
+        sys.stdout = OutputCapturer(self, 'stdout')
+        sys.stdout = OutputCapturer(self, 'stderr')
         RemoteProcessServer.__init__(self, *args, **kwargs)
         self.update_screen()
 
@@ -45,7 +97,7 @@ class RemoteProcessServerCurses(RemoteProcessServer):
 
     def shutdown_on_interrupt(self):
         """ Handles key presses. Scroll the screen with arrow keys.
-            Press q, or ctrl-c to quit. """
+            Press C, or ctrl-C to quit. Press L to toggle log visibility"""
         try:
             while True:
                 scr_height, scr_width = self.stdscr.getmaxyx()
@@ -54,6 +106,8 @@ class RemoteProcessServerCurses(RemoteProcessServer):
                 with self.lock:
                     if c == ord('q'):
                         raise KeyboardInterrupt
+                    if c == ord('\t'):
+                        self.tab = (self.tab + 1) % 3
                     elif c == curses.KEY_LEFT:
                         self.currpos[1] = max(self.currpos[1]-xstep, 0)
                     elif c == curses.KEY_RIGHT:
@@ -112,13 +166,35 @@ class RemoteProcessServerCurses(RemoteProcessServer):
         self.addstr(1, 10, 'normal', curses.color_pair(1) | curses.A_BOLD)
         self.addstr(1, 18, 'orphaned', curses.color_pair(3) | curses.A_BOLD)
         self.addstr(1, 28, 'dead', curses.color_pair(2) | curses.A_BOLD)
-        self.addstr(2, 0, 'Press q or Ctrl-C to quit')
+        self.addstr(2, 0, 'Press Q or Ctrl-C to quit, <tab> to switch view')
         self.addstr(3, 0, 'Total clients: {}'.format(len(clients)), curses.A_BOLD)
+        tab_width = 13
+        tabs = ['Client list', 'Split view', 'Log']
+        tab_pos = (scr_width - tab_width * len(tabs)) // 2
         self.addstr(4, 0, '-' * scr_width)
+        for i, tab in enumerate(tabs):
+            style = curses.A_REVERSE
+            if self.tab == tabs.index(tab):
+                style |= curses.A_BOLD
+            self.addstr(4, tab_pos + i * tab_width, tab.center(tab_width), style)
+
         ymin = 5
         ymax = scr_height - 2
         if scr_height-1 >= ymin:
             self.addstr(scr_height-1, 0, datetime.datetime.now().strftime('%c'), curses.A_REVERSE)
+        if self.tab == LOG_VIEW:
+            nloglines = (ymax - ymin)
+        elif self.tab == SPLIT_VIEW:
+            nloglines = (ymax - ymin) // 2
+        else:
+            nloglines = 0
+        if nloglines:
+            if self.tab == SPLIT_VIEW:
+                self.addstr(scr_height - 3 - nloglines, 0, '-' * scr_width)
+            loglines = self.loglines.get_tail(nloglines, scr_width)
+            for i, line in enumerate(loglines):
+                self.addstr(scr_height - 2 - nloglines + i, 0, line)
+
         lines = self.get_lines()
         # restrict scroll area
         self.currpos[0] = max(min(self.currpos[0], max(len(lines) - (ymax - ymin + 1), 0)), 0)
