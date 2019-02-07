@@ -60,6 +60,8 @@ class Foo(Process):
 
 # This __main__ check is important to stop the same code executing again in the child:
 if __name__ == '__main__':
+    print("Note: script wil not work without starting a zprocess.remote server.")
+    print("See comments in the script for instructions")
     process_tree = ProcessTree(shared_secret)
     remote_process_client = process_tree.remote_process_client(REMOTE_HOST)
     foo = Foo(process_tree, remote_process_client=remote_process_client)
