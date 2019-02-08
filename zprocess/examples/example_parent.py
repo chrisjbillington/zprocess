@@ -15,8 +15,13 @@ from __future__ import print_function
 from zprocess import ProcessTree
 import time
 
+import os
+this_folder = os.path.dirname(os.path.abspath(__file__))
+
 process_tree = ProcessTree()
-to_child, from_child, child = process_tree.subprocess('example_child.py')
+to_child, from_child, child = process_tree.subprocess(
+    os.path.join(this_folder, 'example_child.py')
+)
 
 # The normal kind of directly passing data to the child:
 to_child.put(['<Some item!>','<some data!>'])
