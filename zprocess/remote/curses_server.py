@@ -78,7 +78,7 @@ class RemoteProcessServerCurses(RemoteProcessServer):
         self.loglines = LogLines(100)
         self.tab = SPLIT_VIEW
         sys.stdout = OutputCapturer(self, 'stdout')
-        sys.stdout = OutputCapturer(self, 'stderr')
+        sys.stderr = OutputCapturer(self, 'stderr')
         RemoteProcessServer.__init__(self, *args, **kwargs)
         curses.use_default_colors()
         self.update_screen()
@@ -105,7 +105,7 @@ class RemoteProcessServerCurses(RemoteProcessServer):
                 xstep = scr_width // 2
                 c = self.stdscr.getch()
                 with self.lock:
-                    if c == ord('q') or curses.unctrl(c) == b'^C':
+                    if c == ord('q') or c == 3 :# Ctrl-C
                         raise KeyboardInterrupt
                     if c == ord('\t'):
                         self.tab = (self.tab + 1) % 3
