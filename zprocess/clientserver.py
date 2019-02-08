@@ -154,8 +154,14 @@ class ZMQServer(object):
 
     def shutdown_on_interrupt(self):
         try:
-            # Return if mainloop crashes
-            self._crashed.wait()
+            # This while loop could be replaced with a simple self._crashed.wait() with
+            # no timeout, but there is a bug such that wait() cannot be interrupted with
+            # ctrl-C, see https://bugs.python.org/issue35935. So we need to break out of
+            # it once a second to get the interrupt event.
+            while True:
+                # Return if mainloop crashes
+                if self._crashed.wait(1):
+                    break
         except KeyboardInterrupt:
             sys.stderr.write('Interrupted, shutting down\n')
         finally:

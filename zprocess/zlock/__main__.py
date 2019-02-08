@@ -13,7 +13,7 @@
 from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
 import os
-
+import signal
 import argparse
 
 # Ensure zprocess is in the path if we are running from this directory
@@ -107,6 +107,9 @@ from zprocess.utils import disable_quick_edit
 #
 
 def main():
+
+    # Ensure keyboard interrupts are respected even in blocking C calls:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     parser = argparse.ArgumentParser(description="zprocess.zlock server.")
 
