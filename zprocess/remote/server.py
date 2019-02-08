@@ -43,18 +43,19 @@ class RemoteProcessServer(ZMQServer):
             allow_insecure=allow_insecure,
             timeout_interval=1,
         )
-        setup_logging('zprocess-remote', silent)
+        global logger
+        logger = setup_logging('zprocess-remote', silent)
         if not silent:
-            self.sock.logger = logging.getLogger()
+            self.sock.logger = logger
         msg = 'This is zprocess-remote server, running on %s:%d'
-        logging.info(msg, self.bind_address, self.port)
+        logger.info(msg, self.bind_address, self.port)
 
     def timeout(self):
         # Poll orphans so we can delete them if they are closed
         for pid in self.orphans.copy():
             rc = self.children[pid].poll()
             if rc is not None:
-                logging.info('orphan %d exited', pid)
+                logger.info('orphan %d exited', pid)
                 # Child is dead, clean up:
                 del self.children[pid]
                 del self.parents[pid]
@@ -86,7 +87,7 @@ class RemoteProcessServer(ZMQServer):
         if rc is None:
             # Process still running, but deleted by parent. Mark it as an orphan for
             # later cleanup
-            logging.info('%d is an orphan', pid)
+            logger.info('%d is an orphan', pid)
             self.orphans.add(pid)
         else:
             del self.children[pid]
@@ -108,26 +109,30 @@ class RemoteProcessServer(ZMQServer):
         command, args, kwargs = data
         if hasattr(self, 'proxy_' + command):
             if not args:
-                logging.info('%s: invalid command', self.sock.peer_ip)
+                logger.info('%s: invalid command', self.sock.peer_ip)
                 return ERR_INVALID_COMMAND
             # Check valid pid:
             if command != 'Popen':
                 pid = args[0]
                 if pid not in self.children:
-                    logging.info(
+                    logger.info(
                         '%s: %s: no such process %s', self.sock.peer_ip, command, pid
                     )
                     return ERR_NO_SUCH_PROCESS
-                logging.info('%s: %s %s', self.sock.peer_ip, command, pid)
+                logger.info('%s: %s %s', self.sock.peer_ip, command, pid)
             else:
-                logging.info('%s: %s', self.sock.peer_ip, command)
+                logger.info('%s: %s', self.sock.peer_ip, command)
             return getattr(self, 'proxy_' + command)(*args, **kwargs)
         elif command == 'whoami':
             # Client is requesting its IP address from our perspective
+            logger.info('%s: %s', self.sock.peer_ip, command)
             return self.sock.peer_ip
         elif command == 'hello':
+            logger.info('%s: %s', self.sock.peer_ip, command)
             return 'hello'
         elif command == 'protocol':
+            logger.info('%s: %s', self.sock.peer_ip, command)
             return PROTOCOL_VERSION
         else:
+            logger.info('%s: invalid command', self.sock.peer_ip)
             return ERR_INVALID_COMMAND

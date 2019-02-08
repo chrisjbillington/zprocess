@@ -248,12 +248,12 @@ class LockRequest(object):
         if self.state is rs.PRESENT_WAITING:
             self.server.send(self.routing_id, b'ok')
             msg = '[%s] %s acquired %s'
-            logging.info(msg, self.ip, _ds(self.client_id), _ds(self.key))
+            logger.info(msg, self.ip, _ds(self.client_id), _ds(self.key))
             self.schedule_timeout_release(self.timeout)
             self.cancel_advise_retry()
             self.state = rs.HELD
         elif self.state is rs.ABSENT_WAITING:
-            logging.info(
+            logger.info(
                 '[in absentia] %s acquired %s', _ds(self.client_id), _ds(self.key)
             )
             self.cancel_give_up()
@@ -269,7 +269,7 @@ class LockRequest(object):
         lock = Lock.instance(self.key, self.server)
         if lock.acquire(self.client_id, read_only):
             self.server.send(routing_id, b'ok')
-            logging.info('[%s] %s acquired %s', ip, _ds(self.client_id), _ds(self.key))
+            logger.info('[%s] %s acquired %s', ip, _ds(self.client_id), _ds(self.key))
             self.schedule_timeout_release(timeout)
             self.state = rs.HELD
         else:
@@ -286,7 +286,7 @@ class LockRequest(object):
             msg = '[in absentia] ' + msg
         else:
             msg = '[%s] ' % ip + msg
-        logging.info(msg, _ds(self.client_id), _ds(self.key))
+        logger.info(msg, _ds(self.client_id), _ds(self.key))
         lock = Lock.instance(self.key, self.server)
         acquirers = lock.release(self.client_id, fully=fully)
         for client_id in acquirers:
@@ -310,7 +310,7 @@ class LockRequest(object):
                 assert lock.acquire(self.client_id, read_only)
                 self.server.send(routing_id, b'ok')
                 msg = '[%s] %s acquired %s'
-                logging.info(msg, ip, _ds(self.client_id), _ds(self.key))
+                logger.info(msg, ip, _ds(self.client_id), _ds(self.key))
                 # Extend the timeout if necessary:
                 if monotonic() + timeout > self.timeout_task.due_at:
                     self.cancel_timeout_release()
@@ -441,12 +441,13 @@ class ZMQLockServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        setup_logging('zlock', self.silent)
+        global logger
+        logger = setup_logging('zlock', self.silent)
         if not self.silent:
             # Log insecure connection attempts:
-            self.router.logger = logging.getLogger()
+            self.router.logger = logger
         msg = 'This is zlock server, running on %s:%d'
-        logging.info(msg, self.bind_address, self.port)
+        logger.info(msg, self.bind_address, self.port)
         self.running = True
         self.started.set()
         try:
@@ -501,15 +502,15 @@ class ZMQLockServer(object):
                     self.release_request(routing_id, ip, args)
                 elif command == b'hello':
                     self.send(routing_id, b'hello')
-                    logging.info("[%s] said hello", ip)
+                    logger.info("[%s] said hello", ip)
                 elif command == b'protocol':
                     self.send(routing_id, PROTOCOL_VERSION.encode('utf8'))
-                    logging.info("[%s] requested the protocol version", ip)
+                    logger.info("[%s] requested the protocol version", ip)
                 elif command == b'stop' and self.stopping:
                     break
                 else:
                     self.send(routing_id, ERR_INVALID_COMMAND)
-                    logging.info("[%s] sent an invalid command", ip)
+                    logger.info("[%s] sent an invalid command", ip)
             else:
                 # A task is due:
                 task = self.tasks.pop()

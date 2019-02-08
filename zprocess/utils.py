@@ -161,6 +161,7 @@ def embed():
 def setup_logging(name, silent=False):
     """Basic logging setup used by zprocess servers. silent=True will configure logging
     calls to be no-ops."""
+    LOGLEVEL = logging.DEBUG
     if os.name == 'nt':
         logpath = os.path.join(
             os.path.dirname(os.path.abspath(__file__)), '%s.log' % name
@@ -168,28 +169,31 @@ def setup_logging(name, silent=False):
     else:
         logpath = '/var/log/%s.log' % name
 
-    handlers = []
+    logger = logging.getLogger()
+    logger.setLevel(LOGLEVEL)
+    formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
     if not silent:
         try:
             handler = logging.handlers.RotatingFileHandler(
                 logpath, maxBytes=50 * 1024 ** 2, backupCount=1
             )
-            handlers.append(handler)
+            handler.setLevel(LOGLEVEL)
+            handler.setFormatter(formatter)
+            logger.addHandler(handler)
             file_handler_success = True
         except (OSError, IOError):
             file_handler_success = False
         if sys.stdout is not None and sys.stdout.isatty():
-            handlers.append(logging.StreamHandler(sys.stdout))
-    kwargs = dict(
-        format='[%(asctime)s] %(levelname)s: %(message)s',
-        level=logging.DEBUG,
-        handlers=handlers,
-    )
+            stream_handler = logging.StreamHandler(sys.stdout)
+            stream_handler.setLevel(LOGLEVEL)
+            stream_handler.setFormatter(formatter)
+            logger.addHandler(stream_handler)
     if silent:
-        del kwargs['handlers']
-        kwargs['filename'] = os.devnull
-    logging.basicConfig(**kwargs)
-    if not silent and file_handler_success:
+        logger.addHandler(logging.NullHandler())
+    if not silent and not file_handler_success:
         msg = 'Can\'t open or do not have permission to write to log file '
         msg += logpath + '. Only terminal logging will be output.'
-        logging.warning(msg)
+        logger.warning(msg)
+    elif file_handler_success:
+        logger.info('logging to %s logpath')
+    return logger
