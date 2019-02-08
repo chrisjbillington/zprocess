@@ -46,21 +46,21 @@ class FileHandler(logging.FileHandler):
     def instance(cls, filepath, **kwargs):
         if filepath not in cls.instances:
             cls.instances[filepath] = cls(filepath, **kwargs)
-            logging.info("Opening %s", filepath)
+            logger.info("Opening %s", filepath)
         return cls.instances[filepath]
 
     def log(self, client_id, message):
         if client_id not in self.clients:
             self.clients.add(client_id)
             msg = "New client (total: %d) for %s"
-            logging.info(msg, len(self.clients), self.baseFilename)
+            logger.info(msg, len(self.clients), self.baseFilename)
         if hasattr(self, 'shouldRollover'):
             try:
                 if self.shouldRollover(message):
                     logging.info("Rolling over %s", self.baseFilename)
                     self.doRollover()
             except (OSError, IOError):
-                logging.warning(
+                logger.warning(
                     "Failed to check/rollover %s:\n    %s",
                     self.baseFilename,
                     _format_exc(),
@@ -70,7 +70,7 @@ class FileHandler(logging.FileHandler):
             try:
                 self.stream = self._open()
             except (OSError, IOError):
-                logging.warning(
+                logger.warning(
                     "Failed to open %s:\n    %s", self.baseFilename, _format_exc()
                 )
                 return
@@ -89,11 +89,11 @@ class FileHandler(logging.FileHandler):
             msg = "Client done (remaining: %d) with %s"
             if ip is not None:
                 msg = '[%s] ' % ip + msg
-            logging.info(msg, len(self.clients), self.baseFilename)
+            logger.info(msg, len(self.clients), self.baseFilename)
         if not self.clients:
             del self.instances[self.baseFilename]
             if self.stream is not None:
-                logging.info("No more clients, closing %s", self.baseFilename)
+                logger.info("No more clients, closing %s", self.baseFilename)
                 self.close()
 
 
@@ -198,10 +198,10 @@ class ZMQLogServer(object):
             message = _format_exc()
             self.send(routing_id, message.encode('utf8'))
             msg = '[%s] Access denied for %s: \n    %s'
-            logging.warning(msg, ip, filepath, message)
+            logger.warning(msg, ip, filepath, message)
         else:
             self.send(routing_id, b'ok')
-            logging.info('[%s] Access confirmed for %s', ip, filepath)
+            logger.info('[%s] Access confirmed for %s', ip, filepath)
 
     def done(self, routing_id, ip, args):
         if len(args) != 2:
@@ -230,7 +230,7 @@ class ZMQLogServer(object):
             self.tasks.cancel(task)
 
     def do_timeout(self, client_id, filepath):
-        logging.info("Client timed out for %s", filepath)
+        logger.info("Client timed out for %s", filepath)
         handler = self.handler_class.instance(filepath, **self.handler_kwargs)
         handler.client_done(client_id)
         del self.timeout_tasks[client_id]
@@ -246,12 +246,13 @@ class ZMQLogServer(object):
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
-        setup_logging('zlog', self.silent)
+        global logger
+        logger = setup_logging('zlog', self.silent)
         if not self.silent:
             # Log insecure connection attempts:
-            self.router.logger = logging.getLogger()
+            self.router.logger = logger
         msg = 'This is zlog server, running on %s:%d'
-        logging.info(msg, self.bind_address, self.port)
+        logger.info(msg, self.bind_address, self.port)
         self.running = True
         self.started.set()
         try:
@@ -305,10 +306,10 @@ class ZMQLogServer(object):
                     self.log(args)
                 elif command == b'hello':
                     self.send(routing_id, b'hello')
-                    logging.info("[%s] said hello", ip)
+                    logger.info("[%s] said hello", ip)
                 elif command == b'protocol':
                     self.send(routing_id, PROTOCOL_VERSION.encode('utf8'))
-                    logging.info("[%s] requested the protocol version", ip)
+                    logger.info("[%s] requested the protocol version", ip)
                 elif command == b'check_access':
                     self.check_access(routing_id, ip, args)
                 elif command == b'done':
@@ -317,7 +318,7 @@ class ZMQLogServer(object):
                     break
                 else:
                     self.send(routing_id, ERR_INVALID_COMMAND)
-                    logging.info("[%s] sent an invalid command", ip)
+                    logger.info("[%s] sent an invalid command", ip)
             else:
                 # A task is due:
                 task = self.tasks.pop()
