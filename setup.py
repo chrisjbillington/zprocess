@@ -44,6 +44,7 @@ setup(
         'zprocess.locking',
         'zprocess.zlog',
         'zprocess.remote',
+        'zprocess.examples'
     ],
     install_requires=dependencies,
 )
