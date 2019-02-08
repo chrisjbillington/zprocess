@@ -172,6 +172,7 @@ def setup_logging(name, silent=False):
     logger = logging.getLogger()
     logger.setLevel(LOGLEVEL)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
+    file_handler_success = False
     if not silent:
         try:
             handler = logging.handlers.RotatingFileHandler(
