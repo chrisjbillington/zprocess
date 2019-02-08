@@ -1,6 +1,6 @@
 #####################################################################
 #                                                                   #
-# example_client.py                                                 #
+# example_child.py                                                 #
 #                                                                   #
 # Copyright 2013, Chris Billington                                  #
 #                                                                   #
@@ -12,21 +12,24 @@
 #####################################################################
 
 from __future__ import print_function
-from zprocess import setup_connection_with_parent, Event
+from zprocess import ProcessTree
 
-to_parent, from_parent = setup_connection_with_parent()
+process_tree = ProcessTree.connect_to_parent()
+to_parent = process_tree.to_parent
+from_parent = process_tree.from_parent
 
 # The normal kind of getting data from the parent directly:
 item = from_parent.get()
-print('client: got an item: '+ str(item))
-print('client: sending the item back...')
+print('child: got an item: '+ str(item))
+print('child: sending the item back...')
 to_parent.put(item)
 
-# Waiting for an event posted by the parent (though it could be posted by any process, we don't care):
-foo_event = Event('foo',type='wait')
+# Waiting for an event posted by the parent (though it could be posted by any process,
+# we don't care):
+foo_event = process_tree.event('foo', role='wait')
 for i in range(10):
     data = foo_event.wait(i, timeout=1)
-    print('client: received foo event %d. Data was: %s'%(i, str(data)))
+    print('child: received foo event %d. Data was: %s' % (i, str(data)))
     
 import time
 # To prove that this process gets killed when its parent ends:

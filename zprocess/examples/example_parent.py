@@ -1,6 +1,6 @@
 #####################################################################
 #                                                                   #
-# example_server.py                                                 #
+# example_parent.py                                                 #
 #                                                                   #
 # Copyright 2013, Chris Billington                                  #
 #                                                                   #
@@ -12,19 +12,21 @@
 #####################################################################
 
 from __future__ import print_function
-from zprocess import subprocess_with_queues, Event
+from zprocess import ProcessTree
 import time
 
-to_child, from_child, child = subprocess_with_queues('example_client.py')
+process_tree = ProcessTree()
+to_child, from_child, child = process_tree.subprocess('example_child.py')
 
 # The normal kind of directly passing data to the child:
 to_child.put(['<Some item!>','<some data!>'])
-print('server: got the item back: ', from_child.get())
+print('parent: got the item back: ', from_child.get())
 
-# Posting an event that all processes in the tree can see (if there were more processes, of course):
-foo_event = Event('foo',type='post')
+# Posting an event that all processes in the tree can see (if there were more processes,
+# of course):
+foo_event = process_tree.event('foo', role='post')
 
 for i in range(10):
     time.sleep(0.5)
-    print('server: posting a foo event with id=%d'%i)
+    print('parent: posting a foo event with id=%d'%i)
     foo_event.post(i, data='hello!')
