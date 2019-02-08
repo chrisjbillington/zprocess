@@ -12,7 +12,7 @@
 #####################################################################
 
 from __future__ import print_function
-from zprocess import Process
+from zprocess import Process, ProcessTree
 import os
 
 class Foo(Process):
@@ -25,7 +25,9 @@ class Foo(Process):
 
 # This __main__ check is important to stop the same code executing again in the child:
 if __name__ == '__main__':
-    foo = Foo()
+
+    process_tree = ProcessTree()
+    foo = Foo(process_tree)
     to_child, from_child = foo.start('bar')
     to_child.put('hello, foo!')
     response = from_child.get()
