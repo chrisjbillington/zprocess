@@ -89,8 +89,10 @@ class ZMQServer(object):
         self.dtype = dtype
         self.pull_only = pull_only
         self.bind_address = bind_address
-        self._crashed = threading.Event()
+        self.shared_secret = shared_secret
+        self.allow_insecure = allow_insecure
         self.timeout_interval = timeout_interval
+        self._crashed = threading.Event()
         self.stopping = False
 
         if 'setup_auth' in self.__class__.__dict__:
@@ -155,16 +157,19 @@ class ZMQServer(object):
 
     def shutdown_on_interrupt(self):
         try:
-            # This while loop could be replaced with a simple self._crashed.wait() with
-            # no timeout, but there is a bug such that wait() cannot be interrupted with
-            # ctrl-C, see https://bugs.python.org/issue35935. So we need to break out of
-            # it once a second to get the interrupt event.
+            # This while loop could be replaced with a simple self._crashed.wait(), but
+            # there is a bug such that wait() cannot be interrupted with ctrl-C on
+            # Windows, see https://bugs.python.org/issue35935. time.sleep() can be
+            # interrupted though, so we sleep and check once a second if the server
+            # crashed.
             while True:
+                time.sleep(1)
                 # Return if mainloop crashes
-                if self._crashed.wait(1):
-                    break
+                if self._crashed.is_set():
+                    msg = "Server mainloop crashed"
+                    raise RuntimeError(msg)
         except KeyboardInterrupt:
-            sys.stderr.write('Interrupted, shutting down\n')
+            print('KeyboardInterrupt, stopping.', file=sys.stderr)
         finally:
             self.shutdown()
             
