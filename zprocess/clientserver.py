@@ -91,6 +91,7 @@ class ZMQServer(object):
         self.bind_address = bind_address
         self._crashed = threading.Event()
         self.timeout_interval = timeout_interval
+        self.stopping = False
 
         if 'setup_auth' in self.__class__.__dict__:
             # Backward compatibility for subclasses implementing their own
@@ -103,7 +104,7 @@ class ZMQServer(object):
                 self.sock = self.context.socket(zmq.REP)
         else:
             # Our shared secret authentication:
-            self.context = SecureContext(shared_secret=shared_secret)
+            self.context = SecureContext.instance(shared_secret=shared_secret)
             if self.pull_only:
                 self.sock = self.context.socket(zmq.PULL,
                                                 allow_insecure=allow_insecure)
@@ -172,63 +173,75 @@ class ZMQServer(object):
             next_timeout = time.time() + self.timeout_interval
         else:
             next_timeout = None
-        while True:
-            try:
+        try:
+            while True:
                 if next_timeout is not None:
                     timeout = next_timeout - time.time()
                     timeout = max(0, timeout)
                     events = self.poller.poll(int(timeout*1000))
                     if not events:
                         # Timed out. Run our timeout method
-                        self.timeout()
+                        try:
+                            self.timeout()
+                        except Exception:
+                            # Raise the exception in a separate thread so that the
+                            # server keeps running:
+                            exc_info = sys.exc_info()
+                            raise_exception_in_thread(exc_info)
                         # Compute next timeout time
                         next_timeout = time.time() + self.timeout_interval
                         continue
                 request_data = self.recv()
-            except zmq.ContextTerminated:
-                self.sock.close(linger=0)
-                return
-            except Exception:
-                self._crashed.set()
-                self.sock.close(linger=0)
-                raise
-            try:
-                response_data = self.handler(request_data)
-                if self.pull_only and response_data is not None:
-                    msg = ("Pull-only server hander() method returned " +
-                           "non-None value %s. Ignoring." % str(response_data))
-                    raise ValueError(msg)
-                response_data = _typecheck_or_convert_data(response_data,
-                                                           self.dtype)
-            except Exception:
-                # Raise the exception in a separate thread so that the
-                # server keeps running:
-                exc_info = sys.exc_info()
-                raise_exception_in_thread(exc_info)
-                exception_string = traceback.format_exc()
-                if not self.pull_only:
-                    # Send the error to the client:
-                    msg = ("The server had an unhandled exception whilst " + 
-                           "processing the request:\n%s" % str(exception_string))
-                    response_data = exc_info[0](msg)
-                    if self.dtype == 'raw':
-                        response_data = str(response_data).encode('utf8')
-                    elif self.dtype == 'multipart':
-                        response_data = [str(response_data).encode('utf8')]
-                    elif self.dtype == 'string':
-                        response_data = str(response_data)
+                if self.stopping:
+                    break
+                try:
+                    response_data = self.handler(request_data)
+                    if self.pull_only and response_data is not None:
+                        msg = ("Pull-only server hander() method returned " +
+                               "non-None value %s. Ignoring." % str(response_data))
+                        raise ValueError(msg)
                     response_data = _typecheck_or_convert_data(response_data,
                                                                self.dtype)
-            if not self.pull_only:
-                try:
+                except Exception:
+                    # Raise the exception in a separate thread so that the
+                    # server keeps running:
+                    exc_info = sys.exc_info()
+                    raise_exception_in_thread(exc_info)
+                    exception_string = traceback.format_exc()
+                    if not self.pull_only:
+                        # Send the error to the client:
+                        msg = ("The server had an unhandled exception whilst " + 
+                               "processing the request:\n%s" % str(exception_string))
+                        response_data = exc_info[0](msg)
+                        if self.dtype == 'raw':
+                            response_data = str(response_data).encode('utf8')
+                        elif self.dtype == 'multipart':
+                            response_data = [str(response_data).encode('utf8')]
+                        elif self.dtype == 'string':
+                            response_data = str(response_data)
+                        response_data = _typecheck_or_convert_data(response_data,
+                                                                   self.dtype)
+                if not self.pull_only:
                     self.send(response_data)
-                except zmq.ContextTerminated:
-                    self.sock.close(linger=0)
-                    return
-
+        except Exception:
+            self._crashed.set()
+            raise
+            
     def shutdown(self):
-        self.context.term()
+        self.stopping = True
+        if self.pull_only:
+            sock = self.context.socket(zmq.PUSH)
+        else:
+            sock = self.context.socket(zmq.REQ)
+        sock.connect('tcp://127.0.0.1:%s' % self.port)
+        if self.dtype == 'pyobj':
+            sock.send_pyobj('stop')
+        else:
+            sock.send(b'stop')
         self.mainloop_thread.join()
+        sock.close(linger=True)
+        self.sock.close(linger=False)
+        self.stopping = False
 
     def handler(self, request_data):
         """To be overridden by subclasses. This is an example

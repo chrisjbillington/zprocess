@@ -3,7 +3,6 @@ import sys
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
-import os
 if PY2:
     import subprocess32 as subprocess
 else:
@@ -11,10 +10,6 @@ else:
 import logging
 import logging.handlers
 
-if __package__ is None:
-    sys.path.insert(0, os.path.abspath('../..'))
-
-import zprocess
 from zprocess import ZMQServer
 from zprocess.utils import setup_logging
 from zprocess.remote import PROTOCOL_VERSION

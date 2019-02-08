@@ -8,6 +8,7 @@ import logging.handlers
 import uuid
 
 import zmq
+from zmq.utils.win32 import allow_interrupt
 
 # Ensure zprocess is in the path if we are running from this directory
 if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
@@ -124,6 +125,7 @@ class ZMQLogServer(object):
         self.handler_kwargs = handler_kwargs if handler_kwargs is not None else {}
         self.context = None
         self.router = None
+        self.poller = None
         self.tasks = TaskQueue()
         self.timeout_tasks = {}
 
@@ -132,6 +134,7 @@ class ZMQLogServer(object):
         self.started = threading.Event()
         self.running = False
         self.silent = silent
+        self._interrupted = False
 
     def log(self, args):
         # Validate arguments, but we can't reply if they are invalid. We just do nothing
@@ -237,8 +240,8 @@ class ZMQLogServer(object):
         self.router = self.context.socket(
             zmq.ROUTER, allow_insecure=self.allow_insecure
         )
-        poller = zmq.Poller()
-        poller.register(self.router, zmq.POLLIN)
+        self.poller = zmq.Poller()
+        self.poller.register(self.router, zmq.POLLIN)
         if self.port is not None:
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
@@ -251,13 +254,40 @@ class ZMQLogServer(object):
         logging.info(msg, self.bind_address, self.port)
         self.running = True
         self.started.set()
+        try:
+            with allow_interrupt(self._win32_keyboardinterrupt):
+                try:
+                    self._mainloop()
+                except KeyboardInterrupt:
+                    # An organic keyboard interrupt on mac or linux
+                    self.stop()
+                    raise
+            if self._interrupted:
+                # A hacky windows keyboard interrupt. stop() has already been
+                # called.
+                raise KeyboardInterrupt
+        finally:
+            self.router.close()
+            self.router = None
+            self.context = None
+            self.port = self._initial_port
+            self.running = False
+            self.started.clear()
+            self._interrupted = False
+            self.stopping = False
+
+    def _win32_keyboardinterrupt(self):
+        self._interrupted = True
+        self.stop()
+
+    def _mainloop(self):
         while True:
             # Wait until we receive a request or a task is due:
             if self.tasks:
                 timeout = max(0, 1000 * self.tasks.next().due_in())
             else:
                 timeout = None
-            events = poller.poll(timeout)
+            events = self.poller.poll(timeout)
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
@@ -284,7 +314,6 @@ class ZMQLogServer(object):
                 elif command == b'done':
                     self.done(routing_id, ip, args)
                 elif command == b'stop' and self.stopping:
-                    self.send(routing_id, b'ok')
                     break
                 else:
                     self.send(routing_id, ERR_INVALID_COMMAND)
@@ -293,12 +322,6 @@ class ZMQLogServer(object):
                 # A task is due:
                 task = self.tasks.pop()
                 task()
-        self.router.close()
-        self.router = None
-        self.context = None
-        self.port = self._initial_port
-        self.running = False
-        self.started.clear()
 
     def run_in_thread(self):
         """Run the main loop in a separate thread, returning immediately"""
@@ -315,11 +338,9 @@ class ZMQLogServer(object):
         sock = self.context.socket(zmq.REQ, allow_insecure=self.allow_insecure)
         sock.connect('tcp://127.0.0.1:%d' % self.port)
         sock.send(b'stop')
-        assert sock.recv() == b'ok'
-        sock.close()
         if self.run_thread is not None:
             self.run_thread.join()
-        self.stopping = False
+        sock.close(linger=True)
 
     def send(self, routing_id, message):
         self.router.send_multipart(routing_id + [b'', message])

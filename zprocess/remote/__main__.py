@@ -1,7 +1,6 @@
 from __future__ import unicode_literals, print_function, division
 import sys
 import locale
-import signal
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
@@ -18,9 +17,6 @@ from zprocess.utils import disable_quick_edit
 
 
 def main():
-
-    # Ensure keyboard interrupts are respected even in blocking C calls:
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     parser = argparse.ArgumentParser(description="zprocess.remote server.")
 

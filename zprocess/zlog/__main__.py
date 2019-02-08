@@ -13,7 +13,6 @@
 from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
 import os
-import signal
 import argparse
 
 # Ensure zprocess is in the path if we are running from this directory
@@ -105,9 +104,6 @@ from zprocess.utils import disable_quick_edit
 
 def main():
 
-    # Ensure keyboard interrupts are respected even in blocking C calls:
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    
     parser = argparse.ArgumentParser(description="zlog server.")
 
     parser.add_argument('-p', '--port', type=int, default=DEFAULT_PORT,
@@ -224,7 +220,6 @@ def main():
         server.run()
     except KeyboardInterrupt:
         print('KeyboardInterrupt, stopping.', file=sys.stderr)
-        server.context.destroy(linger=False)
 
 if __name__ == '__main__':
     main()
