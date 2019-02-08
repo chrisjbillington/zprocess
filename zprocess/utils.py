@@ -195,5 +195,5 @@ def setup_logging(name, silent=False):
         msg += logpath + '. Only terminal logging will be output.'
         logger.warning(msg)
     elif file_handler_success:
-        logger.info('logging to %s logpath')
+        logger.info('logging to %s', logpath)
     return logger
