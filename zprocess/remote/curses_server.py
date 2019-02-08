@@ -105,7 +105,7 @@ class RemoteProcessServerCurses(RemoteProcessServer):
                 xstep = scr_width // 2
                 c = self.stdscr.getch()
                 with self.lock:
-                    if c == ord('q'):
+                    if c == ord('q') or curses.unctrl(c) == b'^C':
                         raise KeyboardInterrupt
                     if c == ord('\t'):
                         self.tab = (self.tab + 1) % 3
