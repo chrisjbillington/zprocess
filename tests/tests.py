@@ -396,17 +396,17 @@ class ClientServerTests(unittest.TestCase):
                     raise TestError
                 return data
 
-        server = MyServer(8000, bind_address='tcp://127.0.0.1')
+        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
         try:
             self.assertIsInstance(server.context, SecureContext)
-            response = zmq_get(8000, data='hello!')
+            response = zmq_get(server.port, data='hello!')
             self.assertEqual(response, 'hello!')
 
             # Ignore the exception in the other thread:
             clientserver.raise_exception_in_thread =  lambda *args: None
             try:
                 with self.assertRaises(TestError):
-                    zmq_get(8000, data='error')
+                    zmq_get(server.port, data='error')
             finally:
                 clientserver.raise_exception_in_thread = raise_exception_in_thread
         finally:
@@ -421,23 +421,23 @@ class ClientServerTests(unittest.TestCase):
 
         for argname in ["dtype", "type", "positional"]:
             if argname == 'dtype':
-                server = MyServer(8000, dtype='raw',
+                server = MyServer(port=None, dtype='raw',
                                   bind_address='tcp://127.0.0.1')
             elif argname == 'type':
-                server = MyServer(8000, type='raw',
+                server = MyServer(port=None, type='raw',
                                   bind_address='tcp://127.0.0.1')
             elif argname == 'positional':
-                server = MyServer(8000, 'raw',
+                server = MyServer(None, 'raw',
                                   bind_address='tcp://127.0.0.1')
             try:
                 self.assertIsInstance(server.context, SecureContext)
-                response = zmq_get_raw(8000, data=b'hello!')
+                response = zmq_get_raw(server.port, data=b'hello!')
                 self.assertEqual(response, b'hello!')
 
                 # Ignore the exception in the other thread:
                 clientserver.raise_exception_in_thread =  lambda *args: None
                 try:
-                    self.assertIn(b'TestError', zmq_get_raw(8000, data=b'error'))
+                    self.assertIn(b'TestError', zmq_get_raw(server.port, data=b'error'))
                 finally:
                     clientserver.raise_exception_in_thread = \
                         raise_exception_in_thread
@@ -456,14 +456,14 @@ class ClientServerTests(unittest.TestCase):
                 testcase.assertEqual(data, 'hello!')
                 got_data.set()
 
-        server = MyPullServer(8000, bind_address='tcp://127.0.0.1',
+        server = MyPullServer(port=None, bind_address='tcp://127.0.0.1',
                               pull_only=True)
 
         # So we can catch errors raised by raise_exception_in_thread
 
         try:
             self.assertIsInstance(server.context, SecureContext)
-            response = zmq_push(8000, data='hello!')
+            response = zmq_push(server.port, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
@@ -483,13 +483,13 @@ class ClientServerTests(unittest.TestCase):
             orig_thread = threading.Thread
             try:
                 threading.Thread = MockThread
-                response = zmq_push(8000, data='error!')
+                response = zmq_push(server.port, data='error!')
                 self.assertEqual(got_error.wait(timeout=1), True)
             finally:
                 threading.Thread = orig_thread
 
             # Confirm the server still works:
-            response = zmq_push(8000, data='hello!')
+            response = zmq_push(server.port, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
@@ -501,7 +501,7 @@ class ClientServerTests(unittest.TestCase):
             def setup_auth(self, context):
                 pass
 
-        server = MyCustomAuthServer(8000, bind_address='tcp://127.0.0.1')
+        server = MyCustomAuthServer(port=None, bind_address='tcp://127.0.0.1')
         try:
             self.assertNotIsInstance(server.context, SecureContext)
         finally:
