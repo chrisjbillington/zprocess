@@ -4,6 +4,7 @@ import ctypes
 import base64
 import weakref
 import time
+from socket import gethostbyname
 
 import ipaddress
 import zmq
@@ -154,14 +155,13 @@ class SecureSocket(zmq.Socket):
     def _is_internal(self, endpoint):
         """Return whether a bind or connect endpoint is on an internal
         interface"""
-        import socket
         if endpoint.startswith('inproc://'):
             return True
         if endpoint.startswith('tcp://'):
             host = ''.join(''.join(endpoint.split('//')[1:]).split(':')[0])
             if host == '*':
                 return False
-            address = socket.gethostbyname(host)
+            address = gethostbyname(host)
             if isinstance(address, bytes):
                 address = address.decode()
             return ipaddress.ip_address(address).is_loopback
@@ -183,6 +183,14 @@ class SecureSocket(zmq.Socket):
         return orig_server
         
     def _bind_or_connect(self, addr, bind=False, connect=False):
+        # Use a socks proxy if the addr is in the format:
+        # "socks:socks_host:socks_port:tcp://dest_host:dest_port"
+        if addr.startswith('socks:'):
+            _, socks_host, socks_port, addr = addr.split(':', 3)
+            socks_host = gethostbyname(socks_host)
+            socks_addr = '%s:%s' % (socks_host, socks_port)
+            print(socks_addr, addr)
+            self.socks_proxy = socks_addr.encode('utf8')
         assert bool(bind) != bool(connect)
         method = zmq.Socket.bind if bind else zmq.Socket.connect
         if addr.startswith('inproc://'):
