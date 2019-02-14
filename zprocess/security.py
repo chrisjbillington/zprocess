@@ -189,7 +189,6 @@ class SecureSocket(zmq.Socket):
             _, socks_host, socks_port, addr = addr.split(':', 3)
             socks_host = gethostbyname(socks_host)
             socks_addr = '%s:%s' % (socks_host, socks_port)
-            print(socks_addr, addr)
             self.socks_proxy = socks_addr.encode('utf8')
         assert bool(bind) != bool(connect)
         method = zmq.Socket.bind if bind else zmq.Socket.connect
