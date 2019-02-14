@@ -1,11 +1,10 @@
 from __future__ import print_function, unicode_literals, division, absolute_import
 import sys
-import time
 import threading
 import socket
 import select
 from struct import pack, unpack
-
+from binascii import hexlify, unhexlify
 import ipaddress
 import zmq
 
@@ -111,11 +110,11 @@ class SocksProxyConnection(object):
             n = readfunc(1)
             address_message += n
             n, = unpack('B', n)
-            address = raw_address = self.client_recvall(n)
+            address = raw_address = readfunc(n)
         else:
             return address_type, None, None, address_message
         address_message += raw_address
-        raw_port = self.client_recvall(2)
+        raw_port = readfunc(2)
         address_message += raw_port
         port, = unpack('!H', raw_port)
         print('address is', address)
@@ -136,7 +135,7 @@ class SocksProxyConnection(object):
             self.server.shutdown(socket.SHUT_RDWR)
             self.server.close()
         self.server = None
-        self.server.recvall = None
+        self.server_recvall = None
         raise SocketClosed()
 
     def server_init(self):
@@ -175,8 +174,7 @@ class SocksProxyConnection(object):
             print('not granted')
             self.end()
 
-    def connect(self, address_type, address, port):
-        print('connect')
+    def connect_bare(self, address_type, address, port):
         if address_type == IPV4:
             self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server.connect((address, port))
@@ -187,27 +185,45 @@ class SocksProxyConnection(object):
             )
             self.server.connect(addrinfo[0][-1])
         else:
-            # DOMAIN address. We don't interpret domains as actual hostnames, instead we
-            # treat them as a byte-packed list of SOCKS 5 hops in the format:
-            # [n_hops][addr_type][addr][port][...] where n_hops is 1 byte, and the rest
-            # of the message is n_hops messages packed the same way as a single SOCKS 5
-            # destination specification.
-            bytes_io = BytesIO(address)
-            n_hops = unpack(bytes_io.read(1))
-            first_hop_details = self.parse_address(bytes_io.read)
-            proxy_address_type, proxy_addr, proxy_port, _ = first_hop_details
-            first_hop_status = self.connect(proxy_address_type, proxy_addr, proxy_port)
-            if first_hop_status != GRANTED:
-                return first_hop_status
-            n_hops -= 1
-            while n_hops > 0:
-                _, _, _, addr_message = self.parse_address(bytes_io.read)
-                status = self.client_init(addr_message)
-                if status != GRANTED:
-                    return status
+            raise ValueError(address_type)
         self.server_recvall = RecvAll(self.server, self)
         self.server.settimeout(TIMEOUT)
-        return GRANTED
+
+    def connect(self, address_type, address, port):
+        print('connect')
+        if address_type in [IPV4, IPV6]:
+            self.connect_bare(address_type, address, port)
+        elif address_type == DOMAIN:
+            # DOMAIN address. We don't interpret domains as actual hostnames, instead we
+            # treat them as a hex-encoded list of SOCKS 5 hops in the format:
+            # [n_hops][addr_type][addr][port][...] where n_hops is 1 byte, and the rest
+            # of the message is n_hops messages packed the same way as a single SOCKS 5
+            # destination specification. The last hop lacks a port - the port from the
+            # original socks request is used.
+            print('domain address is', address)
+            print("packed is", unhexlify(address) + pack('!H', port))
+            bytes_io = BytesIO(unhexlify(address) + pack('!H', port))
+            n_hops, = unpack('B', bytes_io.read(1))
+            if n_hops < 1:
+                # A single hop should be given with an IPV4 or IPV6 address, not our
+                # DOMAIN abuse:
+                return ADDRESS_TYPE_NOT_SUPPORTED
+            print('n_hops is', n_hops)
+            first_hop_details = self.parse_address(bytes_io.read)
+            proxy_address_type, proxy_addr, proxy_port, _ = first_hop_details
+            print('about to connect:', proxy_address_type, proxy_addr, proxy_port)
+            self.connect_bare(proxy_address_type, proxy_addr, proxy_port)
+            if n_hops == 1:
+                # We're the last hop:
+                return GRANTED
+            else:
+                # Reduce n_hops by one and send remaining hops:
+                addr = hexlify(pack('B', n_hops - 1) + bytes_io.read()[:-2])
+                msg = pack('BB', DOMAIN, len(addr)) + addr + pack('!H', port)
+                print("sending next hop message:", msg)
+                return self.client_init(msg)
+        else:
+            return COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
 
     def client_init(self, addr_message):
         """Communicate using the SOCKS 5 protocol, acting as the client, to setup a
@@ -249,6 +265,7 @@ class SocksProxyConnection(object):
             try:
                 self.server_init()
             except socket.timeout:
+                raise
                 self.end()
                 return
             self.server.settimeout(None)
@@ -274,30 +291,83 @@ class SocksProxyServer(object):
             print('got a client')
             SocksProxyConnection(client, address, self).start()
 
+
+def pack_multihop_endpoint(endpoint):
+    """Take a string such as 'tcp://127.0.0.1:9001|192.168.1.1:9002|[::1]:9000'
+    representing a multihop SOCKS 5 proxied connection (here for example including an
+    IPV6 address), and return the address of the first hop ('127.0.0.1') as a string,
+    its port, (9000) as an integer, and then either:
+    
+    if there is only one more hop:
+        - the remaining endpint, ('tcp://192.168.1.1:9002')
+    
+    or, if there is more than one more hop:
         
+        - 'tcp://' followed by a hex encoded string of the following bytes:
+            [num_hops]: 1 byte
+            then for each hop:
+                [addr_type]: 1 byte, IPV4 or IPV6 as defined in SOCKS 5
+                [addr]: the IP address as a network-order integer, 4 bytes for IPV4 and
+                        16 bytes for IPV6
+                [port]: network order integer, 2 bytes
 
-from zprocess.security import SecureContext, generate_shared_secret
+            the final hop lacks the port field, it is instead appended to the string as
+            a colon followed by the port number as ascii digits, as it was passed in."""
 
-socks_proxy = threading.Thread(target=SocksProxyServer(9001).run)
-socks_proxy.daemon=True
-socks_proxy.start()
+    if not endpoint.startswith('tcp://'):
+        raise ValueError("Not a valid endpoint: %s" % str(endpoint))
+    hops = endpoint.split('tcp://')[1].split('|')
+    if len(hops) < 2:
+        raise ValueError("Not a multihop endpoint: %s" % str(endpoint))
+    socks_proxy, socks_port = hops[0].rsplit(':', 1)
+    if len(hops) == 2:
+        return socks_proxy, socks_port, 'tcp://' + hops[1]
+    packed = pack('B', len(hops) - 1)
+    for hop in hops[1:]:
+        host, port = hop.rsplit(':', 1)
+        ip = ipaddress.ip_address(host)
+        if ip.version == 4:
+            packed += pack('B', IPV4)
+            print("Packing IPV4")
+        elif ip.version == 6:
+            print("Packing IPV6")
+            packed += pack('B', IPV6)
+        else:
+            raise ValueError(ip.version)
+        packed += ip.packed
+        packed += pack('!H', int(port))
 
-context = SecureContext(shared_secret=generate_shared_secret())
-zmq_server = context.socket(zmq.REP)
-zmq_client = context.socket(zmq.REQ)
-
-# client.socks_proxy = b'127.0.0.1:9001'
-zmq_client.IPV6 = 1
-zmq_server.IPV6 = 1
-
-zmq_server.bind('tcp://::1:9000')
+    packed_endpoint = 'tcp://' + hexlify(packed[:-2]).decode() + ':' + port
+    print('packed endpoint:', packed_endpoint)
+    return socks_proxy, int(socks_port), packed_endpoint
 
 
-print('about to connect...')
-zmq_client.connect('socks:127.0.0.1:9001:tcp://::1:9000')
+if __name__ == '__main__':
+    from zprocess.security import SecureContext, generate_shared_secret
 
-print('about to send...')
-zmq_client.send(b'hello')
+    socks_proxy = threading.Thread(target=SocksProxyServer(9001).run)
+    socks_proxy.daemon=True
+    socks_proxy.start()
 
-print('about to recv...')
-print(zmq_server.recv())
+    socks_proxy2 = threading.Thread(target=SocksProxyServer(9002).run)
+    socks_proxy2.daemon=True
+    socks_proxy2.start()
+
+    context = SecureContext(shared_secret=generate_shared_secret())
+    zmq_server = context.socket(zmq.REP)
+    zmq_client = context.socket(zmq.REQ)
+
+    # zmq_client.socks_proxy = b'127.0.0.1:9001'
+    zmq_client.IPV6 = 1
+    zmq_server.IPV6 = 1
+
+    zmq_server.bind('tcp://::1:9000')
+
+    print('about to connect...')
+    zmq_client.connect('tcp://127.0.0.1:9001|127.0.0.1:9002|::1:9000')
+
+    print('about to send...')
+    zmq_client.send(b'hello')
+
+    print('about to recv...')
+    print(zmq_server.recv())
