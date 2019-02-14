@@ -5,6 +5,8 @@ import socket
 import select
 from struct import pack, unpack
 from binascii import hexlify, unhexlify
+from weakref import WeakSet
+
 import ipaddress
 import zmq
 
@@ -50,6 +52,10 @@ class SocketClosed(RuntimeError):
     pass
 
 
+class RouteNotAllowed(ValueError):
+    pass
+
+
 class RecvAll(object):
     """Buffer for receiving the exact number of bytes requested from a socket."""
 
@@ -77,13 +83,15 @@ class SocksProxyConnection(object):
     """Class representing a connection from a client to an endpoint via a socks proxy"""
     def __init__(self, client, address, socks_proxy_server):
         self.client = client
-        self.address = address
+        self.source_host = ipaddress.ip_address(address[0])
+        self.source_port = address[1]
         self.thread = None
         self.client_recvall = RecvAll(self.client, self)
         self.sendall = self.client.sendall
         self.socks_proxy_server = socks_proxy_server
         self.server = None
         self.server_recvall = None
+        self.ended = False
 
     def start(self):
         self.thread = threading.Thread(target=self.run)
@@ -121,22 +129,34 @@ class SocksProxyConnection(object):
         print('port is', port)
         return address_type, address, port, address_message
 
-    def end(self):
+    def end(self, raise_exc=True):
         print('end')
-        """Shutdown the socket and raise SocketClosed"""
+        """Shutdown remaining open sockets and raise SocketClosed, unless
+        raise_exc=False.
+        """
+        self.ended = True
         try:
             self.client.shutdown(socket.SHUT_RDWR)
-        except OSError:
+        except (OSError, AttributeError):
             pass
-        self.client.close()
+        try:
+            self.client.close()
+        except (OSError, AttributeError):
+            pass
         self.client = None
         self.client_recvall = None
-        if self.server is not None:
+        try:
             self.server.shutdown(socket.SHUT_RDWR)
+        except (OSError, AttributeError):
+            pass
+        try:
             self.server.close()
+        except (OSError, AttributeError):
+            pass
         self.server = None
         self.server_recvall = None
-        raise SocketClosed()
+        if raise_exc:
+            raise SocketClosed()
 
     def server_init(self):
         """Communicate using the SOCKS 5 protocol, acting as the server, to setup a
@@ -162,7 +182,6 @@ class SocksProxyConnection(object):
         if address_type not in [IPV4, IPV6, DOMAIN]:
             print('address type not valid')
             self.end()
-        # TODO check with self.socks_proxy_server if address allowed
         if version != VERSION_FIVE or command_code != TCP_CONNECT:
             # We only support TCP_CONNECT for the moment
             status = COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
@@ -175,6 +194,10 @@ class SocksProxyConnection(object):
             self.end()
 
     def connect_bare(self, address_type, address, port):
+        if not self.socks_proxy_server.allows(
+            self.source_host, self.source_port, address, port
+        ):
+            raise RouteNotAllowed()
         if address_type == IPV4:
             self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server.connect((address, port))
@@ -192,7 +215,10 @@ class SocksProxyConnection(object):
     def connect(self, address_type, address, port):
         print('connect')
         if address_type in [IPV4, IPV6]:
-            self.connect_bare(address_type, address, port)
+            try:
+                self.connect_bare(address_type, address, port)
+            except RouteNotAllowed:
+                return DENIED
         elif address_type == DOMAIN:
             # DOMAIN address. We don't interpret domains as actual hostnames, instead we
             # treat them as a hex-encoded list of SOCKS 5 hops in the format:
@@ -212,7 +238,10 @@ class SocksProxyConnection(object):
             first_hop_details = self.parse_address(bytes_io.read)
             proxy_address_type, proxy_addr, proxy_port, _ = first_hop_details
             print('about to connect:', proxy_address_type, proxy_addr, proxy_port)
-            self.connect_bare(proxy_address_type, proxy_addr, proxy_port)
+            try:
+                self.connect_bare(proxy_address_type, proxy_addr, proxy_port)
+            except RouteNotAllowed:
+                return DENIED
             if n_hops == 1:
                 # We're the last hop:
                 return GRANTED
@@ -253,7 +282,12 @@ class SocksProxyConnection(object):
                     other_sock = self.client
                 else:
                     other_sock = self.server
-                data = sock.recv(BUFFER_SIZE)
+                try:
+                    data = sock.recv(BUFFER_SIZE)
+                except OSError:
+                    if self.ended:
+                        return
+                    raise
                 print(socks[sock], ':', data)
                 if not data:
                     self.end()
@@ -265,7 +299,6 @@ class SocksProxyConnection(object):
             try:
                 self.server_init()
             except socket.timeout:
-                raise
                 self.end()
                 return
             self.server.settimeout(None)
@@ -274,22 +307,121 @@ class SocksProxyConnection(object):
         except SocketClosed:
             return
 
+    def stop(self):
+        self.end()
+        self.thread.join()
+        self.thread = None
+
         
+class AllowRule(object):
+    """Class to represent allowed route. Hosts must be single IP addresses, or IP
+    address ranges as strings, such as '192.168.0.0/28' - i.e. anything that can be
+    passed to ipaddress.ip_network() - or "*"" to mean any IP address, and ports must be
+    integers, tuples of lower and upper inclusive bounds, or "*" to mean any port"""
+    def __init__(self, source_host, source_port, dest_host, dest_port):
+        self.source_host = source_host
+        self.dest_host = dest_host
+        if self.source_host != '*':
+            self.source_host = ipaddress.ip_network(source_host)
+        if self.dest_host != '*':
+            self.dest_host = ipaddress.ip_network(dest_host)
+        if source_port != '*':
+            if isinstance(source_port, int):
+                self.source_port_range = range(source_port, source_port+1)
+            else:
+                lower, upper = source_port
+                self.source_port_range = range(lower, upper+1)
+        else:
+            self.source_port_range = '*'
+        if dest_port != '*':
+            if isinstance(dest_port, int):
+                self.source_port_range = range(dest_port, dest_port+1)
+            else:
+                lower, upper = dest_port
+                self.dest_port_range = range(lower, upper+1)
+        else:
+            self.dest_port_range = '*'
+
+    def allows(self, source_host, source_port, dest_host, dest_port):
+        """Return whether the rule allows the given route. hosts should be srings or
+        ipaddress.IPv4Address or IPv6Address objects, and ports should be integers"""
+        if not isinstance(source_host, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            source_host = ipaddress.ip_address(source_host)
+        if not isinstance(dest_host, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
+            dest_host = ipaddress.ip_address(dest_host)
+        if self.source_host != '*' and source_host not in self.source_host:
+            print('source host denied')
+            return False
+        if self.dest_host != '*' and dest_host not in self.dest_host:
+            print(dest_host, self.dest_host)
+            print('dest host denied')
+            return False
+        if self.source_port_range != '*' and source_port not in self.source_port_range:
+            print('source port denied')
+            return False
+        if self.dest_port_range != '*' and dest_port not in self.dest_port_range:
+            print('dest port denied')
+            return False
+        return True
+
+
 class SocksProxyServer(object):
     def __init__(self, port):
         self.port = port
-        self.allowed_routes = set()
+        self.rules = set()
         self.listener = None
+        self.connections = WeakSet()
+        self.started = threading.Event()
+        self.mainloop_thread = None
+        self.shutting_down = False
+
+    def allows(self, source_host, source_port, dest_host, dest_port):
+        """Whether this route is allowed according to our current set of rules"""
+        for rule in self.rules.copy():
+            if rule.allows(source_host, source_port, dest_host, dest_port):
+                return True
+        return False
 
     def run(self):
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.listener.bind(('0.0.0.0', self.port))
         self.listener.listen(5)
+        self.started.set()
         while True:
-            (client, address) = self.listener.accept()
+            try:
+                (client, address) = self.listener.accept()
+            except OSError:
+                if self.shutting_down:
+                    break
+                raise
             print('got a client')
-            SocksProxyConnection(client, address, self).start()
+            connection = SocksProxyConnection(client, address, self)
+            self.connections.add(connection)
+            connection.start()
+
+    def start(self):
+        """Call self.run() in a thread"""
+        self.mainloop_thread = threading.Thread(target=self.run)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
+        self.started.wait()
+
+    def shutdown(self):
+        self.shutting_down = True
+        self.listener.shutdown(socket.SHUT_RDWR)
+        self.listener.close()
+        while True:
+            try:
+                connection = self.connections.pop()
+            except KeyError:
+                break
+            connection.end(raise_exc=False)
+        self.mainloop_thread.join()
+        self.mainloop_thread = None
+        self.started.clear()
+        self.listener = None
+        self.shutting_down = False
 
 
 def pack_multihop_endpoint(endpoint):
@@ -325,6 +457,8 @@ def pack_multihop_endpoint(endpoint):
     packed = pack('B', len(hops) - 1)
     for hop in hops[1:]:
         host, port = hop.rsplit(':', 1)
+        if host.startswith('[') and host.endswith(']'):
+            host = host[1:-1]
         ip = ipaddress.ip_address(host)
         if ip.version == 4:
             packed += pack('B', IPV4)
@@ -345,13 +479,18 @@ def pack_multihop_endpoint(endpoint):
 if __name__ == '__main__':
     from zprocess.security import SecureContext, generate_shared_secret
 
-    socks_proxy = threading.Thread(target=SocksProxyServer(9001).run)
-    socks_proxy.daemon=True
-    socks_proxy.start()
+    socks_proxy =SocksProxyServer(9001)
+    socks_proxy2 = SocksProxyServer(9002)
 
-    socks_proxy2 = threading.Thread(target=SocksProxyServer(9002).run)
-    socks_proxy2.daemon=True
+    socks_proxy.start()
     socks_proxy2.start()
+
+    rule_1 = AllowRule('127.0.0.1', '*', '127.0.0.1', '*')
+    rule_2 = AllowRule('127.0.0.1', '*', '::1', '*')
+    socks_proxy.rules.add(rule_1)
+    socks_proxy.rules.add(rule_2)
+    socks_proxy2.rules.add(rule_1)
+    socks_proxy2.rules.add(rule_2)
 
     context = SecureContext(shared_secret=generate_shared_secret())
     zmq_server = context.socket(zmq.REP)
@@ -371,3 +510,6 @@ if __name__ == '__main__':
 
     print('about to recv...')
     print(zmq_server.recv())
+
+    socks_proxy.shutdown()
+    socks_proxy2.shutdown()
