@@ -186,12 +186,13 @@ class SecureSocket(zmq.Socket):
         # Use a socks proxy if the addr is in the format:
         # "tcp://socks_proxy1:port|socks_proxy2:port|destination_host:port".
         if '|' in addr:
-            from zprocess.remote.socks_proxy import str_to_hops, hops_to_addr
+            from zprocess.remote.socks_proxy import str_to_hops, hops_to_domain
             hops = str_to_hops(addr.split('tcp://', 1)[1])
             socks_host, socks_port = hops[0]
-            addr = 'tcp://' + hops_to_addr(hops[1:])
+            host, port = hops_to_domain(hops[1:])
             socks_host = gethostbyname(socks_host)
             socks_addr = '%s:%d' % (socks_host, socks_port)
+            addr = 'tcp://%s:%d' % (host, port)
             self.socks_proxy = socks_addr.encode('utf8')
         assert bool(bind) != bool(connect)
         method = zmq.Socket.bind if bind else zmq.Socket.connect

@@ -1,5 +1,6 @@
 from __future__ import print_function, unicode_literals, division, absolute_import
 import sys
+import os
 import threading
 import socket
 import select
@@ -19,8 +20,9 @@ else:
 
 
 BUFFER_SIZE = 8192
-TIMEOUT = 1
+TIMEOUT = 5
 
+# SOCKS 5 protocol constants:
 VERSION_FIVE = 0x05
 
 # Auth:
@@ -36,7 +38,7 @@ IPV4 = 0x01
 DOMAIN = 0x03
 IPV6 = 0x04
 
-# status:
+# Status:
 GRANTED = 0x00
 FAILURE = 0x01
 DENIED = 0x02
@@ -48,7 +50,7 @@ COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR = 0x07
 ADDRESS_TYPE_NOT_SUPPORTED = 0x08
 
 
-class SocketClosed(RuntimeError):
+class ConnectionEnded(RuntimeError):
     pass
 
 
@@ -57,27 +59,62 @@ class RouteNotAllowed(ValueError):
 
 
 class RecvAll(object):
-    """Buffer for receiving the exact number of bytes requested from a file-like
-    object."""
+    """Buffer for receiving the exact number of bytes requested from a socket or
+    file-like object, and catching errors if the socket times out, closes or if we're
+    asked to shutdown via a message to (or closure of) the self_pipe. Use of self_pipe
+    only valid on Windows if both it and the file-like object being read are sockets."""
 
-    def __init__(self, sock, closed_callback=None):
+    def __init__(
+        self,
+        sock,
+        closed_callback=None,
+        timeout=None,
+        timeout_callback=None,
+        self_pipe=None,
+        self_pipe_callback=None,
+    ):
         self.sock = sock
         self.data = b''
         self.closed_callback = closed_callback
+        self.timeout = timeout
+        self.timeout_callback = timeout_callback
+        self.self_pipe = self_pipe
+        self.self_pipe_callback = self_pipe_callback
 
-    def __call__(self, n):
+    def __call__(self, n, timeout=None):
         """Receive and return exactly n bytes, unless receiving times out or the file is
-        closed. Calls closed_callback if the file closes, or returns less than n bytes
-        if closed_callback is None. The data received so far will be available as
-        self.data if closed_callback, say, raises an exception."""
+        closed, or interrupted via self-pipe. Calls closed_callback, if any, if the file
+        closes, then returns less than n bytes. Calls self_pipe_callback, if any, if
+        interrupted, then returns potentially less than n bytes. Calls timout_callback,
+        if any, if the receiving times out, then returns potentially less than n bytes.
+        If callbacks raise an exception, the data received so far will be available as
+        self.data. The timeout is a per-read timeout, not a total one."""
         assert isinstance(n, int)
+        if timeout is None:
+            timeout = self.timeout
+        if self.self_pipe is not None:
+            fds = [self.sock, self.self_pipe]
+        else:
+            fds = [self.sock]
         while len(self.data) < n:
-            new_data = self.sock.recv(BUFFER_SIZE)
-            if not new_data:
-                if self.closed_callback is not None:
-                    self.closed_callback()
+            fds, _, _ = select.select(fds, [], [], timeout)
+            if self.sock in fds:
+                new_data = self.sock.recv(BUFFER_SIZE)
+                if not new_data:
+                    if self.closed_callback is not None:
+                        self.closed_callback()
                     return self.data
-            self.data += new_data
+                self.data += new_data
+            if self.self_pipe in fds:
+                # We've been interrupted via the self-pipe.
+                if self.self_pipe_callback is not None:
+                    self.self_pipe_callback()
+                return self.data
+            if not fds:
+                # We've timed out:
+                if self.timeout_callback is not None:
+                    self.timeout_callback()
+                    return self.data
         data, self.data = self.data[:n], self.data[n:]
         return data
 
@@ -128,7 +165,7 @@ def str_to_hops(endpoint):
 def hops_to_str(hops):
     """Concatenate together a list of (host, port) hops into a string such as
     '127.0.0.1:9001|192.168.1.1:9002|[::1]:9000' appropriate for printing or passing to
-    a zeromq connect() call"""
+    a zeromq connect() call (does not include the 'tcp://'' prefix)"""
     formatted_hops = []
     for host, port in hops:
         ip = ipaddress.ip_address(host)
@@ -142,9 +179,12 @@ def hops_to_str(hops):
     return '|'.join(formatted_hops)
 
 
-def hops_to_addr(hops):
+def hops_to_domain(hops):
     """Take a list of (host, port) tuples as returned by endpoint_str_to_hops(), and
-    return a hex encoded string of the following bytes:
+    return a domain name and port, where the domain name encodes all the hops required
+    to get to the final host, and the port is simply the port of the final hop.
+
+    The domain is a hex encoded string of the following bytes:
         [num_hops]: 1 byte
         then for each hop:
             [addr_type]: 1 byte, IPV4 or IPV6 as defined in SOCKS 5
@@ -152,17 +192,14 @@ def hops_to_addr(hops):
                     bytes for IPV6
             [port]: network order integer, 2 bytes
 
-    the final hop lacks the port field, which is instead appended to the string as a
-    colon followed by the port number as ascii digits, as it was passed in. In this way,
-    a multihop request can be encoded as a single domain_name:port string, where
-    domain_name encodes the details of the hops to made to get to the final host.
+    with the final hop lacking the port field. In this way, a multihop request can be
+    encoded as a single domain and port.
 
-    If there is only one hop, just return host:port as a string with no further
-    encoding"""
+    If there is only one hop, the host will be returned as is without any encoding."""
     if not hops:
         raise ValueError("no hops")
     if len(hops) == 1:
-        return "%s:%d" % hops[0]
+        return hops[0]
     packed_hops = pack('B', len(hops))
     for host, port in hops:
         ip = ipaddress.ip_address(host)
@@ -174,22 +211,23 @@ def hops_to_addr(hops):
             raise ValueError(ip.version)
         packed_hops += ip.packed
         packed_hops += pack('!H', int(port))
-    return hexlify(packed_hops[:-2]).decode() + ':%d' % port
+    return hexlify(packed_hops[:-2]).decode(), port
 
 
-def addr_to_hops(packed):
-    """Unpack a multihop request encoded as a domain:port, as returned by
+def domain_to_hops(domain, port):
+    """Unpack a multihop request encoded as a domain and port, as returned by
     hops_to_domain(), into a list of tuples of ip addresses and ports"""
+
     def no_more_bytes():
         raise ValueError("Input ended unexpectedly while parsing hops")
+
     # Add the final port to the packed data so it can all be parsed the same way:
-    packed_hops, final_port = packed.rsplit(':', 1)
-    packed_hops += hexlify(pack('!H', final_port))
-    read_bytes = RecvAll(BytesIO(unhexlify(packed_hops)), no_more_bytes)
+    packed_hops = domain + hexlify(pack('!H', port))
+    read_bytes = RecvAll(BytesIO(unhexlify(packed_hops)), closed_callback=no_more_bytes)
     n_hops, = unpack('B', read_bytes(1))
     hops = []
     for _ in range(n_hops):
-        addr_type, address, port, _ = parse_address(read_bytes) 
+        addr_type, address, port, _ = parse_address(read_bytes)
         if addr_type not in [IPV4, IPV6]:
             raise ValueError("Invalid addr_type %s" % addr_type)
         hops.append(address, port)
@@ -198,29 +236,50 @@ def addr_to_hops(packed):
 
 class SocksProxyConnection(object):
     """Class representing a connection from a client to an endpoint via a socks proxy"""
+
+    TIMEOUT = 5
+
     def __init__(self, client, address, socks_proxy_server):
         self.client = client
         self.source_host = ipaddress.ip_address(str(address[0]))
         self.source_port = address[1]
         self.thread = None
-        self.client_recvall = RecvAll(self.client, self.end)
+        self.client_recvall = None
         self.sendall = self.client.sendall
         self.socks_proxy_server = socks_proxy_server
         self.server = None
         self.server_recvall = None
-        self.ended = False
+        self.self_pipe_reader = None
+        self.self_pipe_writer = None
 
     def start(self):
+        if os.name == 'nt':
+            # On Windows the self-pipe trick requires an unbound UDP socket which is
+            # closed to interrupt a select() call.
+            self.self_pipe_writer = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.self_pipe_reader = self.self_pipe_reader
+        else:
+            # On unix some other file descriptor is required for the self-pipe trick, so
+            # we use a pipe
+            self.self_pipe_reader, self.self_pipe_writer = os.pipe()
+        self.client_recvall = RecvAll(
+            self.client,
+            closed_callback=lambda: self.end("Peer closed connection"),
+            timeout=TIMEOUT,
+            timeout_callback=lambda: self.end("Peer timed out"),
+            self_pipe=self.self_pipe_reader,
+            self_pipe_callback=lambda: self.end("Interrupted"),
+        )
         self.thread = threading.Thread(target=self.run)
         self.thread.daemon = True
         print("Starting Connection")
         self.thread.start()
 
-    def end(self, reason='', raise_exc=True):
+    def end(self, reason=''):
         """Shutdown remaining open sockets and raise SocketClosed, unless
         raise_exc=False. Reason string will be passed to the exception raised.
         """
-        self.ended = True
+        print(self.source_port, "ending")
         try:
             self.client.shutdown(socket.SHUT_RDWR)
         except (OSError, AttributeError):
@@ -241,8 +300,7 @@ class SocksProxyConnection(object):
             pass
         self.server = None
         self.server_recvall = None
-        if raise_exc:
-            raise SocketClosed(reason)
+        raise ConnectionEnded(reason)
 
     def server_init(self):
         """Communicate using the SOCKS 5 protocol, acting as the server, to setup a
@@ -268,7 +326,7 @@ class SocksProxyConnection(object):
         response = pack('BBx', VERSION_FIVE, status) + address_message
         self.client.sendall(response)
         if status != GRANTED:
-            self.end('not granted')# TODO: why?
+            self.end('not granted')  # TODO: why?
 
     def connect_bare(self, address_type, address, port):
         if not self.socks_proxy_server.allows(
@@ -286,8 +344,14 @@ class SocksProxyConnection(object):
             self.server.connect(addrinfo[0][-1])
         else:
             raise ValueError(address_type)
-        self.server_recvall = RecvAll(self.server, self)
-        self.server.settimeout(TIMEOUT)
+        self.server_recvall = RecvAll(
+            self.server,
+            closed_callback=lambda: self.end("Peer closed connection"),
+            timeout=TIMEOUT,
+            timeout_callback=lambda: self.end("Peer timed out"),
+            self_pipe=self.self_pipe_reader,
+            self_pipe_callback=lambda: self.end("Interrupted"),
+        )
 
     def connect(self, address_type, address, port):
         if address_type in [IPV4, IPV6]:
@@ -337,7 +401,7 @@ class SocksProxyConnection(object):
             return AUTH_NOT_SUPPORTED
         self.server.sendall(pack('BBx', VERSION_FIVE, TCP_CONNECT) + addr_message)
         version, status = unpack('BBx', self.server_recvall(3))
-        echo_addr_message =  self.server_recvall(len(addr_message))
+        echo_addr_message = self.server_recvall(len(addr_message))
         if version != VERSION_FIVE or echo_addr_message != addr_message:
             self.end()
         return status
@@ -345,71 +409,59 @@ class SocksProxyConnection(object):
     def do_forwarding(self):
         while True:
             # Now forward messages between them until one closes:
-            # print('selecting')
-            socks = [self.server, self.client]
-            readable, _, exceptional = select.select(socks, [], socks)
-            # print('select returned')
-            # print('exceptional:', exceptional)
-            for sock in readable:
-                if sock is self.server:
-                    # print('sock is server')
+            print(self.source_port, 'about to select')
+            readable, _, _ = select.select(
+                [self.server, self.client, self.self_pipe_reader], [], []
+            )
+            print(self.source_port, 'select returned')
+            for fd in readable:
+                if fd is self.self_pipe_reader:
+                    print(self.source_port, "self piped!")
+                    # We've been interrupted via self-pipe:
+                    self.end("Interrupted")
+                if fd is self.server:
+                    print(self.source_port, 'sock is server')
                     other_sock = self.client
                 else:
-                    # print('sock is client')
+                    print(self.source_port, 'sock is client')
                     other_sock = self.server
-                try:
-                    print(self.source_port, 'recving, ended =', self.ended)
-                    data = sock.recv(BUFFER_SIZE)
-                except OSError:
-                    if self.ended:
-                        print(self.source_port, 'returning')
-                        return
-                    raise
-                if not data:
-                    self.end()
-                # print('sending')
-                try:
+                print(self.source_port, 'recving')
+                data = fd.recv(BUFFER_SIZE)
+                if data:
                     other_sock.send(data)
-                except OSError:
-                    if self.ended:
-                        print(self.source_port, 'returning')
-                        return
-                    raise
-
+                else:
+                    # One of the sockets closed from the other end:
+                    print(self.source_port, "A sock closed!")
+                    self.end("Peer closed connection")
 
     def run(self):
-        self.client.settimeout(TIMEOUT)
         try:
-            try:
-                print(self.source_port, 'server_init')
-                self.server_init()
-            except socket.timeout:
-                self.end()
-                return
-            self.server.settimeout(None)
-            self.client.settimeout(None)
-            import time
+            print(self.source_port, 'server_init')
+            self.server_init()
             print(self.source_port, 'do_forwarding')
             self.do_forwarding()
-        except SocketClosed:
-            print(self.source_port, 'returning')
-            return
-        finally:
-            self.end(raise_exc=False)
-        print(self.source_port, 'returning')
+        except ConnectionEnded as e:
+            print('Ended:', str(e))
 
     def stop(self):
-        self.end(raise_exc=False)
-        print("Join Connection")
+        # Close the write end of the self-pipe to interrupt select() calls and signify
+        # that we are shutting down:
+        if os.name == 'nt':
+            self.self_pipe_writer.close()
+        else:
+            os.close(self.self_pipe_writer)
+        print(self.source_port, "Join Connection")
         self.thread.join()
+        print(self.source_port, "Join completed")
         self.thread = None
 
-        
+
 class AllowRule(object):
     """Class to represent allowed route. Hosts must be single IP addresses, or IP
     address ranges as strings, such as '192.168.0.0/28' - i.e. anything that can be
     passed to ipaddress.ip_network() - or "*"" to mean any IP address, and ports must be
     integers, tuples of lower and upper inclusive bounds, or "*" to mean any port"""
+
     def __init__(self, source_host, source_port, dest_host, dest_port):
         self.source_host = source_host
         self.dest_host = dest_host
@@ -419,18 +471,18 @@ class AllowRule(object):
             self.dest_host = ipaddress.ip_network(dest_host)
         if source_port != '*':
             if isinstance(source_port, int):
-                self.source_port_range = range(source_port, source_port+1)
+                self.source_port_range = range(source_port, source_port + 1)
             else:
                 lower, upper = source_port
-                self.source_port_range = range(lower, upper+1)
+                self.source_port_range = range(lower, upper + 1)
         else:
             self.source_port_range = '*'
         if dest_port != '*':
             if isinstance(dest_port, int):
-                self.source_port_range = range(dest_port, dest_port+1)
+                self.source_port_range = range(dest_port, dest_port + 1)
             else:
                 lower, upper = dest_port
-                self.dest_port_range = range(lower, upper+1)
+                self.dest_port_range = range(lower, upper + 1)
         else:
             self.dest_port_range = '*'
 
@@ -513,11 +565,10 @@ class SocksProxyServer(object):
         self.shutting_down = False
 
 
-
 if __name__ == '__main__':
     from zprocess.security import SecureContext, generate_shared_secret
 
-    socks_proxy =SocksProxyServer(9001)
+    socks_proxy = SocksProxyServer(9001)
     socks_proxy2 = SocksProxyServer(9002)
 
     socks_proxy.start()
@@ -549,7 +600,52 @@ if __name__ == '__main__':
     print('about to recv...')
     print(zmq_server.recv())
 
+    import time
+
+    # time.sleep(1)
+    print('********closing server 1********')
     socks_proxy.shutdown()
+
+    # time.sleep(1)
+    print('********closing server 2********')
     socks_proxy2.shutdown()
 
     print(threading.active_count())
+
+    import socket
+import select
+import time
+import threading
+
+PORT = 8000
+BUFSIZE = 8192
+
+# def server():
+#     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+#     listener.bind(('0.0.0.0', PORT))
+#     listener.listen(5)
+#     started.set()
+#     (client, address) = listener.accept()
+#     print('got a client!')
+#     fds, _, _ = select.select([client, self_pipe], [], [])
+#     print('select returned:', fds)
+#     if client in fds:
+#         print(client.recv(BUFSIZE))
+#     client.close()
+#     listener.close()
+
+
+# def client():
+#     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+#     server.connect(('127.0.0.1', PORT))
+#     time.sleep(1)
+#     self_pipe.close()
+#     server.send(b'hello!')
+#     server.close()
+
+# self_pipe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+# started = threading.Event()
+# threading.Thread(target=server).start()
+# started.wait()
+# client()
