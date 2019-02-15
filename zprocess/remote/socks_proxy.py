@@ -200,7 +200,7 @@ class SocksProxyConnection(object):
     """Class representing a connection from a client to an endpoint via a socks proxy"""
     def __init__(self, client, address, socks_proxy_server):
         self.client = client
-        self.source_host = ipaddress.ip_address(address[0])
+        self.source_host = ipaddress.ip_address(str(address[0]))
         self.source_port = address[1]
         self.thread = None
         self.client_recvall = RecvAll(self.client, self.end)
@@ -213,10 +213,10 @@ class SocksProxyConnection(object):
     def start(self):
         self.thread = threading.Thread(target=self.run)
         self.thread.daemon = True
+        print("Starting Connection")
         self.thread.start()
 
     def end(self, reason='', raise_exc=True):
-        print('end')
         """Shutdown remaining open sockets and raise SocketClosed, unless
         raise_exc=False. Reason string will be passed to the exception raised.
         """
@@ -290,7 +290,6 @@ class SocksProxyConnection(object):
         self.server.settimeout(TIMEOUT)
 
     def connect(self, address_type, address, port):
-        print('connect')
         if address_type in [IPV4, IPV6]:
             try:
                 self.connect_bare(address_type, address, port)
@@ -344,43 +343,64 @@ class SocksProxyConnection(object):
         return status
 
     def do_forwarding(self):
-        print('do_forwarding')
-        socks = {self.client: 'client', self.server: 'server'}
         while True:
             # Now forward messages between them until one closes:
-            readable, _, _ = select.select([self.server, self.client], [], [])
+            # print('selecting')
+            socks = [self.server, self.client]
+            readable, _, exceptional = select.select(socks, [], socks)
+            # print('select returned')
+            # print('exceptional:', exceptional)
             for sock in readable:
                 if sock is self.server:
+                    # print('sock is server')
                     other_sock = self.client
                 else:
+                    # print('sock is client')
                     other_sock = self.server
                 try:
+                    print(self.source_port, 'recving, ended =', self.ended)
                     data = sock.recv(BUFFER_SIZE)
                 except OSError:
                     if self.ended:
+                        print(self.source_port, 'returning')
                         return
                     raise
-                print(socks[sock], ':', data)
                 if not data:
                     self.end()
-                other_sock.send(data)
+                # print('sending')
+                try:
+                    other_sock.send(data)
+                except OSError:
+                    if self.ended:
+                        print(self.source_port, 'returning')
+                        return
+                    raise
+
 
     def run(self):
         self.client.settimeout(TIMEOUT)
         try:
             try:
+                print(self.source_port, 'server_init')
                 self.server_init()
             except socket.timeout:
                 self.end()
                 return
             self.server.settimeout(None)
             self.client.settimeout(None)
+            import time
+            print(self.source_port, 'do_forwarding')
             self.do_forwarding()
         except SocketClosed:
+            print(self.source_port, 'returning')
             return
+        finally:
+            self.end(raise_exc=False)
+        print(self.source_port, 'returning')
 
     def stop(self):
-        self.end()
+        self.end(raise_exc=False)
+        print("Join Connection")
         self.thread.join()
         self.thread = None
 
@@ -462,7 +482,6 @@ class SocksProxyServer(object):
                 if self.shutting_down:
                     break
                 raise
-            print('socks proxy got a client')
             connection = SocksProxyConnection(client, address, self)
             self.connections.add(connection)
             connection.start()
@@ -471,6 +490,7 @@ class SocksProxyServer(object):
         """Call self.run() in a thread"""
         self.mainloop_thread = threading.Thread(target=self.run)
         self.mainloop_thread.daemon = True
+        print("Starting server")
         self.mainloop_thread.start()
         self.started.wait()
 
@@ -478,14 +498,16 @@ class SocksProxyServer(object):
         self.shutting_down = True
         self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
+        print("Joining server")
+        self.mainloop_thread.join()
+        self.mainloop_thread = None
+        print("server over")
         while True:
             try:
                 connection = self.connections.pop()
             except KeyError:
                 break
-            connection.end(raise_exc=False)
-        self.mainloop_thread.join()
-        self.mainloop_thread = None
+            connection.stop()
         self.started.clear()
         self.listener = None
         self.shutting_down = False
@@ -529,3 +551,5 @@ if __name__ == '__main__':
 
     socks_proxy.shutdown()
     socks_proxy2.shutdown()
+
+    print(threading.active_count())
