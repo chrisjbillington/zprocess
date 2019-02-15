@@ -57,26 +57,143 @@ class RouteNotAllowed(ValueError):
 
 
 class RecvAll(object):
-    """Buffer for receiving the exact number of bytes requested from a socket."""
+    """Buffer for receiving the exact number of bytes requested from a file-like
+    object."""
 
-    def __init__(self, sock, socks_proxy_connection):
+    def __init__(self, sock, closed_callback=None):
         self.sock = sock
         self.data = b''
-        self.socks_proxy_connection = socks_proxy_connection
+        self.closed_callback = closed_callback
 
     def __call__(self, n):
-        """Receive and return exactly n bytes, unless receiving times out or the socket
-        is closed. Closes the socket on our end and raises SocketClosed if the sender
-        closes the socket. The data received so far will be available as self.data"""
+        """Receive and return exactly n bytes, unless receiving times out or the file is
+        closed. Calls closed_callback if the file closes, or returns less than n bytes
+        if closed_callback is None. The data received so far will be available as
+        self.data if closed_callback, say, raises an exception."""
         assert isinstance(n, int)
         while len(self.data) < n:
             new_data = self.sock.recv(BUFFER_SIZE)
             if not new_data:
-                self.socks_proxy_connection.end()
+                if self.closed_callback is not None:
+                    self.closed_callback()
+                    return self.data
             self.data += new_data
         data, self.data = self.data[:n], self.data[n:]
-        print('client sent:', data)
         return data
+
+
+def parse_address(readfunc):
+    """Parse an address in binary SOCKS 5 format given a readfunc(n) which reliably
+    returns the number of bytes requested. Returns the address_type, the address as
+    a string, port number as an int, and the bytes of the binary message that was
+    read. Stops reading and returns None for the address and port if the address
+    type was not one of IPV4, IPV6 or DOMAIN"""
+    address_message = readfunc(1)
+    address_type, = unpack('B', address_message)
+    if address_type == IPV4:
+        raw_address = readfunc(4)
+        address = ipaddress.IPv4Address(raw_address).compressed
+    elif address_type == IPV6:
+        raw_address = readfunc(16)
+        address = ipaddress.IPv6Address(raw_address).compressed
+    elif address_type == DOMAIN:
+        n = readfunc(1)
+        address_message += n
+        n, = unpack('B', n)
+        address = raw_address = readfunc(n)
+    else:
+        return address_type, None, None, address_message
+    address_message += raw_address
+    raw_port = readfunc(2)
+    address_message += raw_port
+    port, = unpack('!H', raw_port)
+    return address_type, address, port, address_message
+
+
+def str_to_hops(endpoint):
+    """Take a string such as '127.0.0.1:9001|192.168.1.1:9002|[::1]:9000'
+    representing a multihop SOCKS 5 proxied connection (here for example including an
+    IPV6 address), and return a list of (ip, port) tuples"""
+    result = []
+    for hop in endpoint.split('|'):
+        host, port = hop.rsplit(':', 1)
+        if host.startswith('[') and host.endswith(']'):
+            host = host[1:-1]
+        host = ipaddress.ip_address(host).compressed
+        port = int(port)
+        result.append((host, port))
+    return result
+
+
+def hops_to_str(hops):
+    """Concatenate together a list of (host, port) hops into a string such as
+    '127.0.0.1:9001|192.168.1.1:9002|[::1]:9000' appropriate for printing or passing to
+    a zeromq connect() call"""
+    formatted_hops = []
+    for host, port in hops:
+        ip = ipaddress.ip_address(host)
+        if ip.version == 4:
+            host = ip.compressed
+        elif ip.version == 6:
+            host = '[%s]' % ip.compressed
+        else:
+            assert False
+        formatted_hops.append('%s:%s' % (host, port))
+    return '|'.join(formatted_hops)
+
+
+def hops_to_addr(hops):
+    """Take a list of (host, port) tuples as returned by endpoint_str_to_hops(), and
+    return a hex encoded string of the following bytes:
+        [num_hops]: 1 byte
+        then for each hop:
+            [addr_type]: 1 byte, IPV4 or IPV6 as defined in SOCKS 5
+            [addr]: the IP address as a network-order integer, 4 bytes for IPV4 and 16
+                    bytes for IPV6
+            [port]: network order integer, 2 bytes
+
+    the final hop lacks the port field, which is instead appended to the string as a
+    colon followed by the port number as ascii digits, as it was passed in. In this way,
+    a multihop request can be encoded as a single domain_name:port string, where
+    domain_name encodes the details of the hops to made to get to the final host.
+
+    If there is only one hop, just return host:port as a string with no further
+    encoding"""
+    if not hops:
+        raise ValueError("no hops")
+    if len(hops) == 1:
+        return "%s:%d" % hops[0]
+    packed_hops = pack('B', len(hops))
+    for host, port in hops:
+        ip = ipaddress.ip_address(host)
+        if ip.version == 4:
+            packed_hops += pack('B', IPV4)
+        elif ip.version == 6:
+            packed_hops += pack('B', IPV6)
+        else:
+            raise ValueError(ip.version)
+        packed_hops += ip.packed
+        packed_hops += pack('!H', int(port))
+    return hexlify(packed_hops[:-2]).decode() + ':%d' % port
+
+
+def addr_to_hops(packed):
+    """Unpack a multihop request encoded as a domain:port, as returned by
+    hops_to_domain(), into a list of tuples of ip addresses and ports"""
+    def no_more_bytes():
+        raise ValueError("Input ended unexpectedly while parsing hops")
+    # Add the final port to the packed data so it can all be parsed the same way:
+    packed_hops, final_port = packed.rsplit(':', 1)
+    packed_hops += hexlify(pack('!H', final_port))
+    read_bytes = RecvAll(BytesIO(unhexlify(packed_hops)), no_more_bytes)
+    n_hops, = unpack('B', read_bytes(1))
+    hops = []
+    for _ in range(n_hops):
+        addr_type, address, port, _ = parse_address(read_bytes) 
+        if addr_type not in [IPV4, IPV6]:
+            raise ValueError("Invalid addr_type %s" % addr_type)
+        hops.append(address, port)
+    return hops
 
 
 class SocksProxyConnection(object):
@@ -86,7 +203,7 @@ class SocksProxyConnection(object):
         self.source_host = ipaddress.ip_address(address[0])
         self.source_port = address[1]
         self.thread = None
-        self.client_recvall = RecvAll(self.client, self)
+        self.client_recvall = RecvAll(self.client, self.end)
         self.sendall = self.client.sendall
         self.socks_proxy_server = socks_proxy_server
         self.server = None
@@ -98,41 +215,10 @@ class SocksProxyConnection(object):
         self.thread.daemon = True
         self.thread.start()
 
-    def parse_address(self, readfunc):
-        """Parse an address in binary SOCKS 5 format given a readfunc(n) which reliably
-        returns the number of bytes requested. Returns the address_type, the address as
-        a string, port number as an int, and the bytes of the binary message that was
-        read. Stops reading and returns None for the address and port if the address
-        type was not one of IPV4, IPV6 or DOMAIN"""
-        address_message = readfunc(1)
-        address_type, = unpack('B', address_message)
-        if address_type == IPV4:
-            print('address is IPV4')
-            raw_address = readfunc(4)
-            address = ipaddress.IPv4Address(raw_address).exploded
-        elif address_type == IPV6:
-            print('address is IPV6')
-            raw_address = readfunc(16)
-            address = ipaddress.IPv6Address(raw_address).exploded
-        elif address_type == DOMAIN:
-            n = readfunc(1)
-            address_message += n
-            n, = unpack('B', n)
-            address = raw_address = readfunc(n)
-        else:
-            return address_type, None, None, address_message
-        address_message += raw_address
-        raw_port = readfunc(2)
-        address_message += raw_port
-        port, = unpack('!H', raw_port)
-        print('address is', address)
-        print('port is', port)
-        return address_type, address, port, address_message
-
-    def end(self, raise_exc=True):
+    def end(self, reason='', raise_exc=True):
         print('end')
         """Shutdown remaining open sockets and raise SocketClosed, unless
-        raise_exc=False.
+        raise_exc=False. Reason string will be passed to the exception raised.
         """
         self.ended = True
         try:
@@ -156,32 +242,24 @@ class SocksProxyConnection(object):
         self.server = None
         self.server_recvall = None
         if raise_exc:
-            raise SocketClosed()
+            raise SocketClosed(reason)
 
     def server_init(self):
         """Communicate using the SOCKS 5 protocol, acting as the server, to setup a
         connection on behalf of the client"""
-        print('init')
-        print('getting version, n_auth_methods')
         version, n = unpack('BB', self.client_recvall(2))
-        print('getting auth_methods')
         auth_methods = unpack('B' * n, self.client_recvall(n))
         if version != VERSION_FIVE:
-            print('wrong version')
-            self.end()
+            self.end('Not SOCKS 5')
         if not NO_AUTH in auth_methods:
             self.client.sendall(pack('BB', VERSION_FIVE, AUTH_NOT_SUPPORTED))
-            print('auth not supported')
-            self.end()
-        print('sending chosen auth method')
+            self.end('Client does not support no-auth')
         self.client.sendall(pack('BB', VERSION_FIVE, NO_AUTH))
-        print('recving command code')
         version, command_code = unpack('BBx', self.client_recvall(3))
-        address_details = self.parse_address(self.client_recvall)
+        address_details = parse_address(self.client_recvall)
         address_type, address, port, address_message = address_details
         if address_type not in [IPV4, IPV6, DOMAIN]:
-            print('address type not valid')
-            self.end()
+            self.end('client gave invalid address type')
         if version != VERSION_FIVE or command_code != TCP_CONNECT:
             # We only support TCP_CONNECT for the moment
             status = COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
@@ -190,8 +268,7 @@ class SocksProxyConnection(object):
         response = pack('BBx', VERSION_FIVE, status) + address_message
         self.client.sendall(response)
         if status != GRANTED:
-            print('not granted')
-            self.end()
+            self.end('not granted')# TODO: why?
 
     def connect_bare(self, address_type, address, port):
         if not self.socks_proxy_server.allows(
@@ -226,18 +303,14 @@ class SocksProxyConnection(object):
             # of the message is n_hops messages packed the same way as a single SOCKS 5
             # destination specification. The last hop lacks a port - the port from the
             # original socks request is used.
-            print('domain address is', address)
-            print("packed is", unhexlify(address) + pack('!H', port))
             bytes_io = BytesIO(unhexlify(address) + pack('!H', port))
             n_hops, = unpack('B', bytes_io.read(1))
             if n_hops < 1:
                 # A single hop should be given with an IPV4 or IPV6 address, not our
                 # DOMAIN abuse:
                 return ADDRESS_TYPE_NOT_SUPPORTED
-            print('n_hops is', n_hops)
-            first_hop_details = self.parse_address(bytes_io.read)
+            first_hop_details = parse_address(bytes_io.read)
             proxy_address_type, proxy_addr, proxy_port, _ = first_hop_details
-            print('about to connect:', proxy_address_type, proxy_addr, proxy_port)
             try:
                 self.connect_bare(proxy_address_type, proxy_addr, proxy_port)
             except RouteNotAllowed:
@@ -249,7 +322,6 @@ class SocksProxyConnection(object):
                 # Reduce n_hops by one and send remaining hops:
                 addr = hexlify(pack('B', n_hops - 1) + bytes_io.read()[:-2])
                 msg = pack('BB', DOMAIN, len(addr)) + addr + pack('!H', port)
-                print("sending next hop message:", msg)
                 return self.client_init(msg)
         else:
             return COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
@@ -350,17 +422,12 @@ class AllowRule(object):
         if not isinstance(dest_host, (ipaddress.IPv4Address, ipaddress.IPv6Address)):
             dest_host = ipaddress.ip_address(dest_host)
         if self.source_host != '*' and source_host not in self.source_host:
-            print('source host denied')
             return False
         if self.dest_host != '*' and dest_host not in self.dest_host:
-            print(dest_host, self.dest_host)
-            print('dest host denied')
             return False
         if self.source_port_range != '*' and source_port not in self.source_port_range:
-            print('source port denied')
             return False
         if self.dest_port_range != '*' and dest_port not in self.dest_port_range:
-            print('dest port denied')
             return False
         return True
 
@@ -395,7 +462,7 @@ class SocksProxyServer(object):
                 if self.shutting_down:
                     break
                 raise
-            print('got a client')
+            print('socks proxy got a client')
             connection = SocksProxyConnection(client, address, self)
             self.connections.add(connection)
             connection.start()
@@ -423,57 +490,6 @@ class SocksProxyServer(object):
         self.listener = None
         self.shutting_down = False
 
-
-def pack_multihop_endpoint(endpoint):
-    """Take a string such as 'tcp://127.0.0.1:9001|192.168.1.1:9002|[::1]:9000'
-    representing a multihop SOCKS 5 proxied connection (here for example including an
-    IPV6 address), and return the address of the first hop ('127.0.0.1') as a string,
-    its port, (9000) as an integer, and then either:
-    
-    if there is only one more hop:
-        - the remaining endpint, ('tcp://192.168.1.1:9002')
-    
-    or, if there is more than one more hop:
-        
-        - 'tcp://' followed by a hex encoded string of the following bytes:
-            [num_hops]: 1 byte
-            then for each hop:
-                [addr_type]: 1 byte, IPV4 or IPV6 as defined in SOCKS 5
-                [addr]: the IP address as a network-order integer, 4 bytes for IPV4 and
-                        16 bytes for IPV6
-                [port]: network order integer, 2 bytes
-
-            the final hop lacks the port field, it is instead appended to the string as
-            a colon followed by the port number as ascii digits, as it was passed in."""
-
-    if not endpoint.startswith('tcp://'):
-        raise ValueError("Not a valid endpoint: %s" % str(endpoint))
-    hops = endpoint.split('tcp://')[1].split('|')
-    if len(hops) < 2:
-        raise ValueError("Not a multihop endpoint: %s" % str(endpoint))
-    socks_proxy, socks_port = hops[0].rsplit(':', 1)
-    if len(hops) == 2:
-        return socks_proxy, socks_port, 'tcp://' + hops[1]
-    packed = pack('B', len(hops) - 1)
-    for hop in hops[1:]:
-        host, port = hop.rsplit(':', 1)
-        if host.startswith('[') and host.endswith(']'):
-            host = host[1:-1]
-        ip = ipaddress.ip_address(host)
-        if ip.version == 4:
-            packed += pack('B', IPV4)
-            print("Packing IPV4")
-        elif ip.version == 6:
-            print("Packing IPV6")
-            packed += pack('B', IPV6)
-        else:
-            raise ValueError(ip.version)
-        packed += ip.packed
-        packed += pack('!H', int(port))
-
-    packed_endpoint = 'tcp://' + hexlify(packed[:-2]).decode() + ':' + port
-    print('packed endpoint:', packed_endpoint)
-    return socks_proxy, int(socks_port), packed_endpoint
 
 
 if __name__ == '__main__':
