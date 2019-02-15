@@ -3,7 +3,7 @@ import sys
 import os
 import threading
 import socket
-import select
+from select import select
 from struct import pack, unpack
 from binascii import hexlify, unhexlify
 from weakref import WeakSet
@@ -109,7 +109,7 @@ class RecvAll(object):
             fds = [self.sock]
         while len(self.data) < n:
             if timeout is not None or self.self_pipe is not None:
-                ready, _, _ = select.select(fds, [], [], timeout)
+                ready, _, _ = select(fds, [], [], timeout)
             else:
                 ready = fds
             if self.sock in ready:
@@ -268,7 +268,6 @@ class SocksProxyConnection(object):
         self.source_port = address[1]
         self.thread = None
         self.client_recvall = None
-        self.sendall = self.client.sendall
         self.socks_proxy_server = socks_proxy_server
         self.server = None
         self.server_recvall = None
@@ -381,7 +380,7 @@ class SocksProxyConnection(object):
             return COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
 
     def connect_bare(self, address, port):
-        print('connect bare')
+        print(self.source_port, 'connect bare')
         try:
             if not self.socks_proxy_server.allows(
                 self.source_host, self.source_port, address, port
@@ -398,11 +397,25 @@ class SocksProxyConnection(object):
                 )[0][-1]
             else:
                 assert False
-            self.server.settimeout(TIMEOUT)
-            print('about to connect...')
-            self.server.connect(addrinfo)
-            self.server.settimeout(None)
-            print('bare connect done')
+            # Non-blocking just during connect().
+            self.server.setblocking(0)
+            print(self.source_port, 'about to connect...')
+            try:
+                self.server.connect(addrinfo)
+            except (OSError, IOError) as e:
+                if e.errno != errno.EINPROGRESS:
+                    raise
+            self.server.setblocking(1)
+            interrupted, ready, _ = select(
+                [self.self_pipe_reader], [self.server], [], TIMEOUT
+            )
+            if interrupted:
+                self.end("Interrupted")
+            if not ready:
+                return TTL_EXPIRED
+            # Write empty message to raise connection exceptions, if any:
+            self.server.send(b'')
+            print(self.source_port, 'bare connect done')
         except socket.timeout:
             return TTL_EXPIRED
         except (OSError, IOError) as e:
@@ -440,7 +453,7 @@ class SocksProxyConnection(object):
         while True:
             # Now forward messages between them until one closes:
             print(self.source_port, 'about to select')
-            readable, _, _ = select.select(
+            readable, _, _ = select(
                 [self.server, self.client, self.self_pipe_reader], [], []
             )
             print(self.source_port, 'select returned')
@@ -458,7 +471,7 @@ class SocksProxyConnection(object):
                 print(self.source_port, 'recving')
                 data = fd.recv(BUFFER_SIZE)
                 if data:
-                    other_sock.send(data)
+                    other_sock.sendall(data)
                 else:
                     # One of the sockets closed from the other end:
                     print(self.source_port, "A sock closed!")
@@ -598,7 +611,6 @@ if __name__ == '__main__':
     zmq_server = context.socket(zmq.REP)
     zmq_client = context.socket(zmq.REQ)
 
-    # zmq_client.socks_proxy = b'127.0.0.1:9001'
     zmq_client.IPV6 = 1
     zmq_server.IPV6 = 1
 
@@ -613,7 +625,6 @@ if __name__ == '__main__':
     print('about to recv...')
     print(zmq_server.recv())
 
-
     print('********closing server 1********')
     socks_proxy.shutdown()
 
@@ -624,4 +635,3 @@ if __name__ == '__main__':
     socks_proxy3.shutdown()
 
     print("num threads:", threading.active_count())
-
