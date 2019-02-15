@@ -7,6 +7,7 @@ import select
 from struct import pack, unpack
 from binascii import hexlify, unhexlify
 from weakref import WeakSet
+import errno
 
 import ipaddress
 import zmq
@@ -48,6 +49,16 @@ CONNECTION_REFUSED = 0x05
 TTL_EXPIRED = 0x06
 COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR = 0x07
 ADDRESS_TYPE_NOT_SUPPORTED = 0x08
+
+# Mappings to and from OS error numbers
+ERRNO_TO_STATUS = {
+    errno.ECONNREFUSED: CONNECTION_REFUSED,
+    errno.ENETUNREACH: NETWORK_UNREACHABLE,
+    errno.EHOSTUNREACH: HOST_UNREACHABLE,
+}
+
+STATUS_TO_STR = {value: os.strerror(key) for key, value in ERRNO_TO_STATUS.items()}
+STATUS_TO_STR.update({DENIED: "Denied", TTL_EXPIRED: "Timed out"})
 
 
 class ConnectionEnded(RuntimeError):
@@ -97,20 +108,23 @@ class RecvAll(object):
         else:
             fds = [self.sock]
         while len(self.data) < n:
-            fds, _, _ = select.select(fds, [], [], timeout)
-            if self.sock in fds:
+            if timeout is not None or self.self_pipe is not None:
+                ready, _, _ = select.select(fds, [], [], timeout)
+            else:
+                ready = fds
+            if self.sock in ready:
                 new_data = self.sock.recv(BUFFER_SIZE)
                 if not new_data:
                     if self.closed_callback is not None:
                         self.closed_callback()
                     return self.data
                 self.data += new_data
-            if self.self_pipe in fds:
+            if self.self_pipe in ready:
                 # We've been interrupted via the self-pipe.
                 if self.self_pipe_callback is not None:
                     self.self_pipe_callback()
                 return self.data
-            if not fds:
+            if not ready:
                 # We've timed out:
                 if self.timeout_callback is not None:
                     self.timeout_callback()
@@ -147,6 +161,19 @@ def parse_address(readfunc):
     return address_type, address, port, address_message
 
 
+def pack_address(host, port):
+    """Pack an IP address and port into a binary message for the SOCKS 5 protocol"""
+    ip = ipaddress.ip_address(host)
+    if ip.version == 4:
+        msg = pack('B', IPV4)
+    elif ip.version == 6:
+        msg = pack('B', IPV6)
+    else:
+        assert False
+    msg += ip.packed + pack('!H', port)
+    return msg
+
+
 def str_to_hops(endpoint):
     """Take a string such as '127.0.0.1:9001|192.168.1.1:9002|[::1]:9000'
     representing a multihop SOCKS 5 proxied connection (here for example including an
@@ -179,7 +206,7 @@ def hops_to_str(hops):
     return '|'.join(formatted_hops)
 
 
-def hops_to_domain(hops):
+def hops_to_domain_addr(hops):
     """Take a list of (host, port) tuples as returned by endpoint_str_to_hops(), and
     return a domain name and port, where the domain name encodes all the hops required
     to get to the final host, and the port is simply the port of the final hop.
@@ -214,23 +241,19 @@ def hops_to_domain(hops):
     return hexlify(packed_hops[:-2]).decode(), port
 
 
-def domain_to_hops(domain, port):
+def domain_addr_to_hops(domain, port):
     """Unpack a multihop request encoded as a domain and port, as returned by
-    hops_to_domain(), into a list of tuples of ip addresses and ports"""
-
-    def no_more_bytes():
-        raise ValueError("Input ended unexpectedly while parsing hops")
+    hops_to_domain_addr(), into a list of tuples of ip addresses and ports"""
 
     # Add the final port to the packed data so it can all be parsed the same way:
-    packed_hops = domain + hexlify(pack('!H', port))
-    read_bytes = RecvAll(BytesIO(unhexlify(packed_hops)), closed_callback=no_more_bytes)
-    n_hops, = unpack('B', read_bytes(1))
+    readfunc = BytesIO(unhexlify(domain) + pack('!H', port)).read
+    n_hops, = unpack('B', readfunc(1))
     hops = []
     for _ in range(n_hops):
-        addr_type, address, port, _ = parse_address(read_bytes)
+        addr_type, address, port, _ = parse_address(readfunc)
         if addr_type not in [IPV4, IPV6]:
             raise ValueError("Invalid addr_type %s" % addr_type)
-        hops.append(address, port)
+        hops.append((address, port))
     return hops
 
 
@@ -275,29 +298,35 @@ class SocksProxyConnection(object):
         print("Starting Connection")
         self.thread.start()
 
+    def stop(self):
+        # Close the write end of the self-pipe to interrupt select() calls and signify
+        # that we are shutting down:
+        if os.name == 'nt':
+            self.self_pipe_writer.close()
+        else:
+            os.close(self.self_pipe_writer)
+        print(self.source_port, "Join Connection")
+        self.thread.join()
+        print(self.source_port, "Join completed")
+        self.thread = None
+
+    def run(self):
+        try:
+            print(self.source_port, 'server_init')
+            self.server_init()
+            print(self.source_port, 'do_forwarding')
+            self.do_forwarding()
+        except ConnectionEnded as e:
+            print('Ended:', str(e))
+
     def end(self, reason=''):
-        """Shutdown remaining open sockets and raise SocketClosed, unless
-        raise_exc=False. Reason string will be passed to the exception raised.
-        """
+        """Shutdown remaining open sockets and raise CnnectionEnded(reason)"""
         print(self.source_port, "ending")
-        try:
-            self.client.shutdown(socket.SHUT_RDWR)
-        except (OSError, AttributeError):
-            pass
-        try:
-            self.client.close()
-        except (OSError, AttributeError):
-            pass
+        self.client.close()
         self.client = None
         self.client_recvall = None
-        try:
-            self.server.shutdown(socket.SHUT_RDWR)
-        except (OSError, AttributeError):
-            pass
-        try:
+        if self.server is not None:
             self.server.close()
-        except (OSError, AttributeError):
-            pass
         self.server = None
         self.server_recvall = None
         raise ConnectionEnded(reason)
@@ -326,24 +355,59 @@ class SocksProxyConnection(object):
         response = pack('BBx', VERSION_FIVE, status) + address_message
         self.client.sendall(response)
         if status != GRANTED:
-            self.end('not granted')  # TODO: why?
+            self.end(STATUS_TO_STR[status])
 
-    def connect_bare(self, address_type, address, port):
-        if not self.socks_proxy_server.allows(
-            self.source_host, self.source_port, address, port
-        ):
-            raise RouteNotAllowed()
-        if address_type == IPV4:
-            self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server.connect((address, port))
-        elif address_type == IPV6:
-            self.server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
-            addrinfo = socket.getaddrinfo(
-                address, port, socket.AF_INET6, 0, socket.SOL_TCP
-            )
-            self.server.connect(addrinfo[0][-1])
+    def connect(self, address_type, address, port):
+        if address_type in [IPV4, IPV6]:
+            return self.connect_bare(address, port)
+        elif address_type == DOMAIN:
+            # DOMAIN address. Interpret as packed multi-hop request:
+            hops = domain_addr_to_hops(address, port)
+            if len(hops) < 2:
+                # Not multihop, should have been given as an IPV4 or IPV6 request:
+                return ADDRESS_TYPE_NOT_SUPPORTED
+            # Connect to the next socks proxy server:
+            first_hop_addr, first_hop_port = hops[0]
+            status = self.connect_bare(first_hop_addr, first_hop_port)
+            if status != GRANTED:
+                return status
+            # For each hop, request a connection to the next hop:
+            for addr, port in hops[1:]:
+                status = self.client_init(addr, port)
+                if status != GRANTED:
+                    return status
+            return GRANTED
         else:
-            raise ValueError(address_type)
+            return COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
+
+    def connect_bare(self, address, port):
+        print('connect bare')
+        try:
+            if not self.socks_proxy_server.allows(
+                self.source_host, self.source_port, address, port
+            ):
+                return DENIED
+            ip_version = ipaddress.ip_address(address).version
+            if ip_version == 4:
+                self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                addrinfo = (address, port)
+            elif ip_version == 6:
+                self.server = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+                addrinfo = socket.getaddrinfo(
+                    address, port, socket.AF_INET6, 0, socket.SOL_TCP
+                )[0][-1]
+            else:
+                assert False
+            self.server.settimeout(TIMEOUT)
+            print('about to connect...')
+            self.server.connect(addrinfo)
+            self.server.settimeout(None)
+            print('bare connect done')
+        except socket.timeout:
+            return TTL_EXPIRED
+        except (OSError, IOError) as e:
+            return ERRNO_TO_STATUS[e.errno]
+
         self.server_recvall = RecvAll(
             self.server,
             closed_callback=lambda: self.end("Peer closed connection"),
@@ -352,44 +416,9 @@ class SocksProxyConnection(object):
             self_pipe=self.self_pipe_reader,
             self_pipe_callback=lambda: self.end("Interrupted"),
         )
+        return GRANTED
 
-    def connect(self, address_type, address, port):
-        if address_type in [IPV4, IPV6]:
-            try:
-                self.connect_bare(address_type, address, port)
-            except RouteNotAllowed:
-                return DENIED
-        elif address_type == DOMAIN:
-            # DOMAIN address. We don't interpret domains as actual hostnames, instead we
-            # treat them as a hex-encoded list of SOCKS 5 hops in the format:
-            # [n_hops][addr_type][addr][port][...] where n_hops is 1 byte, and the rest
-            # of the message is n_hops messages packed the same way as a single SOCKS 5
-            # destination specification. The last hop lacks a port - the port from the
-            # original socks request is used.
-            bytes_io = BytesIO(unhexlify(address) + pack('!H', port))
-            n_hops, = unpack('B', bytes_io.read(1))
-            if n_hops < 1:
-                # A single hop should be given with an IPV4 or IPV6 address, not our
-                # DOMAIN abuse:
-                return ADDRESS_TYPE_NOT_SUPPORTED
-            first_hop_details = parse_address(bytes_io.read)
-            proxy_address_type, proxy_addr, proxy_port, _ = first_hop_details
-            try:
-                self.connect_bare(proxy_address_type, proxy_addr, proxy_port)
-            except RouteNotAllowed:
-                return DENIED
-            if n_hops == 1:
-                # We're the last hop:
-                return GRANTED
-            else:
-                # Reduce n_hops by one and send remaining hops:
-                addr = hexlify(pack('B', n_hops - 1) + bytes_io.read()[:-2])
-                msg = pack('BB', DOMAIN, len(addr)) + addr + pack('!H', port)
-                return self.client_init(msg)
-        else:
-            return COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
-
-    def client_init(self, addr_message):
+    def client_init(self, host, port):
         """Communicate using the SOCKS 5 protocol, acting as the client, to setup a
         connection to a destination through another socks server to a destination
         specified in the byte-packed addr_message"""
@@ -399,6 +428,7 @@ class SocksProxyConnection(object):
             self.end()
         if auth != NO_AUTH:
             return AUTH_NOT_SUPPORTED
+        addr_message = pack_address(host, port)
         self.server.sendall(pack('BBx', VERSION_FIVE, TCP_CONNECT) + addr_message)
         version, status = unpack('BBx', self.server_recvall(3))
         echo_addr_message = self.server_recvall(len(addr_message))
@@ -433,27 +463,6 @@ class SocksProxyConnection(object):
                     # One of the sockets closed from the other end:
                     print(self.source_port, "A sock closed!")
                     self.end("Peer closed connection")
-
-    def run(self):
-        try:
-            print(self.source_port, 'server_init')
-            self.server_init()
-            print(self.source_port, 'do_forwarding')
-            self.do_forwarding()
-        except ConnectionEnded as e:
-            print('Ended:', str(e))
-
-    def stop(self):
-        # Close the write end of the self-pipe to interrupt select() calls and signify
-        # that we are shutting down:
-        if os.name == 'nt':
-            self.self_pipe_writer.close()
-        else:
-            os.close(self.self_pipe_writer)
-        print(self.source_port, "Join Connection")
-        self.thread.join()
-        print(self.source_port, "Join completed")
-        self.thread = None
 
 
 class AllowRule(object):
@@ -530,7 +539,7 @@ class SocksProxyServer(object):
         while True:
             try:
                 (client, address) = self.listener.accept()
-            except OSError:
+            except (OSError, socket.error):
                 if self.shutting_down:
                     break
                 raise
@@ -570,9 +579,11 @@ if __name__ == '__main__':
 
     socks_proxy = SocksProxyServer(9001)
     socks_proxy2 = SocksProxyServer(9002)
+    socks_proxy3 = SocksProxyServer(9003)
 
     socks_proxy.start()
     socks_proxy2.start()
+    socks_proxy3.start()
 
     rule_1 = AllowRule('127.0.0.1', '*', '127.0.0.1', '*')
     rule_2 = AllowRule('127.0.0.1', '*', '::1', '*')
@@ -580,6 +591,8 @@ if __name__ == '__main__':
     socks_proxy.rules.add(rule_2)
     socks_proxy2.rules.add(rule_1)
     socks_proxy2.rules.add(rule_2)
+    socks_proxy3.rules.add(rule_1)
+    socks_proxy3.rules.add(rule_2)
 
     context = SecureContext(shared_secret=generate_shared_secret())
     zmq_server = context.socket(zmq.REP)
@@ -592,7 +605,7 @@ if __name__ == '__main__':
     zmq_server.bind('tcp://::1:9000')
 
     print('about to connect...')
-    zmq_client.connect('tcp://127.0.0.1:9001|127.0.0.1:9002|::1:9000')
+    zmq_client.connect('tcp://127.0.0.1:9001|127.0.0.1:9002|127.0.0.1:9003|::1:9000')
 
     print('about to send...')
     zmq_client.send(b'hello')
@@ -600,52 +613,15 @@ if __name__ == '__main__':
     print('about to recv...')
     print(zmq_server.recv())
 
-    import time
 
-    # time.sleep(1)
     print('********closing server 1********')
     socks_proxy.shutdown()
 
-    # time.sleep(1)
     print('********closing server 2********')
     socks_proxy2.shutdown()
 
-    print(threading.active_count())
+    print('********closing server 3********')
+    socks_proxy3.shutdown()
 
-    import socket
-import select
-import time
-import threading
+    print("num threads:", threading.active_count())
 
-PORT = 8000
-BUFSIZE = 8192
-
-# def server():
-#     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-#     listener.bind(('0.0.0.0', PORT))
-#     listener.listen(5)
-#     started.set()
-#     (client, address) = listener.accept()
-#     print('got a client!')
-#     fds, _, _ = select.select([client, self_pipe], [], [])
-#     print('select returned:', fds)
-#     if client in fds:
-#         print(client.recv(BUFSIZE))
-#     client.close()
-#     listener.close()
-
-
-# def client():
-#     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-#     server.connect(('127.0.0.1', PORT))
-#     time.sleep(1)
-#     self_pipe.close()
-#     server.send(b'hello!')
-#     server.close()
-
-# self_pipe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-# started = threading.Event()
-# threading.Thread(target=server).start()
-# started.wait()
-# client()
