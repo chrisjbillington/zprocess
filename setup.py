@@ -44,7 +44,8 @@ setup(
         'zprocess.locking',
         'zprocess.zlog',
         'zprocess.remote',
-        'zprocess.examples'
+        'zprocess.examples',
+        'zprocess.socks'
     ],
     install_requires=dependencies,
 )
