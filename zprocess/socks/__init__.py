@@ -12,6 +12,8 @@ if PY2:
 else:
     from io import BytesIO
 
+DEFAULT_PORT = 7342
+
 # SOCKS 5 protocol constants:
 class socks5(enum.IntEnum):
 
@@ -116,7 +118,7 @@ def hops_to_str(hops):
 
 
 def hops_to_domain_addr(hops):
-    """Take a list of (host, port) tuples as returned by endpoint_str_to_hops(), and
+    """Take a list of (host, port) tuples as returned by str_to_hops(), and
     return a domain name and port, where the domain name encodes all the hops required
     to get to the final host, and the port is simply the port of the final hop.
 

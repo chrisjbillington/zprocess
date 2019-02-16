@@ -18,7 +18,15 @@ if PY2:
 else:
     from io import BytesIO
 
-from zprocess.socks import socks5, parse_address, pack_address, domain_addr_to_hops
+from zprocess.socks import (
+    socks5,
+    parse_address,
+    pack_address,
+    domain_addr_to_hops,
+    hops_to_str,
+    DEFAULT_PORT,
+)
+from zprocess.utils import setup_logging
 
 BUFFER_SIZE = 8192
 TIMEOUT = 5
@@ -31,7 +39,18 @@ ERRNO_TO_STATUS = {
 }
 
 STATUS_TO_STR = {value: os.strerror(key) for key, value in ERRNO_TO_STATUS.items()}
-STATUS_TO_STR.update({socks5.DENIED: "Denied", socks5.TTL_EXPIRED: "Timed out"})
+STATUS_TO_STR.update(
+    {
+        socks5.DENIED: "denied: not allowed by any rule",
+        socks5.TTL_EXPIRED: "connecting to destination timed out",
+    }
+)
+
+def ordinal(n):
+    """Return the ordinal for an int, eg 1st, 2nd, 3rd. From user Gareth on
+    codegolf.stackexchange.com """
+    suffixes = {1: "st", 2: "nd", 3: "rd"}
+    return str(n) + suffixes.get(n % 10 * (n % 100 not in [11, 12, 13]), "th")
 
 class ConnectionEnded(RuntimeError):
     pass
@@ -117,10 +136,13 @@ class SocksProxyConnection(object):
         self.thread = None
         self.client_recvall = None
         self.socks_proxy_server = socks_proxy_server
+        self.logger = socks_proxy_server.logger
         self.server = None
         self.server_recvall = None
         self.self_pipe_reader = None
         self.self_pipe_writer = None
+        self.established = False
+        self.conn_str = None
 
     def start(self):
         if os.name == 'nt':
@@ -134,15 +156,14 @@ class SocksProxyConnection(object):
             self.self_pipe_reader, self.self_pipe_writer = os.pipe()
         self.client_recvall = RecvAll(
             self.client,
-            closed_callback=lambda: self.end("Peer closed connection"),
+            closed_callback=lambda: self.end("closed by origin"),
             timeout=TIMEOUT,
-            timeout_callback=lambda: self.end("Peer timed out"),
+            timeout_callback=lambda: self.end("origin timed out"),
             self_pipe=self.self_pipe_reader,
-            self_pipe_callback=lambda: self.end("Interrupted"),
+            self_pipe_callback=lambda: self.end("interrupted"),
         )
         self.thread = threading.Thread(target=self.run)
         self.thread.daemon = True
-        print("Starting Connection")
         self.thread.start()
 
     def stop(self):
@@ -152,23 +173,36 @@ class SocksProxyConnection(object):
             self.self_pipe_writer.close()
         else:
             os.close(self.self_pipe_writer)
-        print(self.source_port, "Join Connection")
         self.thread.join()
-        print(self.source_port, "Join completed")
         self.thread = None
 
     def run(self):
         try:
-            print(self.source_port, 'server_init')
             self.server_init()
-            print(self.source_port, 'do_forwarding')
+            self.established = True
+            self.logger.info(
+                'established: %s:%d -> %s',
+                self.source_host,
+                self.source_port,
+                self.conn_str,
+            )
             self.do_forwarding()
         except ConnectionEnded as e:
-            print('Ended:', str(e))
+            if self.established:
+                event = 'closed'
+            else:
+                event = 'failed'
+            self.logger.info(
+                '%s (%s): %s:%d -> %s',
+                event,
+                str(e),
+                self.source_host,
+                self.source_port,
+                self.conn_str or '?',
+            )
 
     def end(self, reason=''):
         """Shutdown remaining open sockets and raise CnnectionEnded(reason)"""
-        print(self.source_port, "ending")
         self.client.close()
         self.client = None
         self.client_recvall = None
@@ -184,51 +218,57 @@ class SocksProxyConnection(object):
         version, n = unpack('BB', self.client_recvall(2))
         auth_methods = unpack('B' * n, self.client_recvall(n))
         if version != socks5.VERSION:
-            self.end('Not SOCKS 5')
+            self.end('protocol error: not socks 5')
         if not socks5.NO_AUTH in auth_methods:
             self.client.sendall(pack('BB', socks5.VERSION, socks5.AUTH_NOT_SUPPORTED))
-            self.end('Client does not support no-auth')
+            self.end('authentication unsupported')
         self.client.sendall(pack('BB', socks5.VERSION, socks5.NO_AUTH))
         version, command_code = unpack('BBx', self.client_recvall(3))
         address_details = parse_address(self.client_recvall)
         address_type, address, port, address_message = address_details
+        if address_type == socks5.DOMAIN:
+            self.conn_str = hops_to_str(domain_addr_to_hops(address, port))
+        else:
+            self.conn_str = '%s:%d' % (address, port)
         if address_type not in [socks5.IPV4, socks5.IPV6, socks5.DOMAIN]:
-            self.end('client gave invalid address type')
+            self.end('invalid address type')
         if version != socks5.VERSION or command_code != socks5.TCP_CONNECT:
             # We only support TCP_CONNECT for the moment
             status = socks5.COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
         else:
-            status = self.connect(address_type, address, port)
+            status, failed_hop_num = self.connect(address_type, address, port)
         response = pack('BBx', socks5.VERSION, status) + address_message
         self.client.sendall(response)
         if status != socks5.GRANTED:
-            self.end(STATUS_TO_STR[status])
+            errmsg = STATUS_TO_STR[status]
+            if failed_hop_num is not None:
+                errmsg += " on %s hop" % ordinal(failed_hop_num)
+            self.end(errmsg)
 
     def connect(self, address_type, address, port):
         if address_type in [socks5.IPV4, socks5.IPV6]:
-            return self.connect_bare(address, port)
+            return self.connect_bare(address, port), None
         elif address_type == socks5.DOMAIN:
             # DOMAIN address. Interpret as packed multi-hop request:
             hops = domain_addr_to_hops(address, port)
             if len(hops) < 2:
                 # Not multihop, should have been given as an IPV4 or IPV6 request:
-                return socks5.ADDRESS_TYPE_NOT_SUPPORTED
+                return socks5.ADDRESS_TYPE_NOT_SUPPORTED, None
             # Connect to the next socks proxy server:
             first_hop_addr, first_hop_port = hops[0]
             status = self.connect_bare(first_hop_addr, first_hop_port)
             if status != socks5.GRANTED:
-                return status
+                return status, 1
             # For each hop, request a connection to the next hop:
-            for addr, port in hops[1:]:
+            for i, (addr, port) in enumerate(hops[1:]):
                 status = self.client_init(addr, port)
                 if status != socks5.GRANTED:
-                    return status
-            return socks5.GRANTED
+                    return status, i+2
+            return socks5.GRANTED, None
         else:
-            return socks5.COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR
+            return socks5.COMMAND_NOT_SUPPORTED_OR_PROTOCOL_ERROR, None
 
     def connect_bare(self, address, port):
-        print(self.source_port, 'connect bare')
         try:
             if not self.socks_proxy_server.allows(
                 self.source_host, self.source_port, address, port
@@ -247,7 +287,6 @@ class SocksProxyConnection(object):
                 assert False
             # Non-blocking just during connect().
             self.server.setblocking(0)
-            print(self.source_port, 'about to connect...')
             try:
                 self.server.connect(addrinfo)
             except (OSError, IOError) as e:
@@ -258,22 +297,21 @@ class SocksProxyConnection(object):
                 [self.self_pipe_reader], [self.server], [], TIMEOUT
             )
             if interrupted:
-                self.end("Interrupted")
+                self.end("interrupted")
             if not ready:
                 return socks5.TTL_EXPIRED
             # Write empty message to raise connection exceptions, if any:
             self.server.send(b'')
-            print(self.source_port, 'bare connect done')
         except (OSError, IOError) as e:
             return ERRNO_TO_STATUS[e.errno]
 
         self.server_recvall = RecvAll(
             self.server,
-            closed_callback=lambda: self.end("Peer closed connection"),
+            closed_callback=lambda: self.end("closed by destination"),
             timeout=TIMEOUT,
-            timeout_callback=lambda: self.end("Peer timed out"),
+            timeout_callback=lambda: self.end("destination timed out"),
             self_pipe=self.self_pipe_reader,
-            self_pipe_callback=lambda: self.end("Interrupted"),
+            self_pipe_callback=lambda: self.end("interrupted"),
         )
         return socks5.GRANTED
 
@@ -284,7 +322,7 @@ class SocksProxyConnection(object):
         self.server.sendall(pack('BBB', socks5.VERSION, 1, socks5.NO_AUTH))
         version, auth = unpack('BB', self.server_recvall(2))
         if version != socks5.VERSION:
-            self.end()
+            self.end('protocol error: not socks 5')
         if auth != socks5.NO_AUTH:
             return socks5.AUTH_NOT_SUPPORTED
         addr_message = pack_address(host, port)
@@ -294,36 +332,32 @@ class SocksProxyConnection(object):
         version, status = unpack('BBx', self.server_recvall(3))
         echo_addr_message = self.server_recvall(len(addr_message))
         if version != socks5.VERSION or echo_addr_message != addr_message:
-            self.end()
+            self.end('protocol error: not socks 5')
         return status
 
     def do_forwarding(self):
         while True:
             # Now forward messages between them until one closes:
-            print(self.source_port, 'about to select')
             readable, _, _ = select(
                 [self.server, self.client, self.self_pipe_reader], [], []
             )
-            print(self.source_port, 'select returned')
             for fd in readable:
                 if fd is self.self_pipe_reader:
-                    print(self.source_port, "self piped!")
                     # We've been interrupted via self-pipe:
-                    self.end("Interrupted")
+                    self.end("interrupted")
                 if fd is self.server:
-                    print(self.source_port, 'sock is server')
                     other_sock = self.client
                 else:
-                    print(self.source_port, 'sock is client')
                     other_sock = self.server
-                print(self.source_port, 'recving')
                 data = fd.recv(BUFFER_SIZE)
                 if data:
                     other_sock.sendall(data)
                 else:
                     # One of the sockets closed from the other end:
-                    print(self.source_port, "A sock closed!")
-                    self.end("Peer closed connection")
+                    if fd is self.server:
+                        self.end("closed by destination")
+                    else:
+                        self.end("closed by origin")
 
 
 class AllowRule(object):
@@ -375,14 +409,17 @@ class AllowRule(object):
 
 
 class SocksProxyServer(object):
-    def __init__(self, port):
+    def __init__(self, port=DEFAULT_PORT, bind_address='0.0.0.0', silent=False):
         self.port = port
+        self.bind_address = bind_address
+        self.silent=silent
         self.rules = set()
         self.listener = None
         self.connections = WeakSet()
         self.started = threading.Event()
         self.mainloop_thread = None
         self.shutting_down = False
+        self.logger = None
 
     def allows(self, source_host, source_port, dest_host, dest_port):
         """Whether this route is allowed according to our current set of rules"""
@@ -394,7 +431,7 @@ class SocksProxyServer(object):
     def run(self):
         self.listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.listener.bind(('0.0.0.0', self.port))
+        self.listener.bind((self.bind_address, self.port))
         self.listener.listen(5)
         self.started.set()
         while True:
@@ -412,18 +449,19 @@ class SocksProxyServer(object):
         """Call self.run() in a thread"""
         self.mainloop_thread = threading.Thread(target=self.run)
         self.mainloop_thread.daemon = True
-        print("Starting server")
         self.mainloop_thread.start()
         self.started.wait()
+        self.logger = setup_logging('zprocess-socks', self.silent)
+        msg = 'This is zprocess-socks server, running on %s:%d'
+        self.logger.info(msg, self.bind_address, self.port)
 
     def shutdown(self):
+        self.logger.info('Shutting down')
         self.shutting_down = True
         self.listener.shutdown(socket.SHUT_RDWR)
         self.listener.close()
-        print("Joining server")
         self.mainloop_thread.join()
         self.mainloop_thread = None
-        print("server over")
         while True:
             try:
                 connection = self.connections.pop()
@@ -436,24 +474,22 @@ class SocksProxyServer(object):
 
 
 if __name__ == '__main__':
+    # Testing. Pipe a secure zmq connection through three hops and say hello.
     from zprocess.security import SecureContext, generate_shared_secret
 
-    socks_proxy = SocksProxyServer(9001)
+    socks_proxy1 = SocksProxyServer(9001)
     socks_proxy2 = SocksProxyServer(9002)
     socks_proxy3 = SocksProxyServer(9003)
 
-    socks_proxy.start()
+    socks_proxy1.start()
     socks_proxy2.start()
     socks_proxy3.start()
 
     rule_1 = AllowRule('127.0.0.1', '*', '127.0.0.1', '*')
     rule_2 = AllowRule('127.0.0.1', '*', '::1', '*')
-    socks_proxy.rules.add(rule_1)
-    socks_proxy.rules.add(rule_2)
-    socks_proxy2.rules.add(rule_1)
-    socks_proxy2.rules.add(rule_2)
-    socks_proxy3.rules.add(rule_1)
-    socks_proxy3.rules.add(rule_2)
+    for proxy in [socks_proxy1, socks_proxy2, socks_proxy3]:
+        proxy.rules.add(rule_1)
+        proxy.rules.add(rule_2)
 
     context = SecureContext(shared_secret=generate_shared_secret())
     zmq_server = context.socket(zmq.REP)
@@ -465,7 +501,7 @@ if __name__ == '__main__':
     zmq_server.bind('tcp://::1:9000')
 
     print('about to connect...')
-    zmq_client.connect('tcp://127.0.0.1:9001|127.0.0.1:9002|127.0.0.1:9003|::1:9000')
+    zmq_client.connect('tcp://127.0.0.1:9001|127.0.0.1:9002|127.0.0.1:9003|[::1]:9000')
 
     print('about to send...')
     zmq_client.send(b'hello')
@@ -473,13 +509,14 @@ if __name__ == '__main__':
     print('about to recv...')
     print(zmq_server.recv())
 
-    print('********closing server 1********')
-    socks_proxy.shutdown()
-
     print('********closing server 2********')
     socks_proxy2.shutdown()
+
+    print('********closing server 1********')
+    socks_proxy1.shutdown()
 
     print('********closing server 3********')
     socks_proxy3.shutdown()
 
+    # Should only be one thread left after everything is shut down:
     print("num threads:", threading.active_count())

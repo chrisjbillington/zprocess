@@ -7,8 +7,6 @@ if PY2:
     import subprocess32 as subprocess
 else:
     import subprocess
-import logging
-import logging.handlers
 
 from zprocess import ZMQServer
 from zprocess.utils import setup_logging
@@ -17,6 +15,7 @@ from zprocess.remote import PROTOCOL_VERSION
 ERR_INVALID_COMMAND = 'error: invalid command'
 ERR_NO_SUCH_PROCESS = 'error: no such process'
 
+logger = None
 
 class RemoteProcessServer(ZMQServer):
     def __init__(
