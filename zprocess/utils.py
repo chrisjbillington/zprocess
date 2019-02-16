@@ -169,7 +169,7 @@ def setup_logging(name, silent=False):
     else:
         logpath = '/var/log/%s.log' % name
 
-    logger = logging.getLogger()
+    logger = logging.Logger(name)
     logger.setLevel(LOGLEVEL)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
     file_handler_success = False
