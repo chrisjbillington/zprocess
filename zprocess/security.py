@@ -24,7 +24,8 @@ def _check_versions():
         msg = ('zprocess warning: libzmq not built with libsodium. ' +
                'Encryption/decryption will be slow. If on Windows, ' +
                'use conda zeromq/pyzmq packages for fast crypto.\n')
-        sys.stderr.write(msg)
+        if sys.stderr is not None and sys.stderr.fileno() >= 0:
+            sys.stderr.write(msg)
 
     if not hasattr(zmq, 'curve_public'):
         # Access the function via ctypes if not in pyzmq:

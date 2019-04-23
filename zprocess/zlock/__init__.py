@@ -84,13 +84,13 @@ class ZLockClient(object):
 
     def ping(self, timeout=None):
         """Ping the server to test for a response"""
+        if timeout is None:
+            timeout = self.RESPONSE_TIMEOUT
+        else:
+            timeout = 1000 * timeout  # convert to ms
+        if not hasattr(self.local, 'sock'):
+            self._new_socket()
         try:
-            if timeout is None:
-                timeout = self.RESPONSE_TIMEOUT
-            else:
-                timeout = 1000 * timeout  # convert to ms
-            if not hasattr(self.local, 'sock'):
-                self._new_socket()
             start_time = time.time()
             self.local.sock.send(b'hello', zmq.NOBLOCK)
             events = self.local.poller.poll(timeout)
@@ -107,13 +107,13 @@ class ZLockClient(object):
 
     def get_protocol_version(self, timeout=None):
         """Ask the server what protocol version it is running"""
+        if timeout is None:
+            timeout = self.RESPONSE_TIMEOUT
+        else:
+            timeout = 1000 * timeout  # convert to ms
+        if not hasattr(self.local, 'sock'):
+            self._new_socket()
         try:
-            if timeout is None:
-                timeout = self.RESPONSE_TIMEOUT
-            else:
-                timeout = 1000 * timeout  # convert to ms
-            if not hasattr(self.local, 'sock'):
-                self._new_socket()
             self.local.sock.send(b'protocol', zmq.NOBLOCK)
             events = self.local.poller.poll(timeout)
             if events:
