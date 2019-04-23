@@ -814,6 +814,7 @@ class ProcessTree(object):
         self.to_parent = None
         self.from_parent = None
         self.kill_lock = None
+        self.log_paths = {}
 
         self.zlock_client = None
         if self.zlock_host is not None:
@@ -869,10 +870,19 @@ class ProcessTree(object):
             raise RuntimeError(msg)
         return self.zlock_client.lock(key, read_only=read_only)
 
-    def logging_handler(self, filepath):
+    def logging_handler(self, filepath, name=None):
         """Return a zprocess.zlog.ZMQLoggingHandler for the given filepath. All loggers
         using the same file and zlog server as this ProcessTree will log to the same
-        file in a race-free way."""
+        file in a race-free way. If name is not None and matches the name passed in when
+        creating a logging handler in a parent process, the filepath that was used in
+        the parent process will be used instead of the one passed to this method. In
+        this way, if parent and child processes are running on different computers, the
+        filepath passed in by the parent will be used. This way one can prevent the zlog
+        server creating additional log files on the computer that the toplevel process
+        is running on, with paths that may be unrelated to other paths on that
+        computer."""
+        if name is not None:
+            filepath = self.log_paths.setdefault(name, filepath)
         if self.zlog_host is None:
             msg = "ProcessTree not configured to connect to a zlog server"
             raise RuntimeError(msg)
@@ -955,6 +965,7 @@ class ProcessTree(object):
             'zlock_process_name': zlock_process_name,
             'zlog_host': self.zlog_host,
             'zlog_port': self.zlog_port,
+            'log_paths': self.log_paths,
         }
 
         if remote_process_client is not None:
@@ -1049,6 +1060,7 @@ class ProcessTree(object):
         self.broker_in_port = parentinfo['broker_in_port']
         self.broker_out_port = parentinfo['broker_out_port']
         self.kill_lock = self.heartbeat_client.lock
+        self.log_paths = parentinfo['log_paths']
 
     @classmethod
     def connect_to_parent(cls):
