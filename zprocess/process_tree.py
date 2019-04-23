@@ -687,6 +687,7 @@ class Process(object):
         self.to_child = None
         self.from_child = None
         self.child = None
+        self.parent_host = None
         self.to_parent = None
         self.from_parent = None
         self.kill_lock = None
@@ -757,6 +758,7 @@ class Process(object):
         parent"""
         self.to_parent = self.process_tree.to_parent
         self.from_parent = self.process_tree.from_parent
+        self.parent_host = self.process_tree.parent_host
         self.kill_lock = self.process_tree.kill_lock
         args, kwargs = self.from_parent.get()
         self.run(*args, **kwargs)
@@ -799,6 +801,7 @@ class ProcessTree(object):
         self.zlock_port = zlock_port
         self.zlog_host = zlog_host
         self.zlog_port = zlog_port
+        self.parent_host = None
         self.broker = None
         self.broker_host = None
         self.broker_in_port = None
@@ -895,14 +898,13 @@ class ProcessTree(object):
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
         to_self = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
 
-        from_child_port = from_child.bind_to_random_port('tcp://127.0.0.1')
+        from_child_port = from_child.bind_to_random_port('tcp://0.0.0.0')
         to_self.connect('tcp://127.0.0.1:%s' % from_child_port)
-        to_child_port = to_child.bind_to_random_port('tcp://127.0.0.1')
+        to_child_port = to_child.bind_to_random_port('tcp://0.0.0.0')
         self.check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
-            self.heartbeat_server = HeartbeatServer(
-                                        shared_secret=self.shared_secret)
+            self.heartbeat_server = HeartbeatServer(shared_secret=self.shared_secret)
 
         if self.zlock_client is not None:
             zlock_process_name = self.zlock_client.process_name
@@ -992,6 +994,8 @@ class ProcessTree(object):
 
     def _connect_to_parent(self, parentinfo):
 
+        self.parent_host = gethostbyname(parentinfo['parent_host'])
+
         if self.zlock_client is not None:
             name = parentinfo['zlock_process_name']
             # Append '-sub' to indicate we're a subprocess of the other process.
@@ -1005,9 +1009,13 @@ class ProcessTree(object):
         to_self = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
 
         port_to_self = to_self.bind_to_random_port('tcp://127.0.0.1')
-        from_parent.connect('tcp://127.0.0.1:%d' % parentinfo['from_parent_port'])
+        from_parent.connect(
+            'tcp://%s:%d' % (self.parent_host, parentinfo['from_parent_port'])
+        )
         from_parent.connect('tcp://127.0.0.1:%d' % port_to_self)
-        to_parent.connect("tcp://127.0.0.1:%s" %  parentinfo['to_parent_port'])
+        to_parent.connect(
+            "tcp://%s:%s" % (self.parent_host, parentinfo['to_parent_port'])
+        )
         to_parent.send(b'hello')
 
         self.from_parent = ReadQueue(from_parent, to_self)
