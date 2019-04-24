@@ -5,7 +5,7 @@ import base64
 import weakref
 import time
 from socket import gethostbyname
-
+import os
 import ipaddress
 import zmq
 import zmq.auth.thread
@@ -15,64 +15,31 @@ from zmq.utils.monitor import recv_monitor_message
 if sys.version_info[0] == 2:
     str = unicode
 
+
+_bundle_warning = """zprocess warning: pyzmq is using bundled libzmq, which on Windows
+is not built with the cryptography library libsodium. Encryption/decryption will be
+slow. Use the conda pyzmq package for fast cryptography.\n"""
+
+
 def _check_versions():
-    if not zmq.zmq_version_info() >= (4, 0, 0):
-        raise ImportError('Require libzmq >= 4.0')
+    """Check for bundled zmq on windows. It has slow crypto - warn the user"""
+    if os.name != 'nt':
+        return
+    try:
+        import zmq.libzmq
+    except ImportError:
+        # No bundled zmq.
+        return
+    if sys.stderr is not None and sys.stderr.fileno() >= 0:
+        sys.stderr.write(_bundle_warning)
 
-    _libzmq = ctypes.CDLL(zmq.backend.cython.utils.__file__)
-    if not hasattr(_libzmq, 'sodium_init'):
-        msg = ('zprocess warning: libzmq not built with libsodium. ' +
-               'Encryption/decryption will be slow. If on Windows, ' +
-               'use conda zeromq/pyzmq packages for fast crypto.\n')
-        if sys.stderr is not None and sys.stderr.fileno() >= 0:
-            sys.stderr.write(msg)
-
-    if not hasattr(zmq, 'curve_public'):
-        # Access the function via ctypes if not in pyzmq:
-        if hasattr(_libzmq, 'zmq_curve_public'):
-            # Use the zeromq function
-            def _curve_public(secret_key):
-                public_key = b'0' * 40
-                zmq.error._check_rc(_libzmq.zmq_curve_public(public_key,
-                                                             secret_key))
-                return public_key
-        else:
-            # Old zeromq, use its crypto library function directly:
-            if hasattr(_libzmq, 'crypto_scalarmult_base'):
-                def _curve_public(secret_key):
-                    public_key_bytes = b'0' * 40
-                    secret_key_bytes = zmq.utils.z85.decode(secret_key)
-                    _libzmq.crypto_scalarmult_base(public_key_bytes,
-                                                   secret_key_bytes)
-                    return zmq.utils.z85.encode(public_key_bytes[:32])
-            else:
-                # Old zeromq, and not built with libsodium. We can't proceed.
-                msg = ("Require zeromq >= 4.2.0, " +
-                       "or zeromq >= 4.0.0 built with libsodium")
-                raise ImportError(msg)
-        zmq.curve_public = _curve_public
-
-
-# Constants in zeromq 4.3.0 but not yet present in pyzmq at tine of writing:
-zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL = 0x0800
-zmq.EVENT_HANDSHAKE_SUCCEEDED = 0x1000
-zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL = 0x2000
-zmq.EVENT_HANDSHAKE_FAILED_AUTH = 0x4000
-
-
-if zmq.zmq_version_info() >= (4, 3, 0):
-    # Events to tell when a conneciton has succeeded, including authentication:
-    CONN_SUCCESS_EVENTS = {zmq.EVENT_HANDSHAKE_SUCCEEDED}
-    CONN_FAIL_EVENTS = {
-        zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL,
-        zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL,
-        zmq.EVENT_HANDSHAKE_FAILED_AUTH,
-    }
-else:
-    # Authentication failure is not detectable on zmq < 4.3. Failure will just look like
-    # success. Too bad.
-    CONN_SUCCESS_EVENTS = {zmq.EVENT_CONNECTED}
-    CONN_FAIL_EVENTS = set()
+# Events to tell when a conneciton has succeeded, including authentication:
+CONN_SUCCESS_EVENTS = {zmq.EVENT_HANDSHAKE_SUCCEEDED}
+CONN_FAIL_EVENTS = {
+    zmq.EVENT_HANDSHAKE_FAILED_NO_DETAIL,
+    zmq.EVENT_HANDSHAKE_FAILED_PROTOCOL,
+    zmq.EVENT_HANDSHAKE_FAILED_AUTH,
+}
 
 
 class InsecureConnection(RuntimeError):

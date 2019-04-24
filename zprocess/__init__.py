@@ -21,6 +21,9 @@ if PY2:
     str = unicode
 import zmq
 
+if not zmq.zmq_version_info() >= (4, 3, 0):
+    raise ImportError('zprocess requires libzmq >= 4.3')
+    
 _path, _cwd = os.path.split(os.getcwd())
 if _cwd == 'zprocess' and _path not in sys.path:
     # Running from within zprocess dir? Add to sys.path for testing during
