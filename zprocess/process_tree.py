@@ -705,13 +705,13 @@ class Process(object):
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and
         kwargs to the run() method"""
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            'process_class_wrapper.py')
-        child_details = self.process_tree.subprocess(path,
+        process_class_wrapper = 'zprocess.process_class_wrapper'
+        child_details = self.process_tree.subprocess(process_class_wrapper,
                             output_redirection_port=self._redirection_port,
                             output_redirection_host=self._redirection_host,
                             remote_process_client=self.remote_process_client,
-                            startup_timeout=self.startup_timeout)
+                            startup_timeout=self.startup_timeout,
+                            pymodule=True)
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
