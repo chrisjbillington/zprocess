@@ -11,7 +11,7 @@
 from setuptools import setup
 import os
 
-VERSION = '2.12.3'
+VERSION = '2.12.4'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
@@ -39,7 +39,7 @@ pyzmq on Windows, as the conda package is built with faster encryption."""
 
 pyzmq_version, version_ok = zmq_version_ok()
 
-if os.name == 'nt' and not zmq_version_ok:
+if os.name == 'nt' and not version_ok:
     raise RuntimeError(_pyzmq_msg % (pyzmq_version, MIN_PYZMQ_VERSION))
 
 
