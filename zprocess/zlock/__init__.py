@@ -64,18 +64,27 @@ class ZLockClient(object):
 
     def set_default_timeout(self, timeout):
         self.default_timeout = timeout
-        
-    def _new_socket(self):
+
+    def _new_socket(self, timeout=None):
         # Every time the REQ/REP cadence is broken, we need to create
         # and bind a new socket to get it back on track. Also, we have
         # a separate socket for each thread:
+        if timeout is None:
+            timeout = self.RESPONSE_TIMEOUT
         context = SecureContext.instance(shared_secret=self.shared_secret)
         self.local.sock = context.socket(zmq.REQ, allow_insecure=self.allow_insecure)
-        self.local.sock.setsockopt(zmq.LINGER, 0)
-        self.local.poller = zmq.Poller()
-        self.local.poller.register(self.local.sock, zmq.POLLIN)
-        self.local.sock.connect('tcp://%s:%s' % (self.host, str(self.port)))
-        self.local.client_id = _ensure_bytes(self._make_client_id())
+        try:
+            self.local.sock.setsockopt(zmq.LINGER, 0)
+            self.local.poller = zmq.Poller()
+            self.local.poller.register(self.local.sock, zmq.POLLIN)
+            self.local.sock.connect(
+                'tcp://%s:%s' % (self.host, str(self.port)), timeout
+            )
+            self.local.client_id = _ensure_bytes(self._make_client_id())
+        except:
+            # Didn't work, don't keep it:
+            del self.local.sock
+            raise
 
     def lock(self, key, read_only=False):
         """return a Lock for exclusive access to a resource identified by the given
@@ -89,7 +98,7 @@ class ZLockClient(object):
         else:
             timeout = 1000 * timeout  # convert to ms
         if not hasattr(self.local, 'sock'):
-            self._new_socket()
+            self._new_socket(timeout)
         try:
             start_time = time.time()
             self.local.sock.send(b'hello', zmq.NOBLOCK)
@@ -112,7 +121,7 @@ class ZLockClient(object):
         else:
             timeout = 1000 * timeout  # convert to ms
         if not hasattr(self.local, 'sock'):
-            self._new_socket()
+            self._new_socket(timeout)
         try:
             self.local.sock.send(b'protocol', zmq.NOBLOCK)
             events = self.local.poller.poll(timeout)

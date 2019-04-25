@@ -190,7 +190,7 @@ class SecureSocket(zmq.Socket):
 
     def connect(self, addr, timeout=None):
         """Wrapper around connect, configuring security. If timeout is not None, then
-        this method will block until the given timeout in seconds (or forever if
+        this method will block until the given timeout in ms (or forever if
         timeout=-1) or until the connection is sucessful. When called in this blocking
         way, failed authentication will be raised as an exception if on zeromq >= 4.3,
         otherwise authentication failure is not detectable. Do not set timeout if you
@@ -198,6 +198,9 @@ class SecureSocket(zmq.Socket):
         for connection events yourself."""
         if timeout is not None:
             monitor = self.get_monitor_socket()
+            if timeout != -1:
+                # Convert to s:
+                timeout /= 1000
         try:
             # Not allowed to insecurely connect to external addresses unless
             # allow_insecure specified:
