@@ -267,7 +267,7 @@ class _Sender(object):
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
 
-    def new_socket(self, host, port):
+    def new_socket(self, host, port, timeout=5000):
         # Every time the REQ/REP cadence is broken, we need to create
         # and bind a new socket to get it back on track. Also, we have
         # a separate socket for each thread. Also a new socket if there
@@ -276,32 +276,44 @@ class _Sender(object):
         self.local.port = int(port)
         context = SecureContext.instance(shared_secret=self.shared_secret)
         if self.push_only:
-            self.local.sock = context.socket(zmq.PUSH,
-                                             allow_insecure=self.allow_insecure)
+            self.local.sock = context.socket(
+                zmq.PUSH, allow_insecure=self.allow_insecure
+            )
         else:
-            self.local.sock = context.socket(zmq.REQ,
-                                             allow_insecure=self.allow_insecure)
-        # Allow up to 1 second to send unsent messages on socket shutdown:
-        self.local.sock.setsockopt(zmq.LINGER, 1000)
-        self.local.sock.connect('tcp://%s:%d' % (self.local.host, self.local.port))
-        # Different send/recv methods depending on the desired protocol:
-        if self.dtype == 'raw':
-            self.local.send = self.local.sock.send
-            self.local.recv = self.local.sock.recv
-        elif self.dtype == 'string':
-            self.local.send = self.local.sock.send_string
-            self.local.recv = self.local.sock.recv_string
-        elif self.dtype == 'multipart':
-            self.local.send = self.local.sock.send_multipart
-            self.local.recv = self.local.sock.recv_multipart
-        elif self.dtype == 'pyobj':
-            self.local.send = partial(self.local.sock.send_pyobj,
-                                      protocol=zprocess.PICKLE_PROTOCOL)
-            self.local.recv = self.local.sock.recv_pyobj
-        else:
-            msg = ("invalid dtype %s, must be 'raw', 'string', " +
-                   "'multipart' or 'pyobj'" % str(self.dtype))
-            raise ValueError(msg)
+            self.local.sock = context.socket(
+                zmq.REQ, allow_insecure=self.allow_insecure
+            )
+        try:
+            # Allow up to 1 second to send unsent messages on socket shutdown:
+            self.local.sock.setsockopt(zmq.LINGER, 1000)
+            self.local.sock.connect(
+                'tcp://%s:%d' % (self.local.host, self.local.port), timeout=timeout
+            )
+            # Different send/recv methods depending on the desired protocol:
+            if self.dtype == 'raw':
+                self.local.send = self.local.sock.send
+                self.local.recv = self.local.sock.recv
+            elif self.dtype == 'string':
+                self.local.send = self.local.sock.send_string
+                self.local.recv = self.local.sock.recv_string
+            elif self.dtype == 'multipart':
+                self.local.send = self.local.sock.send_multipart
+                self.local.recv = self.local.sock.recv_multipart
+            elif self.dtype == 'pyobj':
+                self.local.send = partial(
+                    self.local.sock.send_pyobj, protocol=zprocess.PICKLE_PROTOCOL
+                )
+                self.local.recv = self.local.sock.recv_pyobj
+            else:
+                msg = (
+                    "invalid dtype %s, must be 'raw', 'string', "
+                    + "'multipart' or 'pyobj'" % str(self.dtype)
+                )
+                raise ValueError(msg)
+        except:
+            # Didn't work, don't keep it:
+            del self.local.sock
+            raise
 
     def __call__(self, port, host='127.0.0.1', data=None, timeout=5):
         """If self.push_only, send data on the push socket, ignoring timeout.
@@ -310,10 +322,12 @@ class _Sender(object):
         # We cache the socket so as to not exhaust ourselves of tcp
         # ports. However if a different server is in use, we need a new
         # socket. Also if we don't have a socket, we also need a new one:
-        if (not hasattr(self.local, 'sock')
-                or gethostbyname(host) != self.local.host
-                or int(port) != self.local.port):
-            self.new_socket(host, port)
+        if (
+            not hasattr(self.local, 'sock')
+            or gethostbyname(host) != self.local.host
+            or int(port) != self.local.port
+        ):
+            self.new_socket(host, port, timeout * 1000)
         data = _typecheck_or_convert_data(data, self.dtype)
         try:
             self.local.send(data, zmq.NOBLOCK)

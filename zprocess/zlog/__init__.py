@@ -59,7 +59,9 @@ class ZLogClient(object):
         self.local.sock = context.socket(zmq.DEALER, allow_insecure=self.allow_insecure)
         self.local.sock.setsockopt(zmq.LINGER, 0)
         self.local.sock.set_hwm(1000)
-        self.local.sock.connect('tcp://%s:%s' % (self.host, str(self.port)))
+        self.local.sock.connect(
+            'tcp://%s:%s' % (self.host, str(self.port)), timeout=self.RESPONSE_TIMEOUT
+        )
         self.local.poller = zmq.Poller()
         self.local.poller.register(self.local.sock, zmq.POLLIN)
 
