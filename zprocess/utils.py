@@ -63,14 +63,25 @@ def disable_quick_edit():
     function disables the feature, and and adds an atexit() hook to set it back back to
     its initial configuration when Python exits.
     """
-    if os.name == 'nt' and sys.stdin is not None and sys.stdin.isatty():
+    if os.name == 'nt' and all(
+        [
+            a is not None and a.isatty() and a.fileno() >= 0
+            for a in (sys.stdin, sys.stdout, sys.stderr)
+        ]
+    ):
         import win32console
         import atexit
+        import pywintypes
 
         ENABLE_QUICK_EDIT = 0x0040
         ENABLE_EXTENDED_FLAGS = 0x0080
         console = win32console.GetStdHandle(win32console.STD_INPUT_HANDLE)
-        orig_mode = console.GetConsoleMode()
+        try:
+            orig_mode = console.GetConsoleMode()
+        except pywintypes.error:
+            # Probably there is no console after all.
+            # Don't know why, but don't worry about it:
+            return
         if (orig_mode & ENABLE_EXTENDED_FLAGS) and not (orig_mode & ENABLE_QUICK_EDIT):
             # Already disabled, nothing for us to do.
             return
