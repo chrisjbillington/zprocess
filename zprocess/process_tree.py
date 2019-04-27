@@ -769,6 +769,8 @@ class Process(object):
             self.child.wait()
         except OSError:
             pass  # process is already dead
+        # In case the parent is waiting on the child to start up: 
+        self.from_child.put('terminated')
 
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by
