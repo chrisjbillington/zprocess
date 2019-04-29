@@ -78,10 +78,11 @@ class ZLogClient(object):
         """Return a logging handler configured to communicate with this server"""
         return ZMQLoggingHandler(self, filepath)
 
-    def _send(self, *messages, timeout=None):
+    def _send(self, *messages, **kwargs):
         """Create socket if needed and send messages. timeout used for connection
         timeout in the case that a new socket is made. timeout in seconds."""
         # convert timeout to ms if needed
+        timeout = kwargs.get('timeout', None)
         if not hasattr(self.local, 'sock'):
             self._new_socket(timeout)
         self.local.sock.send_multipart([b''] + list(messages), zmq.NOBLOCK)
