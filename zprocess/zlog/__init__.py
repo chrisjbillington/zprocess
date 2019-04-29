@@ -53,33 +53,44 @@ class ZLogClient(object):
         self.local = threading.local()
         self.suppress_further_warnings = False
 
-    def _new_socket(self):
-        # We have a separate push socket for each thread that needs to push:
+    def _new_socket(self, timeout=None):
+        """Create a socket for this thread and connect to the server with a timeout in
+        seconds"""
+        # We have a separate push socket for each thread that needs to push.
+        # convert timeout to ms or use default:
+        timeout = self.RESPONSE_TIMEOUT if timeout is None else 1000 * timeout
         context = SecureContext.instance(shared_secret=self.shared_secret)
         self.local.sock = context.socket(zmq.DEALER, allow_insecure=self.allow_insecure)
-        self.local.sock.setsockopt(zmq.LINGER, 0)
-        self.local.sock.set_hwm(1000)
-        self.local.sock.connect(
-            'tcp://%s:%s' % (self.host, str(self.port)), timeout=self.RESPONSE_TIMEOUT
-        )
-        self.local.poller = zmq.Poller()
-        self.local.poller.register(self.local.sock, zmq.POLLIN)
+        try:
+            self.local.sock.setsockopt(zmq.LINGER, 0)
+            self.local.sock.set_hwm(1000)
+            self.local.sock.connect(
+                'tcp://%s:%s' % (self.host, str(self.port)), timeout=timeout
+            )
+            self.local.poller = zmq.Poller()
+            self.local.poller.register(self.local.sock, zmq.POLLIN)
+        except Exception:
+            # Do not keep the socket:
+            del self.local.sock
+            raise
 
     def handler(self, filepath):
         """Return a logging handler configured to communicate with this server"""
         return ZMQLoggingHandler(self, filepath)
 
-    def _send(self, *messages):
+    def _send(self, *messages, timeout=None):
+        """Create socket if needed and send messages. timeout used for connection
+        timeout in the case that a new socket is made. timeout in seconds."""
+        # convert timeout to ms if needed
         if not hasattr(self.local, 'sock'):
-            self._new_socket()
+            self._new_socket(timeout)
         self.local.sock.send_multipart([b''] + list(messages), zmq.NOBLOCK)
 
     def _recv(self, timeout=None):
+        """Receive with a timeout in seconds"""
+        # convert timeout to ms or use default:
+        timeout = self.RESPONSE_TIMEOUT if timeout is None else 1000 * timeout
         try:
-            if timeout is None:
-                timeout = self.RESPONSE_TIMEOUT
-            else:
-                timeout = 1000 * timeout  # convert to ms
             events = self.local.poller.poll(timeout)
             if not events:
                 raise zmq.ZMQError('No response from zlog server: timed out')
@@ -96,9 +107,9 @@ class ZLogClient(object):
             raise
 
     def ping(self, timeout=None):
-        """Ping the server for a response."""
+        """Ping the server for a response. Timeout in seconds"""
         start_time = time.time()
-        self._send(b'hello')
+        self._send(b'hello', timeout=timeout)
         response = self._recv(timeout).decode('utf8')
         if response == 'hello':
             return round((time.time() - start_time) * 1000, 2)
@@ -106,7 +117,7 @@ class ZLogClient(object):
 
     def get_protocol_version(self, timeout=None):
         """Ask the server what protocol version it is running"""
-        self._send(b'protocol')
+        self._send(b'protocol', timeout=timeout)
         return self._recv(timeout).decode('utf8')
 
     def check_access(self, filepath, timeout=None):
@@ -114,7 +125,7 @@ class ZLogClient(object):
         log file in append mode. Raises an exception if the file cannot be opened."""
         if not isinstance(filepath, bytes):
             filepath = filepath.encode('utf8')
-        self._send(b'check_access', filepath)
+        self._send(b'check_access', filepath, timeout=timeout)
         response = self._recv(timeout).decode('utf8')
         if response == 'ok':
             return
@@ -149,7 +160,7 @@ class ZLogClient(object):
         """Tell the server a client is done with the file"""
         if not isinstance(filepath, bytes):
             filepath = filepath.encode('utf8')
-        self._send(b'done', client_id, filepath)
+        self._send(b'done', client_id, filepath, timeout=timeout)
         response = self._recv(timeout).decode('utf8')
         if response != 'ok':
             raise zmq.ZMQError('Invalid response from server: ' + response)
