@@ -118,8 +118,10 @@ class RemoteOutputReceiver(ZMQServer):
                 sys.stderr.write(text)
             else:
                 sys.stderr.buffer.write(text)  # Since it is binary data
+            sys.stderr.flush()
         else:
             if PY2:
                 sys.stdout.write(text)
             else:
                 sys.stdout.buffer.write(text)  # Since it is binary data
+            sys.stdout.flush()

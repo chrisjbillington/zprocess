@@ -701,6 +701,20 @@ class Process(object):
                     + "not to a subclass"
                 )
                 raise ValueError(msg)
+        if (
+            self.__module__ == '__main__'
+            and self.subclass_fullname is None
+            and self.remote_process_client is not None
+        ):
+            msg = (
+                "Cannot start a remote process for a class defined in __main__. "
+                + "The remote process will not be able to import the required class "
+                + "as it will not know the import path. Either define the class in a "
+                + "different module importable on both systems, or use "
+                + "zprocess.Process directly, passing in subclass_fullname to specify "
+                + "the full import path."
+            )
+            raise RuntimeError(msg)
 
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and
@@ -732,18 +746,24 @@ class Process(object):
         else:
             module_file = None # Will be found with import machinery in the subprocess
 
-        if module_file is not None:
-            # Send it to the child process so it can execute it in __main__, otherwise
-            # class definitions from the users __main__ module will not be unpickleable.
-            # Note that though executed in __main__, the code's __name__ will not be
-            # __main__, and so any main block won't execute, which is good!
+        if module_file is not None and self.remote_process_client is None:
+            # Send the module filepath to the child process so it can execute it in
+            # __main__, otherwise class definitions from the users __main__ module will
+            # not be unpickleable. Note that though executed in __main__, the code's
+            # __name__ will not be __main__, and so any main block won't execute, which
+            # is good! Also send sys.path the ensure the child's environment is the same
+            # as ours. Do not do this if remote, since the environment will not be
+            # meaningful on the other host.
             self.to_child.put([self.__module__, module_file, sys.path])
-            self.to_child.put(self.__class__)
         else:
-            # No module info - the child process will find the class all on its own
-            # from the fully qualified name:
             self.to_child.put([None, None, None])
+
+        # Send the class to the child, either as a pickled class or as the specified
+        # full path:
+        if self.subclass_fullname is not None:
             self.to_child.put(self.subclass_fullname)
+        else:
+            self.to_child.put(self.__class__)
 
         response = self.from_child.get(timeout=self.startup_timeout)
         if response != 'ok':

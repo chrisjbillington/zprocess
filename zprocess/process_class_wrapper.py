@@ -45,25 +45,26 @@ def _setup():
             # distinguish between parent and child processes, but I think wanting
             # to do so without already knowing yourself is probably poor form:
             globals()['__name__'] = '__main__'
-            
+        
+    try:
+        # Get the class from the parent, either as a class or a string for the import
+        # path:
         process_cls = process_tree.from_parent.get()
-    else:
-        # The parent process is passing us the import path to a class rather
-        # than a class itself. It's up to us to do the import and find the class
-        # without inheriting any of the parent process's code or environment:
-        process_cls_import_path = process_tree.from_parent.get()
-        try:
-            split = process_cls_import_path.split('.')
+        if isinstance(process_cls, str):
+            # The parent process is passing us the import path to a class rather
+            # than a class itself. It's up to us to do the import and find the class
+            # without inheriting any of the parent process's code or environment:
+            split = process_cls.split('.')
             module_name = '.'.join(split[:-1])
             class_name = split[-1]
             module = importlib.import_module(module_name)
             process_cls = getattr(module, class_name)
-        except Exception:
-            # Tell the parent what went wrong:
-            process_tree.to_parent.put(traceback.format_exc())
-            # Ensure message is sent before the process exits:
-            process_tree.to_parent.sock.close(linger=1)
-            return
+    except Exception:
+        # Tell the parent what went wrong:
+        process_tree.to_parent.put(traceback.format_exc())
+        # Ensure message is sent before the process exits:
+        process_tree.to_parent.sock.close(linger=1)
+        return
 
     # Tell the parent we have a class
     process_tree.to_parent.put('ok')
