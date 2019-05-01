@@ -32,12 +32,28 @@ def main():
         127.0.0.1 for localhost only.""",
     )
 
-    parser.add_argument(
+    exclusive_grp = parser.add_mutually_exclusive_group()
+
+    exclusive_grp.add_argument(
         '-i',
         '--allow-insecure',
         action='store_true',
+        dest='allow_insecure',
+        default=True, # TODO: default to False in zprocess 3.0
         help="""Must be set to acknowledge that communication will be insecure if not
-        using a shared secret.""",
+        using a shared secret, otherwise connections to hosts other than localhost will
+        raise an exception. Is by default set on zprocess 2 for backward compatibility,
+        but will be unset by default in zprocess 3.""",
+    )
+
+    exclusive_grp.add_argument(
+        '-n',
+        '--no-allow-insecure',
+        action='store_false',
+        dest='allow_insecure',
+        help="""Set to explicitly disallow insecure connections. This will be
+        unnecessary on zprocess 3.0, when requiring secure connections will be the
+        default behaviour.""",
     )
 
     parser.add_argument(
@@ -62,7 +78,6 @@ def main():
         shared_secret = None
     else:
         shared_secret = open(args.shared_secret_file).read().strip()
-    allow_insecure = args.allow_insecure
 
     if args.shared_secret_file is None:
         shared_secret = None
@@ -70,7 +85,6 @@ def main():
         shared_secret = open(args.shared_secret_file).read().strip()
     allow_insecure = args.allow_insecure
     bind_address ='tcp://' + args.bind_address
-
 
     def run_curses(stdscr):
         import curses
@@ -88,7 +102,7 @@ def main():
             port=port,
             bind_address=bind_address,
             shared_secret=shared_secret,
-            allow_insecure=True, # TODO deprecate in zprocess 3
+            allow_insecure=allow_insecure,
         )
         server.shutdown_on_interrupt()
 
@@ -104,7 +118,7 @@ def main():
             port=port,
             bind_address=bind_address,
             shared_secret=shared_secret,
-            allow_insecure=True, # TODO deprecate in zprocess 3
+            allow_insecure=allow_insecure,
         )
         server.shutdown_on_interrupt()
 
