@@ -9,6 +9,8 @@ if PY2:
 else:
     import subprocess
 
+from weakref import WeakSet
+import atexit
 from zprocess import ZMQServer
 from zprocess.utils import setup_logging
 from zprocess.remote import PROTOCOL_VERSION
@@ -17,6 +19,28 @@ ERR_INVALID_COMMAND = 'error: invalid command'
 ERR_NO_SUCH_PROCESS = 'error: no such process'
 
 logger = None
+
+# Some machinery to terminate running processes upon interpreter shutdown:
+
+_all_children = WeakSet()
+
+def _atexit_cleanup():
+    while True:
+        try:
+            child = _all_children.pop()
+        except KeyError:
+            break
+        try:
+            child.terminate()
+            try:
+                child.wait(1)
+            except subprocess.TimeoutExpired:
+                child.kill()
+        except OSError:
+            pass  # process is already dead
+
+_atexit_registered = False
+
 
 class RemoteProcessServer(ZMQServer):
     def __init__(
@@ -49,6 +73,12 @@ class RemoteProcessServer(ZMQServer):
             self.sock.logger = logger
         msg = 'This is zprocess-remote server, running on %s:%d'
         logger.info(msg, self.bind_address, self.port)
+        # If this is the first server being started in this process, register our atexit
+        # cleanup function:
+        global _atexit_registered
+        if not _atexit_registered:
+            atexit.register(_atexit_cleanup)
+            _atexit_registered = True
 
     def timeout(self):
         # Poll orphans so we can delete them if they are closed
@@ -57,6 +87,7 @@ class RemoteProcessServer(ZMQServer):
             if rc is not None:
                 logger.info('orphan %d exited', pid)
                 # Child is dead, clean up:
+                _all_children.remove(self.children[pid])
                 del self.children[pid]
                 del self.parents[pid]
                 self.orphans.remove(pid)
@@ -90,6 +121,7 @@ class RemoteProcessServer(ZMQServer):
             logger.info('%d is an orphan', pid)
             self.orphans.add(pid)
         else:
+            _all_children.remove(self.children[pid])
             del self.children[pid]
             del self.parents[pid]
 
@@ -105,6 +137,7 @@ class RemoteProcessServer(ZMQServer):
         kwargs['stdout'] = kwargs['stdin'] = kwargs['stderr'] = subprocess.DEVNULL
         child = subprocess.Popen(cmd, *args, **kwargs)
         self.children[child.pid] = child
+        _all_children.add(child)
         self.parents[child.pid] = self.sock.peer_ip
         return child.pid
 
