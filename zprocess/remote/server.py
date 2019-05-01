@@ -6,8 +6,10 @@ if PY2:
     str = unicode
 if PY2:
     import subprocess32 as subprocess
+    from time import time as monotonic
 else:
     import subprocess
+    from time import monotonic
 
 from weakref import WeakSet
 import atexit
@@ -42,6 +44,11 @@ def _atexit_cleanup():
 _atexit_registered = False
 
 
+# How long to keep info about dead processes in memory after they have exited if the
+# parent has not called __del__:
+CLEANUP_INTERVAL = 60
+
+
 class RemoteProcessServer(ZMQServer):
     def __init__(
         self,
@@ -58,6 +65,10 @@ class RemoteProcessServer(ZMQServer):
         self.parents = {}
         # Children whose parents have called __del__ but which are still alive:
         self.orphans = set()
+        # PIDs of children who have terminated (either by themselves or on request from
+        # their parent) but whose parents have not called __del__, mapped to the time
+        # at which we noticed they terminated:
+        self.time_of_termination = {}
 
         ZMQServer.__init__(
             self,
@@ -91,6 +102,27 @@ class RemoteProcessServer(ZMQServer):
                 del self.children[pid]
                 del self.parents[pid]
                 self.orphans.remove(pid)
+        now = monotonic()
+        # Poll other processes to see if they have unexpectedly closed:
+        for pid in self.children:
+            if pid not in self.time_of_termination:
+                rc = self.children[pid].poll()
+                if rc is not None:
+                    logger.info(
+                        'child %d exited of its own accord with status %d', pid, rc
+                    )
+                    self.time_of_termination[pid] = now
+        # Clean up details of processes that have been dead for longer than
+        # CLEANUP_INTERVAL without the parent calling __del__:
+        for pid in self.time_of_termination.copy():
+            if now > self.time_of_termination[pid] + CLEANUP_INTERVAL:
+                # Clean up:
+                logger.info('Cleaning up child %d; parent never called __del__', pid)
+                _all_children.remove(self.children[pid])
+                del self.children[pid]
+                del self.parents[pid]
+                del self.time_of_termination[pid]
+
 
     def proxy_terminate(self, pid):
         return self.children[pid].terminate()
@@ -113,7 +145,11 @@ class RemoteProcessServer(ZMQServer):
         return self.children[pid].returncode
 
     def proxy___del__(self, pid):
-        child = self.children[pid]
+        try:
+            child = self.children[pid]
+        except KeyError:
+            # Probably already dead and cleaned up earlier. Nothing to do here.
+            return
         rc = child.poll()
         if rc is None:
             # Process still running, but deleted by parent. Mark it as an orphan for
@@ -124,6 +160,8 @@ class RemoteProcessServer(ZMQServer):
             _all_children.remove(self.children[pid])
             del self.children[pid]
             del self.parents[pid]
+            if pid in self.time_of_termination:
+                del self.time_of_termination[pid]
 
     def proxy_Popen(self, cmd, *args, **kwargs):
         if kwargs.pop('prepend_sys_executable', False):
