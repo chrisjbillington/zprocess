@@ -129,16 +129,30 @@ def main():
         help="""Filepath to the shared secret used for secure communication.""",
     )
 
-    parser.add_argument(
+    exclusive_grp = parser.add_mutually_exclusive_group()
+
+    exclusive_grp.add_argument(
         '-i',
         '--allow-insecure',
         action='store_true',
-        help="""Must be set to acknowledge that communication will be insecure if
-        listening on public interfaces and not using a shared secret. Currently set to
-        True by default for compatibility, but this will be set to False in zprocess
-        version 3.""",
+        dest='allow_insecure',
+        default=True, # TODO: default to False in zprocess 3.0
+        help="""Must be set to acknowledge that communication will be insecure if not
+        using a shared secret, otherwise connections to hosts other than localhost will
+        raise an exception. Is by default set on zprocess 2 for backward compatibility,
+        but will be unset by default in zprocess 3.""",
     )
 
+    exclusive_grp.add_argument(
+        '-n',
+        '--no-allow-insecure',
+        action='store_false',
+        dest='allow_insecure',
+        help="""Set to explicitly disallow insecure connections. This will be
+        unnecessary on zprocess 3.0, when requiring secure connections will be the
+        default behaviour.""",
+    )
+    
     args = parser.parse_args()
 
     port = args.port
@@ -153,7 +167,7 @@ def main():
         port=port,
         bind_address=bind_address,
         shared_secret=shared_secret,
-        allow_insecure=True, # TODO: deprecate in zprocess 3
+        allow_insecure=allow_insecure,
     )
     disable_quick_edit()
     try:
