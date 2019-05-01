@@ -36,6 +36,8 @@ from zprocess.remote import (
 from zprocess.locking import ZLockClient, DEFAULT_PORT as ZLOCK_DEFAULT_PORT
 from zprocess.zlog import ZLogClient, DEFAULT_PORT as ZLOG_DEFAULT_PORT
 
+PROCESS_CLASS_WRAPPER = 'zprocess.process_class_wrapper'
+
 PY2 = sys.version_info[0] == 2
 if PY2:
     import cPickle as pickle
@@ -719,13 +721,15 @@ class Process(object):
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and
         kwargs to the run() method"""
-        process_class_wrapper = 'zprocess.process_class_wrapper'
-        child_details = self.process_tree.subprocess(process_class_wrapper,
+        child_details = self.process_tree.subprocess(PROCESS_CLASS_WRAPPER,
                             output_redirection_port=self._redirection_port,
                             output_redirection_host=self._redirection_host,
                             remote_process_client=self.remote_process_client,
                             startup_timeout=self.startup_timeout,
-                            pymodule=True)
+                            pymodule=True,
+                            # This argument is not used by the child, but it makes it
+                            # visible in process lists which process is which:
+                            args=[self.subclass_fullname or self.__class__.__name__])
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
@@ -918,6 +922,7 @@ class ProcessTree(object):
         remote_process_client=None,
         startup_timeout=5,
         pymodule=False,
+        args=None
     ):
         """Start a subprocess and set up communication with it. Path can be either a
         path to a Python script to be executed with 'python some_path.py, or a fully
@@ -1002,18 +1007,29 @@ class ProcessTree(object):
                     if ipaddress.ip_address(ip).is_loopback:
                         parentinfo[key] = external_ip
 
+        if args is None:
+            args = []
+
         # Build command line args:
         if pymodule:
-            cmd = ['-m', path]
+            cmd = ['-m', path] + args
         else:
-            cmd = [os.path.abspath(path)]
-        cmd += ['--zprocess-parentinfo', json.dumps(parentinfo)]
+            cmd = [os.path.abspath(path)] + args
+
+        # Add environment variable for parent connection details:
+        extra_env = {'ZPROCESS_PARENTINFO': json.dumps(parentinfo)}
 
         if remote_process_client is None:
-            child = subprocess.Popen([sys.executable] + cmd)
+            env = os.environ.copy()
+            env.update(extra_env)
+            child = subprocess.Popen([sys.executable] + cmd, env=env)
         else:
-            # The remote server will prefix the path to its own Python interpreter:
-            child = remote_process_client.Popen(cmd, prepend_sys_executable=True)
+            # The remote server will prefix the path to its own Python interpreter.
+            # Also, it will pass to Popen an env consisting of its own env updated with
+            # this extra_env dict we are passing in.
+            child = remote_process_client.Popen(
+                cmd, prepend_sys_executable=True, extra_env=extra_env
+            )
 
         events = from_child.poll(startup_timeout*1000)
         if not events:
@@ -1089,12 +1105,11 @@ class ProcessTree(object):
         if ProcessTree.__instance is not None:
             msg = "Cannot connect_to_parent() twice"
             raise ValueError(msg)
-        for i, arg in enumerate(sys.argv):
-            if arg == '--zprocess-parentinfo':
-                parentinfo = json.loads(sys.argv[i+1])
-                break
-        else:
-            msg = "No zprocess parent info in command line args"
+
+        try:
+            parentinfo = json.loads(os.environ['ZPROCESS_PARENTINFO'])
+        except KeyError:
+            msg = "No ZPROCESS_PARENTINFO environment variable found"
             raise RuntimeError(msg)
 
         process_tree = cls(

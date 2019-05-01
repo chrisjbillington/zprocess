@@ -1,5 +1,6 @@
 from __future__ import unicode_literals, print_function, division
 import sys
+import os
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
@@ -95,6 +96,9 @@ class RemoteProcessServer(ZMQServer):
     def proxy_Popen(self, cmd, *args, **kwargs):
         if kwargs.pop('prepend_sys_executable', False):
             cmd = [sys.executable] + cmd
+        # Update current environment with the contents of 'extra_env', if given:
+        kwargs['env'] = os.environ.copy()
+        kwargs['env'].update(kwargs.pop('extra_env', {}))
         if any(kwarg in kwargs for kwarg in ['stdout', 'stdin', 'stderr']):
             msg = "Cannot specify stdout, stdin or stderr for remote process."
             raise ValueError(msg)
