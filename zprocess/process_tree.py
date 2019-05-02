@@ -791,8 +791,9 @@ class Process(object):
         try:
             self.child.terminate()
             self.child.wait()
-        except OSError:
-            pass  # process is already dead
+        except (OSError, TimeoutError):
+            # process is already dead, or cannot contact remote server
+            pass
         # In case the parent is waiting on the child to start up: 
         self.from_child.put('terminated')
 
@@ -1018,6 +1019,9 @@ class ProcessTree(object):
 
         # Add environment variable for parent connection details:
         extra_env = {'ZPROCESS_PARENTINFO': json.dumps(parentinfo)}
+        if PY2:
+            # Windows Python 2, only bytestrings allowed:
+            extra_env = {k.encode(): v.encode() for k, v in extra_env}
 
         if remote_process_client is None:
             env = os.environ.copy()
