@@ -1021,7 +1021,7 @@ class ProcessTree(object):
         extra_env = {'ZPROCESS_PARENTINFO': json.dumps(parentinfo)}
         if PY2:
             # Windows Python 2, only bytestrings allowed:
-            extra_env = {k.encode(): v.encode() for k, v in extra_env}
+            extra_env = {k.encode(): v.encode() for k, v in extra_env.items()}
 
         if remote_process_client is None:
             env = os.environ.copy()
