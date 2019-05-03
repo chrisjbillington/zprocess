@@ -47,7 +47,7 @@ def main():
     )
 
     exclusive_grp.add_argument(
-        '-n',
+        '-ni',
         '--no-allow-insecure',
         action='store_false',
         dest='allow_insecure',
