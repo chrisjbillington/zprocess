@@ -1112,6 +1112,8 @@ class ProcessTree(object):
 
         try:
             parentinfo = json.loads(os.environ['ZPROCESS_PARENTINFO'])
+            # Ensure environment variable not inherited by child processes:
+            del os.environ['ZPROCESS_PARENTINFO']
         except KeyError:
             msg = "No ZPROCESS_PARENTINFO environment variable found"
             raise RuntimeError(msg)
