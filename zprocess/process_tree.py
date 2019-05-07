@@ -483,24 +483,71 @@ class OutputInterceptor(object):
         self.sock = self.socks_by_connection[connection_details]
         self.socklock = self.locks_by_connection[connection_details]
 
+        if os.name == 'nt':
+            self._libc = ctypes.cdll.msvcrt
+        else:
+            self._libc =  ctypes.CDLL(None)
+
+        self._c_stream_ptr = self._get_c_stream()
+
+    def _get_c_stream(self):
+        """Get file pointer for C stream"""
+
+        if os.name == 'nt':
+            # Windows:
+            class FILE(ctypes.Structure):
+                _fields_ = [
+                    ("_ptr", ctypes.c_char_p),
+                    ("_cnt", ctypes.c_int),
+                    ("_base", ctypes.c_char_p),
+                    ("_flag", ctypes.c_int),
+                    ("_file", ctypes.c_int),
+                    ("_charbuf", ctypes.c_int),
+                    ("_bufsize", ctypes.c_int),
+                    ("_tmpfname", ctypes.c_char_p),
+                ]
+        
+            iob_func = getattr(self._libc, '__iob_func')
+            iob_func.restype = ctypes.POINTER(FILE)
+            iob_func.argtypes = []
+            
+            array = iob_func()
+            if self.streamname == 'stdout':
+                return ctypes.addressof(array[1])
+            else:
+                return ctypes.addressof(array[2])
+        else:
+            try:
+                # Linux:
+                return ctypes.c_void_p.in_dll(self._libc, self.streamname)
+            except ValueError:
+                # MacOS:
+                return ctypes.c_void_p.in_dll(self._libc, '__%sp' % self.streamname)
+
     def _flush(self):
         """Flush the C level file pointer for the stream. This should be
         done before closing their file descriptors"""
         if os.name == 'nt':
-            # Windows:
-            libc = ctypes.cdll.msvcrt
             # In windows we flush all output streams by calling flush on a null
             # pointer:
             file_ptr = ctypes.c_void_p()
         else:
-            libc = ctypes.CDLL(None)
-            try:
-                # Linux:
-                file_ptr = ctypes.c_void_p.in_dll(libc, self.streamname)
-            except ValueError:
-                # MacOS:
-                file_ptr = ctypes.c_void_p.in_dll(libc, '__%sp' % self.streamname)
-        libc.fflush(file_ptr)
+            file_ptr = self._c_stream_ptr
+        self._libc.fflush(file_ptr)
+
+    def _unbuffer(self):
+        """Set C output streams to unbuffered"""
+        if os.name == 'nt':
+            _IONBF = 4
+        else:
+            _IONBF = 2
+        self._libc.setvbuf.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_size_t,
+        ]
+        self._libc.setvbuf(self._c_stream_ptr, None, _IONBF, 0)
 
     def connect(self):
         """Begin output redirection"""
@@ -541,6 +588,7 @@ class OutputInterceptor(object):
 
             # Before doing the redirection, flush the current streams:
             self._flush()
+            self._unbuffer()
             # Redirect the stream to our write pipe, closing the original stream
             # file descriptor:
             os.dup2(write_pipe_fd, self.stream_fd)
