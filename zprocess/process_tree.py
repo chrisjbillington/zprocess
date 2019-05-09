@@ -868,11 +868,13 @@ class Process(object):
         self.run(*args, **kwargs)
 
     def terminate(self):
-        # Block until child exists:
         with self.startup_lock:
             if self.startup_queue is None:
+                # start() has not been called yet. Tell it not to start if it is called
+                # later:
                 self.terminated = True
                 return
+        # start() has been called. Block until the child exists, if it doens't already:
         to_child, from_child, child = self.startup_queue.get()
         try:
             child.terminate()
