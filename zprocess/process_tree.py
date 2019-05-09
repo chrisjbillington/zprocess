@@ -323,15 +323,31 @@ class ReadQueue(object):
     def __init__(self, sock, to_self_sock):
         self.sock = sock
         self.to_self_sock = to_self_sock
-        self.socklock = threading.Lock()
+        self.socklock = threading.RLock()
         self.to_self_sock_lock = threading.Lock()
+        # Whether Process.terminate() has sent a 'terminated' message to this queue.
+        # This allows us to distinguish between that message and a hypothetical
+        # 'organic' one
+        self.terminated_sent = False
 
-    def get(self, timeout=None):
+    def get(self, timeout=None, check_terminated=False):
+        """Get an object sent from the child, with optional timeout. If the child is
+        terminated by the parent and 'return_terminated' is set, get() will return
+        'terminated'. Otherwise 'term"""
         with self.socklock:
             if timeout is not None:
                 if not self.sock.poll(timeout*1000):
                     raise TimeoutError('get() timed out')
             obj = self.sock.recv_pyobj()
+            # If we are not explicitly asked to return 'terminated' upon termination,
+            # don't. Calling code may shut down by sending their own message to the read
+            # queue; we do not want to send messages to calling code that does not
+            # expect it:
+            if obj == 'terminated' and self.terminated_sent:
+                self.terminated_sent = False
+                if not check_terminated:
+                    # Keep waiting for the next message:
+                    return self.get(timeout, check_terminated)
         return obj
 
     def put(self, obj):
@@ -817,7 +833,7 @@ class Process(object):
         else:
             self.to_child.put(self.__class__)
 
-        response = self.from_child.get(timeout=self.startup_timeout)
+        response = self.from_child.get(self.startup_timeout, check_terminated=True)
         if response != 'ok':
             msg = "Error in child process importing specified Process subclass:\n\n%s"
             raise Exception(msg % str(response))
@@ -843,6 +859,7 @@ class Process(object):
             # process is already dead, or cannot contact remote server
             pass
         # In case the parent is waiting on the child to start up: 
+        self.from_child.terminated_sent = True
         self.from_child.put('terminated')
 
     def run(self, *args, **kwargs):
