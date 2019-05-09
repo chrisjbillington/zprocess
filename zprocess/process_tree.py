@@ -7,7 +7,6 @@ import subprocess
 import time
 import signal
 import weakref
-import ast
 import json
 import ctypes
 import atexit
@@ -41,9 +40,11 @@ PROCESS_CLASS_WRAPPER = 'zprocess.process_class_wrapper'
 PY2 = sys.version_info[0] == 2
 if PY2:
     import cPickle as pickle
+    from Queue import Queue
     str = unicode
 else:
     import pickle
+    from queue import Queue
 
 
 class HeartbeatServer(object):
@@ -760,6 +761,9 @@ class Process(object):
         self.remote_process_client = remote_process_client
         self.subclass_fullname = subclass_fullname
         self.startup_timeout = startup_timeout
+        self.startup_queue = None
+        self.startup_lock = threading.Lock()
+        self.terminated = False
         if subclass_fullname is not None:
             if self.__class__ is not Process:
                 msg = (
@@ -785,6 +789,17 @@ class Process(object):
     def start(self, *args, **kwargs):
         """Call in the parent process to start a subprocess. Passes args and
         kwargs to the run() method"""
+        # Allow Process.terminate() to be called at any time, either before or after
+        # start(), and catch it in a race-free way. Process.terminate() will acquire the
+        # startup lock and check for the existence of startup_queue, and will only block
+        # on it if it exists. Otherwise it will set self.terminated, and the below code
+        # will know not to start the child process.
+        with self.startup_lock:
+            if self.terminated:
+                raise Exception('terminated')
+            else:
+                self.startup_queue = Queue()
+
         child_details = self.process_tree.subprocess(PROCESS_CLASS_WRAPPER,
                             output_redirection_port=self._redirection_port,
                             output_redirection_host=self._redirection_host,
@@ -793,7 +808,8 @@ class Process(object):
                             pymodule=True,
                             # This argument is not used by the child, but it makes it
                             # visible in process lists which process is which:
-                            args=[self.subclass_fullname or self.__class__.__name__])
+                            args=[self.subclass_fullname or self.__class__.__name__],
+                            startup_queue=self.startup_queue)
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
@@ -852,15 +868,21 @@ class Process(object):
         self.run(*args, **kwargs)
 
     def terminate(self):
+        # Block until child exists:
+        with self.startup_lock:
+            if self.startup_queue is None:
+                self.terminated = True
+                return
+        to_child, from_child, child = self.startup_queue.get()
         try:
-            self.child.terminate()
-            self.child.wait()
+            child.terminate()
+            child.wait()
         except (OSError, TimeoutError):
             # process is already dead, or cannot contact remote server
             pass
         # In case the parent is waiting on the child to start up: 
-        self.from_child.terminated_sent = True
-        self.from_child.put('terminated')
+        from_child.terminated_sent = True
+        from_child.put('terminated')
 
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by
@@ -988,14 +1010,21 @@ class ProcessTree(object):
         remote_process_client=None,
         startup_timeout=5,
         pymodule=False,
-        args=None
+        args=None,
+        startup_queue=None
     ):
         """Start a subprocess and set up communication with it. Path can be either a
         path to a Python script to be executed with 'python some_path.py, or a fully
         qualified module path to be executed as 'python -m some.path'. Path will be
         interpreted as the latter only if pymodule=True. If output_redirection_port is
         not None, then all stdout and stderr of the child process will be sent on a
-        zmq.PUSH socket to the given port. TODO finish this and other docstrings."""
+        zmq.PUSH socket to the given port. If startup_queue is provided, it should be a
+        queue.Queue(). Once the child process exists, a tuple (to_child, from_child,
+        child) will be put() to this queue. This allows for example Process.terminate()
+        to wait for the process to start, to terminate the process as soon as it exists,
+        and to put() to the from_child() queue to stop this function from blocking
+        waiting for the child to connect. If the child is terminated before connecting
+        to us, this method returns None. TODO finish this and other docstrings."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
@@ -1100,14 +1129,18 @@ class ProcessTree(object):
                 cmd, prepend_sys_executable=True, extra_env=extra_env
             )
 
-        events = from_child.poll(startup_timeout*1000)
-        if not events:
-            raise RuntimeError('child process did not connect within the timeout.')
-        assert from_child.recv() == b'hello'
-
         to_child = WriteQueue(to_child)
         from_child = ReadQueue(from_child, to_self)
-
+        if startup_queue is not None:
+            startup_queue.put((to_child, from_child, child))
+        try:
+            msg = from_child.get(startup_timeout, check_terminated=True)
+        except TimeoutError:
+            raise RuntimeError('child process did not connect within the timeout.')
+        if msg == 'terminated':
+            # Child was terminated before it connected to us.
+            raise Exception(msg)
+        assert msg == 'hello'
         return to_child, from_child, child
 
     def _connect_to_parent(self, parentinfo):
@@ -1134,10 +1167,10 @@ class ProcessTree(object):
         to_parent.connect(
             "tcp://%s:%s" % (self.parent_host, parentinfo['to_parent_port'])
         )
-        to_parent.send(b'hello')
 
         self.from_parent = ReadQueue(from_parent, to_self)
         self.to_parent = WriteQueue(to_parent)
+        self.to_parent.put('hello')
 
         self.output_redirection_host = parentinfo.get('output_redirection_host', None)
         self.output_redirection_port = parentinfo.get('output_redirection_port', None)
