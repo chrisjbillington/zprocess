@@ -874,14 +874,15 @@ class Process(object):
                 # later:
                 self.terminated = True
                 return
-        # start() has been called. Block until the child exists, if it doens't already:
+        # start() has been called. Block until the child exists, if it doesn't already:
         to_child, from_child, child = self.startup_queue.get()
-        try:
-            child.terminate()
-            child.wait()
-        except (OSError, TimeoutError):
-            # process is already dead, or cannot contact remote server
-            pass
+        if child is not None: # child can be None if process creation failed
+            try:
+                child.terminate()
+                child.wait()
+            except (OSError, TimeoutError):
+                # process is already dead, or cannot contact remote server
+                pass
         # In case the parent is waiting on the child to start up: 
         from_child.terminated_sent = True
         from_child.put('terminated')
@@ -1035,6 +1036,10 @@ class ProcessTree(object):
         from_child_port = from_child.bind_to_random_port('tcp://0.0.0.0')
         to_self.connect('tcp://127.0.0.1:%s' % from_child_port)
         to_child_port = to_child.bind_to_random_port('tcp://0.0.0.0')
+
+        to_child = WriteQueue(to_child)
+        from_child = ReadQueue(from_child, to_self)
+
         self.check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
@@ -1095,7 +1100,12 @@ class ProcessTree(object):
         if remote_process_client is not None:
             # Translate any internal hostnames or IP addresses in parentinfo into our
             # external IP address as seen from the remote process server:
-            external_ip = remote_process_client.get_external_IP()
+            try:
+                external_ip = remote_process_client.get_external_IP()
+            except:
+                if startup_queue is not None:
+                    startup_queue.put((to_child, from_child, None))
+                raise
             for key, value in list(parentinfo.items()):
                 if key.endswith('_host') and value is not None:
                     ip = gethostbyname(value)
@@ -1119,22 +1129,22 @@ class ProcessTree(object):
             # Windows Python 2, only bytestrings allowed:
             extra_env = {k.encode(): v.encode() for k, v in extra_env.items()}
 
-        if remote_process_client is None:
-            env = os.environ.copy()
-            env.update(extra_env)
-            child = subprocess.Popen([sys.executable] + cmd, env=env)
-        else:
-            # The remote server will prefix the path to its own Python interpreter.
-            # Also, it will pass to Popen an env consisting of its own env updated with
-            # this extra_env dict we are passing in.
-            child = remote_process_client.Popen(
-                cmd, prepend_sys_executable=True, extra_env=extra_env
-            )
-
-        to_child = WriteQueue(to_child)
-        from_child = ReadQueue(from_child, to_self)
-        if startup_queue is not None:
-            startup_queue.put((to_child, from_child, child))
+        try:
+            child = None
+            if remote_process_client is None:
+                env = os.environ.copy()
+                env.update(extra_env)
+                child = subprocess.Popen([sys.executable] + cmd, env=env)
+            else:
+                # The remote server will prefix the path to its own Python interpreter.
+                # Also, it will pass to Popen an env consisting of its own env updated with
+                # this extra_env dict we are passing in.
+                child = remote_process_client.Popen(
+                    cmd, prepend_sys_executable=True, extra_env=extra_env
+                )
+        finally:
+            if startup_queue is not None:
+                startup_queue.put((to_child, from_child, child))
         try:
             msg = from_child.get(startup_timeout, check_terminated=True)
         except TimeoutError:
