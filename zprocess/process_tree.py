@@ -800,16 +800,25 @@ class Process(object):
             else:
                 self.startup_queue = Queue()
 
-        child_details = self.process_tree.subprocess(PROCESS_CLASS_WRAPPER,
-                            output_redirection_port=self._redirection_port,
-                            output_redirection_host=self._redirection_host,
-                            remote_process_client=self.remote_process_client,
-                            startup_timeout=self.startup_timeout,
-                            pymodule=True,
-                            # This argument is not used by the child, but it makes it
-                            # visible in process lists which process is which:
-                            args=[self.subclass_fullname or self.__class__.__name__],
-                            startup_queue=self.startup_queue)
+        try:
+            child_details = self.process_tree.subprocess(
+                PROCESS_CLASS_WRAPPER,
+                output_redirection_port=self._redirection_port,
+                output_redirection_host=self._redirection_host,
+                remote_process_client=self.remote_process_client,
+                startup_timeout=self.startup_timeout,
+                pymodule=True,
+                # This argument is not used by the child, but it makes it visible in
+                # process lists which process is which:
+                args=[self.subclass_fullname or self.__class__.__name__],
+                startup_queue=self.startup_queue,
+            )
+        except:
+            with self.startup_lock:
+                self.startup_queue.put((None, None, None))
+                self.startup_queue = None
+            raise
+
         self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
@@ -869,13 +878,14 @@ class Process(object):
 
     def terminate(self):
         with self.startup_lock:
-            if self.startup_queue is None:
-                # start() has not been called yet. Tell it not to start if it is called
-                # later:
+            startup_queue = self.startup_queue
+            if startup_queue is None:
+                # start() has either not been called yet, or it has already been called
+                # and failed. Tell it not to start if it is called later:
                 self.terminated = True
                 return
         # start() has been called. Block until the child exists, if it doesn't already:
-        to_child, from_child, child = self.startup_queue.get()
+        to_child, from_child, child = startup_queue.get()
         if child is not None: # child can be None if process creation failed
             try:
                 child.terminate()
@@ -883,9 +893,9 @@ class Process(object):
             except (OSError, TimeoutError):
                 # process is already dead, or cannot contact remote server
                 pass
-        # In case the parent is waiting on the child to start up: 
-        from_child.terminated_sent = True
-        from_child.put('terminated')
+            # In case the parent is waiting on the child to start up: 
+            from_child.terminated_sent = True
+            from_child.put('terminated')
 
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by
@@ -1036,10 +1046,6 @@ class ProcessTree(object):
         from_child_port = from_child.bind_to_random_port('tcp://0.0.0.0')
         to_self.connect('tcp://127.0.0.1:%s' % from_child_port)
         to_child_port = to_child.bind_to_random_port('tcp://0.0.0.0')
-
-        to_child = WriteQueue(to_child)
-        from_child = ReadQueue(from_child, to_self)
-
         self.check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
@@ -1100,12 +1106,7 @@ class ProcessTree(object):
         if remote_process_client is not None:
             # Translate any internal hostnames or IP addresses in parentinfo into our
             # external IP address as seen from the remote process server:
-            try:
-                external_ip = remote_process_client.get_external_IP()
-            except:
-                if startup_queue is not None:
-                    startup_queue.put((to_child, from_child, None))
-                raise
+            external_ip = remote_process_client.get_external_IP()
             for key, value in list(parentinfo.items()):
                 if key.endswith('_host') and value is not None:
                     ip = gethostbyname(value)
@@ -1129,22 +1130,22 @@ class ProcessTree(object):
             # Windows Python 2, only bytestrings allowed:
             extra_env = {k.encode(): v.encode() for k, v in extra_env.items()}
 
-        try:
-            child = None
-            if remote_process_client is None:
-                env = os.environ.copy()
-                env.update(extra_env)
-                child = subprocess.Popen([sys.executable] + cmd, env=env)
-            else:
-                # The remote server will prefix the path to its own Python interpreter.
-                # Also, it will pass to Popen an env consisting of its own env updated with
-                # this extra_env dict we are passing in.
-                child = remote_process_client.Popen(
-                    cmd, prepend_sys_executable=True, extra_env=extra_env
-                )
-        finally:
-            if startup_queue is not None:
-                startup_queue.put((to_child, from_child, child))
+        if remote_process_client is None:
+            env = os.environ.copy()
+            env.update(extra_env)
+            child = subprocess.Popen([sys.executable] + cmd, env=env)
+        else:
+            # The remote server will prefix the path to its own Python interpreter.
+            # Also, it will pass to Popen an env consisting of its own env updated with
+            # this extra_env dict we are passing in.
+            child = remote_process_client.Popen(
+                cmd, prepend_sys_executable=True, extra_env=extra_env
+            )
+
+        to_child = WriteQueue(to_child)
+        from_child = ReadQueue(from_child, to_self)
+        if startup_queue is not None:
+            startup_queue.put((to_child, from_child, child))
         try:
             msg = from_child.get(startup_timeout, check_terminated=True)
         except TimeoutError:
