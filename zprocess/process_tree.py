@@ -319,29 +319,25 @@ class WriteQueue(object):
             interruptor = self.interruptor
         with self.lock:
             try:
-                if interruptor is not None:
-                    interruption_sock = interruptor.subscribe()
-                    self.poller.register(interruption_sock)
+                interruption_sock = interruptor.subscribe()
+                self.poller.register(interruption_sock)
                 while True:
                     if timeout is not None:
                         timeout = max(0, (deadline - time.time()) * 1000)
                     events = dict(self.poller.poll(timeout))
-                    if interruptor is not None and interruption_sock in events:
-                        reason = interruption_sock.recv().decode()
-                        raise Interrupted(reason)
+                    if interruption_sock in events:
+                        raise Interrupted(interruption_sock.recv().decode())
                     try:
-                        self.sock.send_pyobj(
+                        return self.sock.send_pyobj(
                             obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
                         )
-                        break
                     except zmq.ZMQError:
                         # Queue became full or we disconnected or something, keep
                         # polling:
                         continue
             finally:
-                if interruptor is not None:
-                    self.poller.unregister(interruption_sock)
-                    interruptor.unsubscribe()
+                self.poller.unregister(interruption_sock)
+                interruptor.unsubscribe()
 
 
 class ReadQueue(object):
@@ -355,8 +351,8 @@ class ReadQueue(object):
     def __init__(self, sock, to_self_sock):
         self.sock = sock
         self.to_self_sock = to_self_sock
-        self.socklock = threading.Lock()
-        self.to_self_sock_lock = threading.Lock()
+        self.lock = threading.Lock()
+        self.to_self_lock = threading.Lock()
         self.in_poller = zmq.Poller()
         self.in_poller.register(self.sock)
         self.out_poller = zmq.Poller()
@@ -373,54 +369,48 @@ class ReadQueue(object):
             timeout *= 1000 # convert to ms
         if interruptor is None:
             interruptor = self.interruptor
-        with self.socklock:
+        with self.lock:
             try:
-                if interruptor is not None:
-                    interruption_sock = interruptor.subscribe()
-                    self.in_poller.register(interruption_sock)
+                interruption_sock = interruptor.subscribe()
+                self.in_poller.register(interruption_sock)
                 events = dict(self.in_poller.poll(timeout))
                 if not events:
                     raise TimeoutError('get() timed out')
-                if interruptor is not None and interruption_sock in events:
-                    reason = interruption_sock.recv().decode()
-                    raise Interrupted(reason)
-                obj = self.sock.recv_pyobj()
+                if interruption_sock in events:
+                    raise Interrupted(interruption_sock.recv().decode())
+                return self.sock.recv_pyobj()
             finally:
-                if interruptor is not None:
-                    self.in_poller.unregister(interruption_sock)
-                    interruptor.unsubscribe()
-        return obj
+                self.in_poller.unregister(interruption_sock)
+                interruptor.unsubscribe()
 
     def put(self, obj, timeout=None, interruptor=None):
         """Send an object to ourself, with optional timeout and optional
         zprocess.Interruptor instance for interrupting from another thread"""
         if timeout is not None:
             deadline = time.time() + timeout
-        with self.to_self_sock_lock:
+        if interruptor is None:
+            interruptor = self.interruptor
+        with self.to_self_lock:
             try:
-                if interruptor is not None:
-                    interruption_sock = interruptor.subscribe()
-                    self.out_poller.register(interruption_sock)
+                interruption_sock = interruptor.subscribe()
+                self.out_poller.register(interruption_sock)
                 while True:
                     if timeout is not None:
                         timeout = max(0, (deadline - time.time()) * 1000)
                     events = dict(self.out_poller.poll(timeout))
-                    if interruptor is not None and interruption_sock in events:
-                        reason = interruption_sock.recv().decode()
-                        raise Interrupted(reason)
+                    if interruption_sock in events:
+                        raise Interrupted(interruption_sock.recv().decode())
                     try:
-                        self.to_self_sock.send_pyobj(
+                        return self.to_self_sock.send_pyobj(
                             obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
                         )
-                        break
                     except zmq.ZMQError:
                         # Queue became full or we disconnected or something, keep
                         # polling:
                         continue
             finally:
-                if interruptor is not None:
-                    self.in_poller.unregister(interruption_sock)
-                    interruptor.unsubscribe()
+                self.out_poller.unregister(interruption_sock)
+                interruptor.unsubscribe()
 
 
 
