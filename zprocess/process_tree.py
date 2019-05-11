@@ -24,9 +24,8 @@ if _cwd == 'zprocess' and _path not in sys.path:
 
 import ipaddress
 import zprocess
-from zprocess.clientserver import ZMQClient
 from zprocess.security import SecureContext
-from zprocess.utils import TimeoutError
+from zprocess.utils import Interruptor, Interrupted, TimeoutError
 from zprocess.remote import (
     RemoteProcessClient,
     RemoteOutputReceiver,
@@ -307,10 +306,42 @@ class WriteQueue(object):
     def __init__(self, sock):
         self.sock = sock
         self.lock = threading.Lock()
+        self.poller = zmq.Poller()
+        self.poller.register(self.sock)
+        self.interruptor = Interruptor()
 
-    def put(self, obj):
+    def put(self, obj, timeout=None, interruptor=None):
+        """Send an object to ourself, with optional timeout and optional
+        zprocess.Interruptor instance for interrupting from another thread"""
+        if timeout is not None:
+            deadline = time.time() + timeout
+        if interruptor is None:
+            interruptor = self.interruptor
         with self.lock:
-            self.sock.send_pyobj(obj, protocol=zprocess.PICKLE_PROTOCOL)
+            try:
+                if interruptor is not None:
+                    interruption_sock = interruptor.subscribe()
+                    self.poller.register(interruption_sock)
+                while True:
+                    if timeout is not None:
+                        timeout = max(0, (deadline - time.time()) * 1000)
+                    events = dict(self.poller.poll(timeout))
+                    if interruptor is not None and interruption_sock in events:
+                        reason = interruption_sock.recv().decode()
+                        raise Interrupted(reason)
+                    try:
+                        self.sock.send_pyobj(
+                            obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
+                        )
+                        break
+                    except zmq.ZMQError:
+                        # Queue became full or we disconnected or something, keep
+                        # polling:
+                        continue
+            finally:
+                if interruptor is not None:
+                    self.poller.unregister(interruption_sock)
+                    interruptor.unsubscribe()
 
 
 class ReadQueue(object):
@@ -324,36 +355,73 @@ class ReadQueue(object):
     def __init__(self, sock, to_self_sock):
         self.sock = sock
         self.to_self_sock = to_self_sock
-        self.socklock = threading.RLock()
+        self.socklock = threading.Lock()
         self.to_self_sock_lock = threading.Lock()
-        # Whether Process.terminate() has sent a 'terminated' message to this queue.
-        # This allows us to distinguish between that message and a hypothetical
-        # 'organic' one
-        self.terminated_sent = False
+        self.in_poller = zmq.Poller()
+        self.in_poller.register(self.sock)
+        self.out_poller = zmq.Poller()
+        self.out_poller.register(self.to_self_sock)
+        self.interruptor = Interruptor()
 
-    def get(self, timeout=None, check_terminated=False):
-        """Get an object sent from the child, with optional timeout. If the child is
-        terminated by the parent and 'return_terminated' is set, get() will return
-        'terminated'. Otherwise 'term"""
+    def get(self, timeout=None, interruptor=None):
+        """Get an object sent from the child, with optional timeout and optional
+        zprocess.Interruptor instance for interrupting from another thread. If
+        interruptor is not provided, a default interruptor is used, and so get() can be
+        interrupted from another thread with ReadQueue.interruptor.set() (remember to
+        call .clear() to reset before calling get() again"""
+        if timeout is not None:
+            timeout *= 1000 # convert to ms
+        if interruptor is None:
+            interruptor = self.interruptor
         with self.socklock:
-            if timeout is not None:
-                if not self.sock.poll(timeout*1000):
+            try:
+                if interruptor is not None:
+                    interruption_sock = interruptor.subscribe()
+                    self.in_poller.register(interruption_sock)
+                events = dict(self.in_poller.poll(timeout))
+                if not events:
                     raise TimeoutError('get() timed out')
-            obj = self.sock.recv_pyobj()
-            # If we are not explicitly asked to return 'terminated' upon termination,
-            # don't. Calling code may shut down by sending their own message to the read
-            # queue; we do not want to send messages to calling code that does not
-            # expect it:
-            if obj == 'terminated' and self.terminated_sent:
-                self.terminated_sent = False
-                if not check_terminated:
-                    # Keep waiting for the next message:
-                    return self.get(timeout, check_terminated)
+                if interruptor is not None and interruption_sock in events:
+                    reason = interruption_sock.recv().decode()
+                    raise Interrupted(reason)
+                obj = self.sock.recv_pyobj()
+            finally:
+                if interruptor is not None:
+                    self.in_poller.unregister(interruption_sock)
+                    interruptor.unsubscribe()
         return obj
 
-    def put(self, obj):
+    def put(self, obj, timeout=None, interruptor=None):
+        """Send an object to ourself, with optional timeout and optional
+        zprocess.Interruptor instance for interrupting from another thread"""
+        if timeout is not None:
+            deadline = time.time() + timeout
         with self.to_self_sock_lock:
-            self.to_self_sock.send_pyobj(obj, protocol=zprocess.PICKLE_PROTOCOL)
+            try:
+                if interruptor is not None:
+                    interruption_sock = interruptor.subscribe()
+                    self.out_poller.register(interruption_sock)
+                while True:
+                    if timeout is not None:
+                        timeout = max(0, (deadline - time.time()) * 1000)
+                    events = dict(self.out_poller.poll(timeout))
+                    if interruptor is not None and interruption_sock in events:
+                        reason = interruption_sock.recv().decode()
+                        raise Interrupted(reason)
+                    try:
+                        self.to_self_sock.send_pyobj(
+                            obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
+                        )
+                        break
+                    except zmq.ZMQError:
+                        # Queue became full or we disconnected or something, keep
+                        # polling:
+                        continue
+            finally:
+                if interruptor is not None:
+                    self.in_poller.unregister(interruption_sock)
+                    interruptor.unsubscribe()
+
 
 
 class _StreamProxyBuffer(object):
@@ -762,6 +830,7 @@ class Process(object):
         self.subclass_fullname = subclass_fullname
         self.startup_timeout = startup_timeout
         self.startup_queue = None
+        self.startup_interruptor = Interruptor()
         self.startup_lock = threading.Lock()
         self.terminated = False
         if subclass_fullname is not None:
@@ -812,10 +881,11 @@ class Process(object):
                 # process lists which process is which:
                 args=[self.subclass_fullname or self.__class__.__name__],
                 startup_queue=self.startup_queue,
+                startup_interruptor=self.startup_interruptor
             )
         except:
             with self.startup_lock:
-                self.startup_queue.put((None, None, None))
+                self.startup_queue.put(None)
                 self.startup_queue = None
             raise
 
@@ -847,23 +917,45 @@ class Process(object):
             # is good! Also send sys.path the ensure the child's environment is the same
             # as ours. Do not do this if remote, since the environment will not be
             # meaningful on the other host.
-            self.to_child.put([self.__module__, module_file, sys.path])
+            self.to_child.put(
+                [self.__module__, module_file, sys.path],
+                timeout=self.startup_timeout,
+                interruptor=self.startup_interruptor,
+            )
         else:
-            self.to_child.put([None, None, None])
+            self.to_child.put(
+                [None, None, None],
+                timeout=self.startup_timeout,
+                interruptor=self.startup_interruptor,
+            )
 
         # Send the class to the child, either as a pickled class or as the specified
         # full path:
         if self.subclass_fullname is not None:
-            self.to_child.put(self.subclass_fullname)
+            self.to_child.put(
+                self.subclass_fullname,
+                timeout=self.startup_timeout,
+                interruptor=self.startup_interruptor,
+            )
         else:
-            self.to_child.put(self.__class__)
+            self.to_child.put(
+                self.__class__,
+                timeout=self.startup_timeout,
+                interruptor=self.startup_interruptor,
+            )
 
-        response = self.from_child.get(self.startup_timeout, check_terminated=True)
+        response = self.from_child.get(
+            timeout=self.startup_timeout, interruptor=self.startup_interruptor
+        )
         if response != 'ok':
             msg = "Error in child process importing specified Process subclass:\n\n%s"
             raise Exception(msg % str(response))
             
-        self.to_child.put([args, kwargs])
+        self.to_child.put(
+            [args, kwargs],
+            timeout=self.startup_timeout,
+            interruptor=self.startup_interruptor,
+        )
         return self.to_child, self.from_child
 
     def _run(self):
@@ -878,14 +970,19 @@ class Process(object):
 
     def terminate(self):
         with self.startup_lock:
+            if self.terminated:
+                # Already done.
+                return
             startup_queue = self.startup_queue
             if startup_queue is None:
                 # start() has either not been called yet, or it has already been called
                 # and failed. Tell it not to start if it is called later:
                 self.terminated = True
                 return
-        # start() has been called. Block until the child exists, if it doesn't already:
-        to_child, from_child, child = startup_queue.get()
+        # start() has been called. Interrupt any blocking IO in startup:
+        self.startup_interruptor.set('terminated during startup')
+        # If the child already existed when we interrupted, we should recieve it here:
+        child = startup_queue.get()
         if child is not None: # child can be None if process creation failed
             try:
                 child.terminate()
@@ -893,9 +990,6 @@ class Process(object):
             except (OSError, TimeoutError):
                 # process is already dead, or cannot contact remote server
                 pass
-            # In case the parent is waiting on the child to start up: 
-            from_child.terminated_sent = True
-            from_child.put('terminated')
 
     def run(self, *args, **kwargs):
         """The method that gets called in the subprocess. To be overridden by
@@ -942,6 +1036,7 @@ class ProcessTree(object):
         self.from_parent = None
         self.kill_lock = None
         self.log_paths = {}
+        self.startup_timeout = None
 
         self.zlock_client = None
         if self.zlock_host is not None:
@@ -1024,7 +1119,8 @@ class ProcessTree(object):
         startup_timeout=5,
         pymodule=False,
         args=None,
-        startup_queue=None
+        startup_queue=None,
+        startup_interruptor=None,
     ):
         """Start a subprocess and set up communication with it. Path can be either a
         path to a Python script to be executed with 'python some_path.py, or a fully
@@ -1101,6 +1197,7 @@ class ProcessTree(object):
             'zlog_host': self.zlog_host,
             'zlog_port': self.zlog_port,
             'log_paths': self.log_paths,
+            'startup_timeout': startup_timeout,
         }
 
         if remote_process_client is not None:
@@ -1145,14 +1242,11 @@ class ProcessTree(object):
         to_child = WriteQueue(to_child)
         from_child = ReadQueue(from_child, to_self)
         if startup_queue is not None:
-            startup_queue.put((to_child, from_child, child))
+            startup_queue.put(child)
         try:
-            msg = from_child.get(startup_timeout, check_terminated=True)
+            msg = from_child.get(startup_timeout, interruptor=startup_interruptor)
         except TimeoutError:
             raise RuntimeError('child process did not connect within the timeout.')
-        if msg == 'terminated':
-            # Child was terminated before it connected to us.
-            raise Exception(msg)
         assert msg == 'hello'
         return to_child, from_child, child
 
@@ -1181,9 +1275,10 @@ class ProcessTree(object):
             "tcp://%s:%s" % (self.parent_host, parentinfo['to_parent_port'])
         )
 
+        self.startup_timeout = parentinfo.get('startup_timeout', None)
         self.from_parent = ReadQueue(from_parent, to_self)
         self.to_parent = WriteQueue(to_parent)
-        self.to_parent.put('hello')
+        self.to_parent.put('hello', timeout=self.startup_timeout)
 
         self.output_redirection_host = parentinfo.get('output_redirection_host', None)
         self.output_redirection_port = parentinfo.get('output_redirection_port', None)

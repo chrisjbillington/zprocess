@@ -52,6 +52,8 @@ if 'zprocess' in  os.getenv('COVERAGE_PROCESS_START', ''):
 
 from zprocess.utils import (
     TimeoutError,
+    Interrupted,
+    Interruptor,
     start_daemon,
     embed,
     raise_exception_in_thread,

@@ -26,8 +26,11 @@ def _setup():
         sys.path.insert(0, parent_dir)
 
     from zprocess import ProcessTree
+
     process_tree = ProcessTree.connect_to_parent()
-    module_name, module_filepath, syspath = process_tree.from_parent.get()
+    module_name, module_filepath, syspath = process_tree.from_parent.get(
+        timeout=process_tree.startup_timeout
+    )
     if (module_name, module_filepath, syspath) != (None, None, None):
         # Set sys.path so that all modules imported in the user's code are
         # importable here:
@@ -39,8 +42,11 @@ def _setup():
             # not where their class is! Temporarily rename this module so that the
             # user's __main__ block doesn't execute:
             globals()['__name__'] = 'process_class_wrapper'
-            exec(compile(open(module_filepath, "rb").read(),module_filepath, 'exec'),
-                 globals(), globals())
+            exec(
+                compile(open(module_filepath, "rb").read(), module_filepath, 'exec'),
+                globals(),
+                globals(),
+            )
             # Set __name__ back to normal. Runtime checks of this now cannot
             # distinguish between parent and child processes, but I think wanting
             # to do so without already knowing yourself is probably poor form:
@@ -49,7 +55,7 @@ def _setup():
     try:
         # Get the class from the parent, either as a class or a string for the import
         # path:
-        process_cls = process_tree.from_parent.get()
+        process_cls = process_tree.from_parent.get(timeout=process_tree.startup_timeout)
         if isinstance(process_cls, str):
             # The parent process is passing us the import path to a class rather
             # than a class itself. It's up to us to do the import and find the class
@@ -67,7 +73,7 @@ def _setup():
         return
 
     # Tell the parent we have a class
-    process_tree.to_parent.put('ok')
+    process_tree.to_parent.put('ok', timeout=process_tree.startup_timeout)
 
     instance = process_cls(process_tree)
     instance._run() 
