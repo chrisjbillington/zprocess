@@ -4,6 +4,7 @@ import os
 import threading
 import subprocess
 import logging, logging.handlers
+from binascii import hexlify
 
 import zmq
 
@@ -12,8 +13,92 @@ if PY2:
     str = unicode
 
 
+
 class TimeoutError(zmq.ZMQError):
     pass
+
+
+class Interrupted(RuntimeError):
+    pass
+
+
+class Interruptor(object):
+    """An object that can be passed to the put() and get() methods of ReadQueue and
+    WriteQueue objects, and the get() methods ZMQClient objects, in order to be able to
+    interrupt these potentially blocking methods from another thread. Upon calling
+    Interruptor.set(), all currently blocking threads calling the aforementioned
+    put()/get() methods will raise Interrupted, and all subsequent calls to put()/get()
+    with this interruptor will raise Interrupted immediately, until the clear() method
+    is called.
+
+    This class may be used to interrupt other blocking zmq operations in user code as
+    well, it is not specific to ZMQClient, ReadQueue and WriteQueue. The semantics are
+    the following. A thread about to do blocking IO should call Interruptor.subscribe(),
+    which will return a socket. The caller can then poll that socket for an interruption
+    message. If a message arrives, it will contain the reason, if any, for interruption.
+    zprocess classes then raise zprocess.Interrupted(reason), but calling code may do
+    with the interruption what they like. The caller must call Interruptor.unsubscribe()
+    once blocking zmq operations have completed, regardless of whether an interruption
+    was received or not. Calling code should also unregister the interruption socket
+    from the zmq.Poller() used to poll. """
+
+    def __init__(self):
+        # make a send socket
+        self._ctx = zmq.Context.instance()
+        self._xpub = self._ctx.socket(zmq.XPUB)
+        self._endpoint = 'inproc://zpInterruptor' + hexlify(os.urandom(8)).decode()
+        self._xpub.bind(self._endpoint)
+        self._local = threading.local()
+        self._lock = threading.Lock()
+        self._reason = ''
+        self.is_set = False
+
+    def subscribe(self):
+        """Called by put()/get() methods. Return a thread-local inproc socket subscribed
+        to interrupt messages."""
+        with self._lock:
+            if not hasattr(self._local, 'sub'):
+                self._local.sub = self._ctx.socket(zmq.SUB)
+                self._local.sub.connect(self._endpoint)
+                self._local.subscribed = False
+            if self._local.subscribed:
+                msg = "Thread already subscribed. Did you forget to call unsubscribe()?"
+                raise RuntimeError(msg)
+            self._local.sub.subscribe(b'')
+            # Ensure subscription is processed:
+            self._xpub.recv()
+            self._local.subscribed = True
+            # If we're already set, send an interruption message immediately:
+            if self.is_set:
+                self._xpub.send(self._reason.encode('utf8'))
+        return self._local.sub
+
+    def unsubscribe(self):
+        """Called by put()/get() upon interruption or end of blocking IO to ubsubscribe
+        from interrupt messages. This is somewhat important so that messages do not pile
+        up"""
+        if not hasattr(self._local, 'sub') or not self._local.subscribed:
+            raise RuntimeError('not subscribed')
+        self._local.subscribed = False
+        self._local.sub.unsubscribe(b'')
+
+    def set(self, reason=''):
+        """Send an interrupt message containing the given reason to all present and
+        future subscribed threads, until clear() is called."""
+        with self._lock:
+            if self.is_set:
+                raise RuntimeError('Already set. Did you forget to call clear()?')
+            self.is_set = True
+            self._reason = reason
+            self._xpub.send(reason.encode('utf8'))
+
+    def clear(self):
+        """Cease sending interrupt messages to newly subscribed threads."""
+        with self._lock:
+            if not self.is_set:
+                raise RuntimeError('Not set')
+            self.is_set = False
+            self._reason = ''
 
 
 def _reraise(exc_info):
