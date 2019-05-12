@@ -29,6 +29,9 @@ except ImportError:
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
+    from time import time as monotonic
+else:
+    from time import monotonic
 import zmq
 from zprocess.security import SecureContext
 DEFAULT_PORT = 7340
@@ -109,11 +112,11 @@ class ZLogClient(object):
 
     def ping(self, timeout=None):
         """Ping the server for a response. Timeout in seconds"""
-        start_time = time.time()
+        start_time = monotonic()
         self._send(b'hello', timeout=timeout)
         response = self._recv(timeout).decode('utf8')
         if response == 'hello':
-            return round((time.time() - start_time) * 1000, 2)
+            return round((monotonic() - start_time) * 1000, 2)
         raise zmq.ZMQError('Invalid response from server: ' + response)
 
     def get_protocol_version(self, timeout=None):
@@ -240,6 +243,7 @@ def check_access(filepath, timeout=None):
 
 
 if __name__ == '__main__':
+    import time
     connect()
     print(get_protocol_version())
     import logging

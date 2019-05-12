@@ -2,7 +2,6 @@ from __future__ import print_function, unicode_literals, division
 import sys
 import base64
 import weakref
-import time
 from socket import gethostbyname
 import os
 import ipaddress
@@ -20,6 +19,9 @@ from zprocess.utils import Interrupted
 
 if sys.version_info[0] == 2:
     str = unicode
+    from time import time as monotonic
+else:
+    from time import monotonic
 
 
 _bundle_warning = """zprocess warning: pyzmq is using bundled libzmq, which on Windows
@@ -217,18 +219,18 @@ class SecureSocket(zmq.Socket):
             if timeout != -1:
                 # Convert to s:
                 timeout /= 1000
-                
+
         try:
             result = self._bind_or_connect(addr, connect=True)
             if timeout is None:
                 return result
             # Block until we get an authentication success or failure
-            deadline = time.time() + timeout
+            deadline = monotonic() + timeout
             while True:
                 if timeout == -1:
                     remaining = None
                 else:
-                    remaining = (deadline - time.time()) * 1000  # ms
+                    remaining = (deadline - monotonic()) * 1000  # ms
                 events = dict(poller.poll(remaining))
                 if not events:
                     raise TimeoutError('Could not connect to server: timed out')

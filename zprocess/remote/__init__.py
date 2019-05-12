@@ -1,10 +1,13 @@
 from __future__ import unicode_literals, print_function, division
 import sys
+import time
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
+    from time import time as monotonic
+else:
+    from time import monotonic
 import zprocess
-import time
 
 DEFAULT_PORT = 7341
 PROTOCOL_VERSION = '1.0.0'
@@ -40,11 +43,11 @@ class RemoteChildProxy(object):
         # other requests, so we will make requests at 0.1 second intervals to reach
         # whatever the requested timeout was:
         if timeout is not None:
-            deadline = time.time() + timeout
+            deadline = monotonic() + timeout
         while True:
             result = self.request('wait', **kwargs)
             self.returncode = result
-            if result is not None or (timeout is not None and time.time() > deadline):
+            if result is not None or (timeout is not None and monotonic() > deadline):
                 return result
             time.sleep(0.1)
 

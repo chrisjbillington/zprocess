@@ -23,6 +23,10 @@ import weakref
 PY2 = sys.version_info.major == 2
 if PY2:
     str = unicode
+    from time import time as monotonic
+else:
+    from time import monotonic
+
 import zmq
 from zprocess.security import SecureContext
 
@@ -100,13 +104,13 @@ class ZLockClient(object):
         if not hasattr(self.local, 'sock'):
             self._new_socket(timeout)
         try:
-            start_time = time.time()
+            start_time = monotonic()
             self.local.sock.send(b'hello', zmq.NOBLOCK)
             events = self.local.poller.poll(timeout)
             if events:
                 response = self.local.sock.recv().decode('utf8')
                 if response == 'hello':
-                    return round((time.time() - start_time) * 1000, 2)
+                    return round((monotonic() - start_time) * 1000, 2)
                 raise zmq.ZMQError('Invalid repsonse from server: ' + response)
             raise zmq.ZMQError('No response from zlock server: timed out')
         except:

@@ -39,7 +39,10 @@ from zprocess.utils import (
 
 PY2 = sys.version_info[0] == 2
 if PY2:
+    from time import time as monotonic
     str = unicode
+else:
+    from time import monotonic
 
 
 def _typecheck_or_convert_data(data, dtype):
@@ -180,13 +183,13 @@ class ZMQServer(object):
             
     def mainloop(self):
         if self.timeout_interval is not None:
-            next_timeout = time.time() + self.timeout_interval
+            next_timeout = monotonic() + self.timeout_interval
         else:
             next_timeout = None
         try:
             while True:
                 if next_timeout is not None:
-                    timeout = next_timeout - time.time()
+                    timeout = next_timeout - monotonic()
                     timeout = max(0, timeout)
                     events = self.poller.poll(int(timeout*1000))
                     if not events:
@@ -199,7 +202,7 @@ class ZMQServer(object):
                             exc_info = sys.exc_info()
                             raise_exception_in_thread(exc_info)
                         # Compute next timeout time
-                        next_timeout = time.time() + self.timeout_interval
+                        next_timeout = monotonic() + self.timeout_interval
                         continue
                 request_data = self.recv()
                 if self.stopping:
@@ -359,7 +362,7 @@ class _Sender(object):
             self.new_socket(host, port, timeout, interruptor=interruptor)
         data = _typecheck_or_convert_data(data, self.dtype)
         if timeout is not None:
-            deadline = time.time() + timeout
+            deadline = monotonic() + timeout
         if interruptor is None:
             interruptor = self.interruptor
         try:
@@ -368,7 +371,7 @@ class _Sender(object):
             # Attempt to send until interruption or timeout:
             while True:
                 if timeout is not None:
-                    remaining = max(0, (deadline - time.time()) * 1000) # ms
+                    remaining = max(0, (deadline - monotonic()) * 1000) # ms
                 else:
                     remaining = None
                 events = dict(self.local.poller.poll(remaining))
