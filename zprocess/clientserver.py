@@ -387,8 +387,11 @@ class _Sender(object):
                     # Queue became full or we disconnected or something, keep
                     # polling:
                     continue
+            # Separate timeout for send() and recv()
+            if timeout is not None:
+                remaining = max(0, timeout * 1000) # ms
             # Wait for response until interrupt or timeout:
-            events = dict(self.local.poller.poll(timeout))
+            events = dict(self.local.poller.poll(remaining))
             if not events:
                 raise TimeoutError('No response from server: timed out')
             if interruption_sock in events:
