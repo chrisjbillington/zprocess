@@ -39,11 +39,11 @@ PROCESS_CLASS_WRAPPER = 'zprocess.process_class_wrapper'
 PY2 = sys.version_info[0] == 2
 if PY2:
     import cPickle as pickle
-    from Queue import Queue
+    from Queue import Queue, Empty
     str = unicode
 else:
     import pickle
-    from queue import Queue
+    from queue import Queue, Empty
 
 
 class HeartbeatServer(object):
@@ -849,10 +849,10 @@ class Process(object):
         self.remote_process_client = remote_process_client
         self.subclass_fullname = subclass_fullname
         self.startup_timeout = startup_timeout
-        self.startup_queue = None
+        self.startup_event = None
+
         self.startup_interruptor = Interruptor()
         self.startup_lock = threading.Lock()
-        self.terminated = False
         if subclass_fullname is not None:
             if self.__class__ is not Process:
                 msg = (
@@ -880,15 +880,16 @@ class Process(object):
         kwargs to the run() method"""
         # Allow Process.terminate() to be called at any time, either before or after
         # start(), and catch it in a race-free way. Process.terminate() will acquire the
-        # startup lock and check for the existence of startup_queue, and will only block
-        # on it if it exists. Otherwise it will set self.startup_interruptor, and the
+        # startup lock and check for the existence of startup_event, and will only block
+        # on it if it exists. Otherwise it will call self.interrupt_startup(), and the
         # below code will know not to start the child process.
         with self.startup_lock:
             if self.startup_interruptor.is_set:
-                raise Interrupted('terminated during startup.')
+                raise Interrupted(self.startup_interruptor.reason)
             else:
-                self.startup_queue = Queue()
+                self.startup_event = threading.Event()
 
+        startup_queue = Queue()
         try:
             child_details = self.process_tree.subprocess(
                 PROCESS_CLASS_WRAPPER,
@@ -900,16 +901,23 @@ class Process(object):
                 # This argument is not used by the child, but it makes it visible in
                 # process lists which process is which:
                 args=[self.subclass_fullname or self.__class__.__name__],
-                startup_queue=self.startup_queue,
+                startup_queue=startup_queue,
                 startup_interruptor=self.startup_interruptor
             )
-        except:
+            self.to_child, self.from_child, self.child = child_details
+        finally:
             with self.startup_lock:
-                self.startup_queue.put(None)
-                self.startup_queue = None
-            raise
+                # If the above was interrupted, but the child object existed before
+                # interruption, it will have been put to this queue. If so, set it as
+                # self.child
+                try:
+                    self.child = startup_queue.get(block=False)
+                except Empty:
+                    pass
+                # Inform waiting code that self.child should exist now, and that if it
+                # is None it means startup failed before it was created:
+                self.startup_event.set()
 
-        self.to_child, self.from_child, self.child = child_details
         # Get the file that the class definition is in (not this file you're
         # reading now, rather that of the subclass):
         if self.subclass_fullname is None:
@@ -988,23 +996,30 @@ class Process(object):
         args, kwargs = self.from_parent.get()
         self.run(*args, **kwargs)
 
-    def terminate(self):
+    def interrupt_startup(self, reason='Process.interrupt_startup() called'):
+        """Called from the parent process. Interrupt all blocking operations on starting
+        the child process, causing Process.start() to raise Interrupted(reason). After
+        interruption, self.child may be None if startup was interrupted before the child
+        was started, otherwise self.child will be the child Popen object, which could be
+        at any stage of setting up its connection with the parent. This method may be
+        called multiple times without raising an exception, it will simply do nothing
+        if startup has previously been interrupted"""
         with self.startup_lock:
-            if self.startup_interruptor.is_set:
-                # Already done.
-                return
-            self.startup_interruptor.set('terminated during startup')
-            startup_queue = self.startup_queue
-            if startup_queue is None:
-                # start() has either not been called yet, or it has already been called
-                # and failed. There is no child to terminate.
-                return
-        # If the child already existed when we interrupted, we should receive it here:
-        child = startup_queue.get()
-        if child is not None: # child can be None if process creation failed
+            if not self.startup_interruptor.is_set:
+                self.startup_interruptor.set(reason=reason)
+        if self.startup_event is not None:
+            # start() has been called. Block until self.child exists:
+            self.startup_event.wait()
+
+    def terminate(self):
+        """Interrupt process startup if not already done, ensuring self.child exists or
+        is None if startup was interrupted before the process was created. Then if the
+        child is not None, call Popen.terminate() and Popen.wait() on it."""
+        self.interrupt_startup(reason='Process.terminate() called')
+        if self.child is not None:
             try:
-                child.terminate()
-                child.wait()
+                self.child.terminate()
+                self.child.wait()
             except (OSError, TimeoutError):
                 # process is already dead, or cannot contact remote server
                 pass
@@ -1146,12 +1161,13 @@ class ProcessTree(object):
         interpreted as the latter only if pymodule=True. If output_redirection_port is
         not None, then all stdout and stderr of the child process will be sent on a
         zmq.PUSH socket to the given port. If startup_queue is provided, it should be a
-        queue.Queue(). Once the child process exists, a tuple (to_child, from_child,
-        child) will be put() to this queue. This allows for example Process.terminate()
-        to wait for the process to start, to terminate the process as soon as it exists,
-        and to put() to the from_child() queue to stop this function from blocking
-        waiting for the child to connect. If the child is terminated before connecting
-        to us, this method returns None. TODO finish this and other docstrings."""
+        queue.Queue(). Once the child process exists, the child Popen object will be
+        put() to this queue. This allows Process.interrupt_startup() to obtain and set
+        Process.child to the child Popen object, if it exists at the time of
+        interruption, even if this function does not return due to raising the
+        Intertupted exception. This can be important as code calling
+        Process.interrupt_startup() (such as Process.terminate()) may wish to terminate
+        the child process. TODO finish this and other docstrings."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
