@@ -201,25 +201,27 @@ class SecureSocket(zmq.Socket):
         blocking way, failed authentication will be raised as an exception. Do not set
         timeout if you already have a monitor socket for this socket, in this case you
         should monitor for connection events yourself."""
+
+        # Not allowed to insecurely connect to external addresses unless
+        # allow_insecure specified:
+        if not (self.secure or self._is_internal(addr) or self.allow_insecure):
+            raise InsecureConnection(INSECURE_CONNECT_ERROR % addr)
+
         if timeout is not None:
             monitor = self.get_monitor_socket()
             poller = zmq.Poller()
-            poller.register(monitor)
+            poller.register(monitor, zmq.POLLIN)
             if interruptor is not None:
                 interruption_sock = interruptor.subscribe()
                 poller.register(interruption_sock)
             if timeout != -1:
                 # Convert to s:
                 timeout /= 1000
+                
         try:
-            # Not allowed to insecurely connect to external addresses unless
-            # allow_insecure specified:
-            if not (self.secure or self._is_internal(addr) or self.allow_insecure):
-                raise InsecureConnection(INSECURE_CONNECT_ERROR % addr)
             result = self._bind_or_connect(addr, connect=True)
             if timeout is None:
                 return result
-
             # Block until we get an authentication success or failure
             deadline = time.time() + timeout
             while True:
@@ -227,25 +229,19 @@ class SecureSocket(zmq.Socket):
                     remaining = None
                 else:
                     remaining = (deadline - time.time()) * 1000  # ms
-                    # Have to do this instead of responding to poll() returning empty,
-                    # since it seems that poll() with a monitor socket disregards the
-                    # timeout argument, and so never returns empty. This means it blocks
-                    # until a monitor event arrives. So we are only able to respect the
-                    # timout approximately, to an accuracy of the reconnection interval
-                    # (since we will get reconnection monitor events that often).
-                    if remaining < 0:
-                        raise TimeoutError('Could not connect to server: timed out')
                 events = dict(poller.poll(remaining))
+                if not events:
+                    raise TimeoutError('Could not connect to server: timed out')
                 if interruptor is not None and interruption_sock in events:
                     raise Interrupted(interruption_sock.recv().decode('utf8'))
-                if events:
-                    event = recv_monitor_message(monitor)['event']
-                    if event in CONN_SUCCESS_EVENTS:
-                        return result
-                    elif event in CONN_FAIL_EVENTS:
-                        msg = ("Failed to authenticate with server. Ensure both client "
-                               + "and server have the same shared secret.")
-                        raise AuthenticationFailure(msg)
+                assert events[monitor] == zmq.POLLIN
+                event = recv_monitor_message(monitor)['event']
+                if event in CONN_SUCCESS_EVENTS:
+                    return result
+                elif event in CONN_FAIL_EVENTS:
+                    msg = ("Failed to authenticate with server. Ensure both client "
+                           + "and server have the same shared secret.")
+                    raise AuthenticationFailure(msg)
         finally:
             if timeout is not None:
                 if interruptor is not None:
