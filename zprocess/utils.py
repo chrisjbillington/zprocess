@@ -82,9 +82,11 @@ class Interruptor(object):
         self._local.subscribed = False
         self._local.sub.unsubscribe(b'')
 
-    def set(self, reason=''):
+    def set(self, reason=None):
         """Send an interrupt message containing the given reason to all present and
         future subscribed threads, until clear() is called."""
+        if reason is None:
+            reason = ''
         with self._lock:
             if self.is_set:
                 raise RuntimeError('Already set. Did you forget to call clear()?')

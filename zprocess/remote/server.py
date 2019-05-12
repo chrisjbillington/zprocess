@@ -141,9 +141,6 @@ class RemoteProcessServer(ZMQServer):
     def proxy_poll(self, pid):
         return self.children[pid].poll()
 
-    def proxy_returncode(self, pid):
-        return self.children[pid].returncode
-
     def proxy___del__(self, pid):
         try:
             child = self.children[pid]

@@ -14,41 +14,49 @@ from zprocess import ZMQServer
 
 class RemoteChildProxy(object):
     def __init__(self, remote_process_client, pid):
-        """Class to wrap operations on a remote subprocess"""
+        """Class to wrap operations on a remote subprocess. Extra keyword arguments to
+        any method will be forwarded to the underlying ZMQClient.get() method used for
+        communicating with the remote process server, notably `interruptor` and
+        `timeout`. To be passed to the get() call, these keyword arguments must be
+        prefixed with `get_`, i.e. `get_timeout`, `get_interrupt`. This is to
+        disambiguate them from keyword arguments to methods of Popen (at least one of
+        which is `timeout`).
+        """
         self.client = remote_process_client
         self.pid = pid
+        self.returncode = None
 
     def request(self, funcname, *args, **kwargs):
         return self.client.request(funcname, self.pid, *args, **kwargs)
 
-    def terminate(self):
-        return self.request('terminate')
+    def terminate(self, **kwargs):
+        return self.request('terminate', **kwargs)
 
-    def kill(self):
-        return self.request('kill')
+    def kill(self, **kwargs):
+        return self.request('kill', **kwargs)
 
-    def wait(self, timeout=None):
-        # The server will only do 0.01 second timeouts at a time to not be blocked
-        # from other requests, so we will make requests at 0.1 second intervals to
-        # reach whatever the requested timeout was:
+    def wait(self, timeout=None, **kwargs):
+        # The server will only do 0.01 second timeouts at a time to not be blocked from
+        # other requests, so we will make requests at 0.1 second intervals to reach
+        # whatever the requested timeout was:
         if timeout is not None:
-            end_time = time.time() + timeout
+            deadline = time.time() + timeout
         while True:
-            result = self.request('wait')
-            if result is not None or (timeout is not None and time.time() > end_time):
+            result = self.request('wait', **kwargs)
+            self.returncode = result
+            if result is not None or (timeout is not None and time.time() > deadline):
                 return result
             time.sleep(0.1)
 
-    def poll(self):
-        return self.request('poll')
-
-    @property
-    def returncode(self):
-        return self.request('returncode')
+    def poll(self, **kwargs):
+        self.returncode = self.request('poll', **kwargs)
+        return self.returncode
 
     def __del__(self):
         try:
-            self.request('__del__')
+            # Short timeout so as not to block since __del__ could be called from
+            # anywhere. Can't do much if __del__ fails in any case.
+            self.request('__del__', get_timeout=0.2)
         except Exception:
             pass
 
@@ -67,10 +75,16 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
         self.port = port
 
     def request(self, command, *args, **kwargs):
-        return self.get(self.port, self.host, data=[command, args, kwargs], timeout=5)
+        get_kwargs = {}
+        for kwarg in kwargs.copy():
+            if kwarg.startswith('get_'):
+                get_kwargs[kwarg.split('get_')[1]] = kwargs.pop(kwarg)
+        return self.get(
+            self.port, self.host, data=[command, args, kwargs], **get_kwargs
+        )
 
-    def say_hello(self):
-        return self.request('hello')
+    def say_hello(self, **kwargs):
+        return self.request('hello', **kwargs)
 
     def Popen(self, cmd, *args, **kwargs):
         """Launch a remote process and return a proxy object for interacting with it. If
@@ -80,12 +94,12 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
         pid = self.request('Popen', cmd, *args, **kwargs)
         return RemoteChildProxy(self, pid)
 
-    def get_external_IP(self):
+    def get_external_IP(self, **kwargs):
         """Ask the RemoteProcessServer what our IP address is from its perspective"""
-        return self.request('whoami')
+        return self.request('whoami', **kwargs)
 
-    def get_protocol(self):
-        return self.request('protocol')
+    def get_protocol(self, **kwargs):
+        return self.request('protocol', **kwargs)
 
 
 class RemoteOutputReceiver(ZMQServer):
