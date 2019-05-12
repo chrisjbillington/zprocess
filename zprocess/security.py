@@ -15,7 +15,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
     # development:
     sys.path.insert(0, _path)
 
-from zprocess.utils import Interrupted
+from zprocess.utils import Interrupted, TimeoutError
 
 if sys.version_info[0] == 2:
     str = unicode
