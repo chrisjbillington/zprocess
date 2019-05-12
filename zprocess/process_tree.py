@@ -881,11 +881,11 @@ class Process(object):
         # Allow Process.terminate() to be called at any time, either before or after
         # start(), and catch it in a race-free way. Process.terminate() will acquire the
         # startup lock and check for the existence of startup_queue, and will only block
-        # on it if it exists. Otherwise it will set self.terminated, and the below code
-        # will know not to start the child process.
+        # on it if it exists. Otherwise it will set self.startup_interruptor, and the
+        # below code will know not to start the child process.
         with self.startup_lock:
-            if self.terminated:
-                raise Exception('terminated')
+            if self.startup_interruptor.is_set:
+                raise Interrupted('terminated during startup.')
             else:
                 self.startup_queue = Queue()
 
@@ -990,18 +990,16 @@ class Process(object):
 
     def terminate(self):
         with self.startup_lock:
-            if self.terminated:
+            if self.startup_interruptor.is_set:
                 # Already done.
                 return
+            self.startup_interruptor.set('terminated during startup')
             startup_queue = self.startup_queue
             if startup_queue is None:
                 # start() has either not been called yet, or it has already been called
-                # and failed. Tell it not to start if it is called later:
-                self.terminated = True
+                # and failed. There is no child to terminate.
                 return
-        # start() has been called. Interrupt any blocking IO in startup:
-        self.startup_interruptor.set('terminated during startup')
-        # If the child already existed when we interrupted, we should recieve it here:
+        # If the child already existed when we interrupted, we should receive it here:
         child = startup_queue.get()
         if child is not None: # child can be None if process creation failed
             try:
