@@ -50,7 +50,7 @@ class Interruptor(object):
         self._xpub.bind(self._endpoint)
         self._local = threading.local()
         self._lock = threading.Lock()
-        self._reason = ''
+        self.reason = ''
         self.is_set = False
 
     def subscribe(self):
@@ -70,7 +70,7 @@ class Interruptor(object):
             self._local.subscribed = True
             # If we're already set, send an interruption message immediately:
             if self.is_set:
-                self._xpub.send(self._reason.encode('utf8'))
+                self._xpub.send(self.reason.encode('utf8'))
         return self._local.sub
 
     def unsubscribe(self):
@@ -91,7 +91,7 @@ class Interruptor(object):
             if self.is_set:
                 raise RuntimeError('Already set. Did you forget to call clear()?')
             self.is_set = True
-            self._reason = reason
+            self.reason = reason
             self._xpub.send(reason.encode('utf8'))
 
     def clear(self):
@@ -100,7 +100,7 @@ class Interruptor(object):
             if not self.is_set:
                 raise RuntimeError('Not set')
             self.is_set = False
-            self._reason = ''
+            self.reason = ''
 
 
 def _reraise(exc_info):
