@@ -3,7 +3,6 @@ import sys
 PY2 = sys.version_info.major == 2
 import os
 import threading
-import subprocess
 import time
 import signal
 import weakref
@@ -40,10 +39,14 @@ PY2 = sys.version_info[0] == 2
 if PY2:
     import cPickle as pickle
     from Queue import Queue, Empty
+    import subprocess32 as subprocess
+    from time import time as monotonic
     str = unicode
 else:
     import pickle
     from queue import Queue, Empty
+    import subprocess
+    from time import monotonic
 
 
 class HeartbeatServer(object):
@@ -277,13 +280,13 @@ class Event(object):
                     return data
         # Since we might have to make several recv() calls before we get the
         # right identifier, we must implement our own timeout:
-        start_time = time.time()
-        while timeout is None or (time.time() < start_time + timeout):
+        start_time = monotonic()
+        while timeout is None or (monotonic() < start_time + timeout):
             with self.sublock:
                 if timeout is not None:
                     # How long left before the elapsed time is greater than
                     # timeout?
-                    remaining = (start_time + timeout - time.time())
+                    remaining = (start_time + timeout - monotonic())
                     poll_timeout = max(0, remaining)
                     events = self.sub.poll(1000 * poll_timeout, flags=zmq.POLLIN)
                     if not events:
@@ -314,7 +317,7 @@ class WriteQueue(object):
         """Send an object to ourself, with optional timeout and optional
         zprocess.Interruptor instance for interrupting from another thread"""
         if timeout is not None:
-            deadline = time.time() + timeout
+            deadline = monotonic() + timeout
         if interruptor is None:
             interruptor = self.interruptor
         with self.lock:
@@ -323,7 +326,7 @@ class WriteQueue(object):
                 self.poller.register(interruption_sock)
                 while True:
                     if timeout is not None:
-                        timeout = max(0, (deadline - time.time()) * 1000)
+                        timeout = max(0, (deadline - monotonic()) * 1000)
                     events = dict(self.poller.poll(timeout))
                     if not events:
                         raise TimeoutError('put() timed out')
@@ -403,7 +406,7 @@ class ReadQueue(object):
         """Send an object to ourself, with optional timeout and optional
         zprocess.Interruptor instance for interrupting from another thread"""
         if timeout is not None:
-            deadline = time.time() + timeout
+            deadline = monotonic() + timeout
         if interruptor is None:
             interruptor = self.interruptor
         with self.to_self_lock:
@@ -412,7 +415,7 @@ class ReadQueue(object):
                 self.out_poller.register(interruption_sock)
                 while True:
                     if timeout is not None:
-                        timeout = max(0, (deadline - time.time()) * 1000)
+                        timeout = max(0, (deadline - monotonic()) * 1000)
                     events = dict(self.out_poller.poll(timeout))
                     if not events:
                         raise TimeoutError('put() timed out')
