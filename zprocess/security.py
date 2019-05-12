@@ -1,6 +1,5 @@
 from __future__ import print_function, unicode_literals, division
 import sys
-import ctypes
 import base64
 import weakref
 import time
@@ -11,6 +10,13 @@ import zmq
 import zmq.auth.thread
 from zmq.utils.monitor import recv_monitor_message
 
+_path, _cwd = os.path.split(os.getcwd())
+if _cwd == 'zprocess' and _path not in sys.path:
+    # Running from within zprocess dir? Add to sys.path for testing during
+    # development:
+    sys.path.insert(0, _path)
+
+from zprocess.utils import Interrupted
 
 if sys.version_info[0] == 2:
     str = unicode
@@ -188,16 +194,20 @@ class SecureSocket(zmq.Socket):
         """wrapper around bind, configuring security"""
         return self._bind_or_connect(addr, bind=True)
 
-    def connect(self, addr, timeout=None):
+    def connect(self, addr, timeout=None, interruptor=None):
         """Wrapper around connect, configuring security. If timeout is not None, then
-        this method will block until the given timeout in ms (or forever if
-        timeout=-1) or until the connection is sucessful. When called in this blocking
-        way, failed authentication will be raised as an exception if on zeromq >= 4.3,
-        otherwise authentication failure is not detectable. Do not set timeout if you
-        already have a monitor socket for this socket, in this case you should monitor
-        for connection events yourself."""
+        this method will block until the given timeout in ms (or forever if timeout=-1)
+        or until the connection is sucessful or interrupted. When called in this
+        blocking way, failed authentication will be raised as an exception. Do not set
+        timeout if you already have a monitor socket for this socket, in this case you
+        should monitor for connection events yourself."""
         if timeout is not None:
             monitor = self.get_monitor_socket()
+            poller = zmq.Poller()
+            poller.register(monitor)
+            if interruptor is not None:
+                interruption_sock = interruptor.subscribe()
+                poller.register(interruption_sock)
             if timeout != -1:
                 # Convert to s:
                 timeout /= 1000
@@ -211,15 +221,25 @@ class SecureSocket(zmq.Socket):
                 return result
 
             # Block until we get an authentication success or failure
-            end_time = time.time() + timeout
-            while timeout == -1 or time.time() < end_time:
-                remaining = int(min(0, end_time - time.time()) * 1000)
+            deadline = time.time() + timeout
+            while True:
                 if timeout == -1:
-                    remaining = -1
-                events = monitor.poll(remaining)
+                    remaining = None
+                else:
+                    remaining = (deadline - time.time()) * 1000  # ms
+                    # Have to do this instead of responding to poll() returning empty,
+                    # since it seems that poll() with a monitor socket disregards the
+                    # timeout argument, and so never returns empty. This means it blocks
+                    # until a monitor event arrives. So we are only able to respect the
+                    # timout approximately, to an accuracy of the reconnection interval
+                    # (since we will get reconnection monitor events that often).
+                    if remaining < 0:
+                        raise TimeoutError('Could not connect to server: timed out')
+                events = dict(poller.poll(remaining))
+                if interruptor is not None and interruption_sock in events:
+                    raise Interrupted(interruption_sock.recv().decode('utf8'))
                 if events:
                     event = recv_monitor_message(monitor)['event']
-                    # print(event)
                     if event in CONN_SUCCESS_EVENTS:
                         return result
                     elif event in CONN_FAIL_EVENTS:
@@ -228,6 +248,10 @@ class SecureSocket(zmq.Socket):
                         raise AuthenticationFailure(msg)
         finally:
             if timeout is not None:
+                if interruptor is not None:
+                    poller.unregister(interruption_sock)
+                    interruptor.unsubscribe()
+                poller.unregister(monitor)
                 self.disable_monitor()
                 monitor.close()
 
@@ -321,6 +345,6 @@ class SecureContext(zmq.Context):
 #     client = client_ctx.socket(zmq.REQ)
 
 #     server.bind("tcp://127.0.0.1:6666")
-#     client.connect("tcp://127.0.0.1:6666", timeout=-1)
+#     client.connect("tcp://127.0.0.1:6666", timeout=None)
 #     client.send(b'hello')
 #     assert server.recv() == b'hello'
