@@ -281,14 +281,14 @@ class _Sender(object):
         self.interruptor = interruptor
         assert self.interruptor is not None  # Should be passed in by parent ZMQClient
 
-    def new_socket(self, host, port, timeout=5):
+    def new_socket(self, host, port, timeout=5, interruptor=None):
         # Every time the REQ/REP cadence is broken, we need to create
         # and connect a new socket to get it back on track. Also, we have
         # a separate socket for each thread. Also a new socket if there
         # is a different host or port. We also create a poller and register
         # the socket to it.
         if timeout is not None:
-            timeout *= 1000 # convert to ms
+            timeout *= 1000  # convert to ms
         self.local.host = gethostbyname(host)
         self.local.port = int(port)
         context = SecureContext.instance(shared_secret=self.shared_secret)
@@ -306,7 +306,9 @@ class _Sender(object):
             # Allow up to 1 second to send unsent messages on socket shutdown:
             self.local.sock.setsockopt(zmq.LINGER, 1000)
             self.local.sock.connect(
-                'tcp://%s:%d' % (self.local.host, self.local.port), timeout=timeout
+                'tcp://%s:%d' % (self.local.host, self.local.port),
+                timeout=timeout,
+                interruptor=interruptor,
             )
             # Different send/recv methods depending on the desired protocol:
             if self.dtype == 'raw':
@@ -354,7 +356,7 @@ class _Sender(object):
             or gethostbyname(host) != self.local.host
             or int(port) != self.local.port
         ):
-            self.new_socket(host, port, timeout)
+            self.new_socket(host, port, timeout, interruptor=interruptor)
         data = _typecheck_or_convert_data(data, self.dtype)
         if timeout is not None:
             deadline = time.time() + timeout
