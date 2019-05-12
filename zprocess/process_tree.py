@@ -1011,15 +1011,15 @@ class Process(object):
             # start() has been called. Block until self.child exists:
             self.startup_event.wait()
 
-    def terminate(self):
+    def terminate(self, wait_timeout=None, **kwargs):
         """Interrupt process startup if not already done, ensuring self.child exists or
         is None if startup was interrupted before the process was created. Then if the
         child is not None, call Popen.terminate() and Popen.wait() on it."""
         self.interrupt_startup(reason='Process.terminate() called')
         if self.child is not None:
             try:
-                self.child.terminate()
-                self.child.wait()
+                self.child.terminate(**kwargs)
+                self.child.wait(timeout=wait_timeout, **kwargs)
             except (OSError, TimeoutError):
                 # process is already dead, or cannot contact remote server
                 pass
