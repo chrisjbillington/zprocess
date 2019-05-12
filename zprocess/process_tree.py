@@ -299,9 +299,9 @@ class Event(object):
 
 class WriteQueue(object):
 
-    """Provides writing of python objects to the underlying zmq socket,
-    with added locking. No reading is supported, once you put an object,
-    you can't check what was put or whether the items have been gotten"""
+    """Provides writing of python objects to the underlying zmq socket, with added
+    locking and interruptibility of blocking sends. No reading is supported, once you
+    put an object, you can't check what was put or whether the items have been gotten"""
 
     def __init__(self, sock):
         self.sock = sock
@@ -325,8 +325,10 @@ class WriteQueue(object):
                     if timeout is not None:
                         timeout = max(0, (deadline - time.time()) * 1000)
                     events = dict(self.poller.poll(timeout))
+                    if not events:
+                        raise TimeoutError('put() timed out')
                     if interruption_sock in events:
-                        raise Interrupted(interruption_sock.recv().decode())
+                        raise Interrupted(interruption_sock.recv().decode('utf8'))
                     try:
                         return self.sock.send_pyobj(
                             obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
@@ -339,14 +341,28 @@ class WriteQueue(object):
                 self.poller.unregister(interruption_sock)
                 interruptor.unsubscribe()
 
+    def interrupt(self, reason=None):
+        """Interrupt any current and future put() calls, causing them to raise
+        Interrupted(reason) until clear_interrupt() is called. Note that if put() was
+        called with an externally created Interruptor object, then this method will not
+        interrupt that call, and Interruptor.set() will need to be called on the given
+        interruptor object instead."""
+        self.interruptor.set(reason=reason)
+
+    def clear_interrupt(self):
+        """Clear our internal Interruptor object so that future put() calls can proceed
+        as normal."""
+        self.interruptor.clear()
+
+
 
 class ReadQueue(object):
-    """Provides reading and writing methods to the underlying zmq socket,
-    with added locking. Actually there are two sockets, one for reading,
-    one for writing. The only real use case for writing is when the
-    read socket is blocking, but the process at the other end has died,
-    and you need to stop the thread that is blocking on the read. So
-    you send it a quit signal with put()."""
+    """Provides reading and writing methods to the underlying zmq socket(s), with added
+    locking and interruptibility of blocking recv()s. Items put() to the queue are
+    readable by get(), as are items sent from the connected peer. This can be useful to
+    send commands to a loop from within the same application. The original use case was
+    for breaking out of blocking recv()s, though that use case is now better served by
+    interrupt()"""
 
     def __init__(self, sock, to_self_sock):
         self.sock = sock
@@ -377,7 +393,7 @@ class ReadQueue(object):
                 if not events:
                     raise TimeoutError('get() timed out')
                 if interruption_sock in events:
-                    raise Interrupted(interruption_sock.recv().decode())
+                    raise Interrupted(interruption_sock.recv().decode('utf8'))
                 return self.sock.recv_pyobj()
             finally:
                 self.in_poller.unregister(interruption_sock)
@@ -398,8 +414,10 @@ class ReadQueue(object):
                     if timeout is not None:
                         timeout = max(0, (deadline - time.time()) * 1000)
                     events = dict(self.out_poller.poll(timeout))
+                    if not events:
+                        raise TimeoutError('put() timed out')
                     if interruption_sock in events:
-                        raise Interrupted(interruption_sock.recv().decode())
+                        raise Interrupted(interruption_sock.recv().decode('utf8'))
                     try:
                         return self.to_self_sock.send_pyobj(
                             obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
@@ -412,6 +430,18 @@ class ReadQueue(object):
                 self.out_poller.unregister(interruption_sock)
                 interruptor.unsubscribe()
 
+    def interrupt(self, reason=None):
+        """Interrupt any current and future get()/put() calls, causing them to raise
+        Interrupted(reason) until clear_interrupt() is called. Note that if put()/get()
+        was called with an externally created Interruptor object, then this method will
+        not interrupt that call, and Interruptor.set() will need to be called on the
+        given interruptor object instead."""
+        self.interruptor.set(reason=reason)
+
+    def clear_interrupt(self):
+        """Clear our internal Interruptor object so that future put()/get() calls can
+        proceed as normal."""
+        self.interruptor.clear()
 
 
 class _StreamProxyBuffer(object):
@@ -1193,7 +1223,9 @@ class ProcessTree(object):
         if remote_process_client is not None:
             # Translate any internal hostnames or IP addresses in parentinfo into our
             # external IP address as seen from the remote process server:
-            external_ip = remote_process_client.get_external_IP()
+            external_ip = remote_process_client.get_external_IP(
+                get_interruptor=startup_interruptor
+            )
             for key, value in list(parentinfo.items()):
                 if key.endswith('_host') and value is not None:
                     ip = gethostbyname(value)
@@ -1226,7 +1258,10 @@ class ProcessTree(object):
             # Also, it will pass to Popen an env consisting of its own env updated with
             # this extra_env dict we are passing in.
             child = remote_process_client.Popen(
-                cmd, prepend_sys_executable=True, extra_env=extra_env
+                cmd,
+                prepend_sys_executable=True,
+                extra_env=extra_env,
+                get_interruptor=startup_interruptor,
             )
 
         to_child = WriteQueue(to_child)

@@ -30,7 +30,12 @@ if _cwd == 'zprocess' and _path not in sys.path:
 
 import zprocess
 from zprocess.security import SecureContext
-from zprocess.utils import raise_exception_in_thread, TimeoutError
+from zprocess.utils import (
+    raise_exception_in_thread,
+    Interruptor,
+    Interrupted,
+    TimeoutError,
+)
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -259,19 +264,31 @@ class ZMQServer(object):
 class _Sender(object):
     """Wrapper around a zmq.PUSH or zmq.REQ socket, returning a callable
     for sending (and optionally receiving data)"""
-    def __init__(self, dtype='pyobj', push_only=False,
-                 shared_secret=None, allow_insecure=False):
+
+    def __init__(
+        self,
+        dtype='pyobj',
+        push_only=False,
+        shared_secret=None,
+        allow_insecure=False,
+        interruptor=None,
+    ):
         self.local = threading.local()
         self.dtype = dtype
         self.push_only = push_only
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
+        self.interruptor = interruptor
+        assert self.interruptor is not None  # Should be passed in by parent ZMQClient
 
-    def new_socket(self, host, port, timeout=5000):
+    def new_socket(self, host, port, timeout=5):
         # Every time the REQ/REP cadence is broken, we need to create
-        # and bind a new socket to get it back on track. Also, we have
+        # and connect a new socket to get it back on track. Also, we have
         # a separate socket for each thread. Also a new socket if there
-        # is a different host or port.
+        # is a different host or port. We also create a poller and register
+        # the socket to it.
+        if timeout is not None:
+            timeout *= 1000 # convert to ms
         self.local.host = gethostbyname(host)
         self.local.port = int(port)
         context = SecureContext.instance(shared_secret=self.shared_secret)
@@ -283,6 +300,8 @@ class _Sender(object):
             self.local.sock = context.socket(
                 zmq.REQ, allow_insecure=self.allow_insecure
             )
+        self.local.poller = zmq.Poller()
+        self.local.poller.register(self.local.sock)
         try:
             # Allow up to 1 second to send unsent messages on socket shutdown:
             self.local.sock.setsockopt(zmq.LINGER, 1000)
@@ -313,10 +332,18 @@ class _Sender(object):
         except:
             # Didn't work, don't keep it:
             del self.local.sock
+            del self.local.poller
             raise
 
-    def __call__(self, port, host='127.0.0.1', data=None, timeout=5):
-        """If self.push_only, send data on the push socket, ignoring timeout.
+    def __call__(
+        self,
+        port,
+        host='127.0.0.1',
+        data=None,
+        timeout=5,
+        interruptor=None,
+    ):
+        """If self.push_only, send data on the push socket.
         Otherwise, uses reliable request-reply to send data to a zmq REP
         socket, and return the reply"""
         # We cache the socket so as to not exhaust ourselves of tcp
@@ -327,29 +354,56 @@ class _Sender(object):
             or gethostbyname(host) != self.local.host
             or int(port) != self.local.port
         ):
-            self.new_socket(host, port, timeout * 1000)
+            self.new_socket(host, port, timeout)
         data = _typecheck_or_convert_data(data, self.dtype)
+        if timeout is not None:
+            deadline = time.time() + timeout
+        if interruptor is None:
+            interruptor = self.interruptor
         try:
-            self.local.send(data, zmq.NOBLOCK)
-            if self.push_only:
-                return
-            events = self.local.sock.poll(timeout * 1000, flags=zmq.POLLIN)
-            if events:
-                response = self.local.recv()
-            else:
-                # The server hasn't replied. We don't know what it's doing, so
-                # we'd better stop using this socket in case late messages
-                # arrive on it in the future:
+            interruption_sock = interruptor.subscribe()
+            self.local.poller.register(interruption_sock)
+            # Attempt to send until interruption or timeout:
+            while True:
+                if timeout is not None:
+                    remaining = max(0, (deadline - time.time()) * 1000) # ms
+                else:
+                    remaining = None
+                events = dict(self.local.poller.poll(remaining))
+                if not events:
+                    raise TimeoutError('Could not send data to server: timed out')
+                if interruption_sock in events:
+                    raise Interrupted(interruption_sock.recv().decode('utf8'))
+                assert events[self.local.sock] == zmq.POLLOUT
+                try:
+                    self.local.send(data, zmq.NOBLOCK)
+                    if self.push_only:
+                        return
+                    else:
+                        break
+                except zmq.ZMQError:
+                    # Queue became full or we disconnected or something, keep
+                    # polling:
+                    continue
+            # Wait for response until interrupt or timeout:
+            events = dict(self.local.poller.poll(timeout))
+            if not events:
                 raise TimeoutError('No response from server: timed out')
+            if interruption_sock in events:
+                raise Interrupted(interruption_sock.recv().decode('utf8'))
+            assert events[self.local.sock] == zmq.POLLIN
+            response = self.local.recv()
             if isinstance(response, Exception):
                 raise response
-            else:
-                return response
+            return response
         except:
             # Any exceptions, we want to stop using this socket:
             self.local.sock.close(linger=0)
             del self.local.sock
             raise
+        finally:
+            self.local.poller.unregister(interruption_sock)
+            interruptor.unsubscribe()
 
 
 class ZMQClient(object):
@@ -357,8 +411,10 @@ class ZMQClient(object):
     def __init__(self, shared_secret=None, allow_insecure=False):
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
+        self.interruptor = Interruptor()
         kwargs = {'shared_secret': shared_secret, 
-                  'allow_insecure': allow_insecure}
+                  'allow_insecure': allow_insecure,
+                  'interruptor': self.interruptor}
 
         self.get = _Sender('pyobj', **kwargs)
         self.get_multipart = _Sender('multipart', **kwargs)
@@ -369,7 +425,18 @@ class ZMQClient(object):
         self.push_raw = _Sender('raw', push_only=True, **kwargs)
         self.push_string = _Sender('string', push_only=True, **kwargs)
 
+    def interrupt(self, reason=None):
+        """Interrupt any current and future get*()/push*() calls, causing them to raise
+        Interrupted(reason) until clear_interrupt() is called. Note that if
+        get*()/push*() was called with an externally created Interruptor object, then
+        this method will not interrupt that call, and Interruptor.set() will need to be
+        called on the given interruptor object instead."""
+        self.interruptor.set(reason=reason)
 
+    def clear_interrupt(self):
+        """Clear our internal Interruptor object so that future get*()/push*() calls can
+        proceed as normal."""
+        self.interruptor.clear()
 
 # Backwards compatability follows:
 
