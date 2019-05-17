@@ -49,6 +49,53 @@ else:
     from time import monotonic
 
 
+class KillLock(object):
+    """A re-entrant lock which, when held, prevents the process from being terminated.
+    If SIGTERM is received while held, the process will terminate when the lock is
+    released"""
+
+    _lock = threading.RLock()
+    _count = 0
+    _prev_handler = None
+    _terminated = False
+    _connected = False
+
+    @classmethod
+    def acquire(cls, blocking=True, timeout=-1):
+        if cls._lock.acquire(blocking=blocking, timeout=timeout):
+            if not cls._connected:
+                # Connect the signal handler:
+                cls._prev_handler = signal.signal(signal.SIGTERM, cls._handler)
+                cls._connected = True
+            cls._count += 1
+            return True
+        return False
+
+    __enter__ = acquire
+
+    @classmethod
+    def _handler(cls, sig, frame):
+        cls._terminated = True
+        msg = "SIGTERM received while kill lock held: will terminate when released."
+        print(msg, file=sys.stderr)
+
+    @classmethod
+    def release(cls):
+        cls._count -= 1
+        if cls._count == 0:
+            cls._connected = False
+            signal.signal(signal.SIGTERM, cls._prev_handler)
+            cls._prev_handler = None
+            if cls._terminated:
+                # Lock is being released, and we received SIGTERM while it was held:
+                os.kill(os.getpid(), signal.SIGTERM)
+        return cls._lock.release()
+
+    @classmethod
+    def __exit__(cls, t, v, tb):
+        cls.release()
+
+
 class HeartbeatServer(object):
     """A server which receives messages from clients and echoes them back. Each
     process has a HeartbeatServer to provide heartbeating to its subprocesses -
@@ -85,7 +132,7 @@ class HeartbeatClient(object):
     heartbeats back within one second, unless a lock is held."""
     def __init__(self, server_host, server_port,
                  shared_secret=None, allow_insecure=False):
-        self.lock = threading.Lock()
+        self.lock = KillLock()
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REQ, allow_insecure=allow_insecure)
         self.sock.setsockopt(zmq.LINGER, 0)
@@ -112,9 +159,8 @@ class HeartbeatClient(object):
                 msg = self.sock.recv()
                 if not msg == pid:
                     break
-            # sys.stderr.write('Heartbeat failure\n')
-            with self.lock:
-                os.kill(os.getpid(), signal.SIGTERM)
+            print('Heartbeat failure', file=sys.stderr)
+            os.kill(os.getpid(), signal.SIGTERM)
         except zmq.ContextTerminated:
             # Shutting down:
             self.sock.close(linger=0)
@@ -848,7 +894,7 @@ class Process(object):
         self.parent_host = None
         self.to_parent = None
         self.from_parent = None
-        self.kill_lock = None
+        self.kill_lock = KillLock()
         self.remote_process_client = remote_process_client
         self.subclass_fullname = subclass_fullname
         self.startup_timeout = startup_timeout
@@ -995,7 +1041,6 @@ class Process(object):
         self.to_parent = self.process_tree.to_parent
         self.from_parent = self.process_tree.from_parent
         self.parent_host = self.process_tree.parent_host
-        self.kill_lock = self.process_tree.kill_lock
         args, kwargs = self.from_parent.get()
         self.run(*args, **kwargs)
 
@@ -1070,7 +1115,7 @@ class ProcessTree(object):
         self.remote_output_receiver = None
         self.to_parent = None
         self.from_parent = None
-        self.kill_lock = None
+        self.kill_lock = KillLock()
         self.log_paths = {}
         self.startup_timeout = None
 
@@ -1349,7 +1394,6 @@ class ProcessTree(object):
         self.broker_host = parentinfo['broker_host']
         self.broker_in_port = parentinfo['broker_in_port']
         self.broker_out_port = parentinfo['broker_out_port']
-        self.kill_lock = self.heartbeat_client.lock
         self.log_paths = parentinfo['log_paths']
 
     @classmethod

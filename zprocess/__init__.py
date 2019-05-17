@@ -74,6 +74,7 @@ from zprocess.clientserver import (
 )
 
 from zprocess.process_tree import (
+    KillLock,
     Process,
     ProcessTree,
     setup_connection_with_parent,
