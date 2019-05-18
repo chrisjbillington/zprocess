@@ -210,7 +210,13 @@ class HeartbeatClientTestProcess(Process):
         self.from_parent.get()
         # If the parent sends a message, acquire the kill lock for 3 seconds:
         with self.kill_lock:
-            time.sleep(3)
+            # Loop because the ignored SIGTERM still interrupts time.sleep() on PY2:
+            deadline = time.time() + 3
+            while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    break
+                time.sleep(remaining)
         time.sleep(10)
 
 
