@@ -18,6 +18,8 @@ import xmlrunner
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
+import zprocess
+zprocess._silent = True
 from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,
                       raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw,
                       ExternalBroker)
