@@ -52,123 +52,110 @@ else:
 
 
 class KillLock(object):
-    """A re-entrant lock which, when held, prevents the process from being terminated.
-    If SIGTERM is received while held, the process will terminate when the lock is
-    released"""
+    """A lock which, when held, prevents the process from being terminated. If SIGTERM
+    is received while held, the process will terminate only once the lock is released.
+    Any number of threads may hold the lock simultaneously, any number of times. The lock
+    will be released and SIGTERM handled only when release() has been called once for
+    every time acquire() was called. This object is a singleton, instantiating it will
+    return the existing instance, if any. The first time it is instantiated, connect()
+    will be called. When SIGTERM is handled by this object's handler, it will call any
+    SIGTERM handler that was already configured when connect() was called. Therefore if
+    you wish to configure your own SIGTERM handler, either ensure it is configured
+    before the kill lock singleton is created (keeping in mind that zprocess creates the
+    singleton when connecting to parent processes), or call disconnect(), then connect
+    your signal handler, then call connect() again. """
 
-    _kill_lock = threading.Lock()
-    _reentrancy_level = 0
-    _owner = None
-    _prev_handler = None
-    _sigterm_received = False
-    _release_lock = threading.RLock()
-    _do_term = False
-    connected = False
+    _instance = None
 
-    def __init__(self):
-        if not self.connected:
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = self = object.__new__(cls)
+            self._n_acquires = 0
+            self._prev_handler = None
+            self._sigterm_received = False
+            self._lock = threading.RLock()
+            self.connected = False
             self.connect()
+        return cls._instance
 
-    @classmethod
-    def connect(cls):
-        if cls.connected:
-            raise RuntimeError("Already connected")
-        cls._prev_handler = signal.signal(signal.SIGTERM, cls._handler)
-        cls.connected = True
+    def connect(self):
+        with self._lock:
+            if self.connected:
+                raise RuntimeError("Already connected")
+            self._prev_handler = signal.signal(signal.SIGTERM, self._handler)
+            self.connected = True
 
-    @classmethod
-    def _check_connected(cls):
-        if not cls.connected:
-            raise RuntimeError("Not connected")
-        if signal.getsignal(signal.SIGTERM) is not cls._handler:
-            msg = """Another SIGTERM handler has been installed. To work properly with
-            KillLock, other SIGTERM handler must be installed whilst kill lock is not
-            connected. Either call KillLock.disconnect() before installing other signal
-            handlers and calling KillLock.connect() again, or install other signal
-            handlers before calling KillLock.connect() the first time."""
-            raise RuntimeError(' '.join(msg.split()))
+    def _check_connected(self):
+        with self._lock:
+            if not self.connected:
+                raise RuntimeError("Not connected")
+            if signal.getsignal(signal.SIGTERM) is not self._handler:
+                msg = """Another SIGTERM handler has been installed. To work properly
+                with KillLock, other SIGTERM handler must be installed whilst kill lock
+                is not connected. Either call KillLock.disconnect() before installing
+                other signal handlers and calling KillLock.connect() again, or install
+                other signal handlers before calling KillLock.connect() the first
+                time."""
+                raise RuntimeError(' '.join(msg.split()))
 
-    @classmethod
-    def disconnect(cls):
-        cls._check_connected()
-        signal.signal(signal.SIGTERM, cls._prev_handler)
-        cls._prev_handler = None
-        cls.connected = False
+    def disconnect(self):
+        with self._lock:
+            self._check_connected()
+            if self._n_acquires:
+                raise RuntimeError("Cannot disconnect() whilst kill lock held")
+            signal.signal(signal.SIGTERM, self._prev_handler)
+            self._prev_handler = None
+            self.connected = False
 
-    @classmethod
-    def acquire(cls, *args, **kwargs):
-        if cls._owner == thread_ident():
-            cls._reentrancy_level += 1
-            return
-        result = cls._kill_lock.acquire(*args, **kwargs)
-        with cls._release_lock:
-            # Do not proceed until the previous holder of the lock has processed any
-            # SIGTERM that arrived while the lock was held.
-            return result
+    def acquire(self):
+        self._check_connected()
+        with self._lock:
+            self._n_acquires += 1
 
     __enter__ = acquire
 
-    @classmethod
-    def _term(cls):
-        cls.disconnect()
+    def _term(self):
+        self.disconnect()
         os.kill(os.getpid(), signal.SIGTERM)
         # Set things back to how they were in case the previous SIGTERM handler
         # doesn't termiante the process
-        cls.connect()
+        self.connect()
 
     # staticmethod so that the method has a fixed id() for the identity check in
     # _check_connected:
     @staticmethod
     def _handler(sig, frame):
-        cls = KillLock
-        if cls._do_term:
-            # We are being triggered to respond to SIGTERM upon release of the kill
-            # lock. The release lock is held, and it is up to us to release it when we
-            # are done.
-            cls._sigterm_received = False
-            cls._do_term = False
-            try:
-                cls._term()
-            finally:
-                cls._release_lock.release()
-            return
+        self = KillLock._instance
+        with self._lock:
+            if self._sigterm_received and not self._n_acquires:
+                # We are being triggered to respond to SIGTERM upon release of the kill
+                # lock:
+                self._sigterm_received = False
+                self._term()
+                return
 
-        # Otherwise, what's the situation? Prevent any releasing of the kill lock whilst
-        # we check:
-        with cls._release_lock:
-            if cls._kill_lock.acquire(False):
-                # Kill lock not held by anyone. Terminate.
-                try:
-                    cls._term()
-                finally:
-                    cls._kill_lock.release()
-            else:
+            if self._n_acquires:
                 # Kill lock is held. Store a flag to respond to it when the kill lock is
                 # released:
-                cls._sigterm_received = True
-                msg = "SIGTERM while kill lock held: will terminate when released."
-                print(msg, file=sys.stderr)
+                self._sigterm_received = True
+                msg = "SIGTERM ignored: will be handled when kill lock released."
+                if not zprocess._silent:
+                    print(msg, file=sys.stderr)
+            else:
+                # Kill lock not held by anyone. Call previous SIGTERM handler.
+                self._term()
 
-    @classmethod
-    def release(cls):
-        if cls._owner == thread_ident() and cls._reentrancy_level > 0:
-            cls._reentrancy_level -= 1
-            print('decrementing reentrancy_level of kill lock')
-            return
-        cls._release_lock.acquire()
-        cls._kill_lock.release()
-        if cls._sigterm_received:
-            # If sigterm received while lock held, terminate. The signal handler will
-            # release _release_lock when it is done (if the previous signal handler
-            # doesn't actually terminate the process).
-            cls._do_term = True
-            os.kill(os.getpid(), signal.SIGTERM)
-        else:
-            cls._release_lock.release()
+    def release(self):
+        with self._lock:
+            if not self._n_acquires:
+                raise RuntimeError("Not held")
+            self._n_acquires -= 1
+            if self._sigterm_received and not self._n_acquires:
+                # If sigterm received while lock held, terminate:
+                os.kill(os.getpid(), signal.SIGTERM)
 
-    @classmethod
-    def __exit__(cls, t, v, tb):
-        cls.release()
+    def __exit__(self, t, v, tb):
+        self.release()
 
 
 class HeartbeatServer(object):
@@ -234,7 +221,8 @@ class HeartbeatClient(object):
                 msg = self.sock.recv()
                 if not msg == pid:
                     break
-            # print('Heartbeat failure', file=sys.stderr)
+            if not zprocess._silent:
+                print('Heartbeat failure', file=sys.stderr)
             os.kill(os.getpid(), signal.SIGTERM)
         except zmq.ContextTerminated:
             # Shutting down:
