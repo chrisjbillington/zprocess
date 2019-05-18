@@ -42,11 +42,13 @@ if PY2:
     import subprocess32 as subprocess
     from time import time as monotonic
     str = unicode
+    from thread import get_ident as thread_ident
 else:
     import pickle
     from queue import Queue, Empty
     import subprocess
     from time import monotonic
+    from threading import get_ident as thread_ident
 
 
 class KillLock(object):
@@ -54,42 +56,115 @@ class KillLock(object):
     If SIGTERM is received while held, the process will terminate when the lock is
     released"""
 
-    _lock = threading.RLock()
-    _count = 0
+    _kill_lock = threading.Lock()
+    _reentrancy_level = 0
+    _owner = None
     _prev_handler = None
-    _terminated = False
-    _connected = False
+    _sigterm_received = False
+    _release_lock = threading.RLock()
+    _do_term = False
+    connected = False
+
+    def __init__(self):
+        if not self.connected:
+            self.connect()
 
     @classmethod
-    def acquire(cls, blocking=True, timeout=-1):
-        if cls._lock.acquire(blocking=blocking, timeout=timeout):
-            if not cls._connected:
-                # Connect the signal handler:
-                cls._prev_handler = signal.signal(signal.SIGTERM, cls._handler)
-                cls._connected = True
-            cls._count += 1
-            return True
-        return False
+    def connect(cls):
+        if cls.connected:
+            raise RuntimeError("Already connected")
+        cls._prev_handler = signal.signal(signal.SIGTERM, cls._handler)
+        cls.connected = True
+
+    @classmethod
+    def _check_connected(cls):
+        if not cls.connected:
+            raise RuntimeError("Not connected")
+        if signal.getsignal(signal.SIGTERM) is not cls._handler:
+            msg = """Another SIGTERM handler has been installed. To work properly with
+            KillLock, other SIGTERM handler must be installed whilst kill lock is not
+            connected. Either call KillLock.disconnect() before installing other signal
+            handlers and calling KillLock.connect() again, or install other signal
+            handlers before calling KillLock.connect() the first time."""
+            raise RuntimeError(' '.join(msg.split()))
+
+    @classmethod
+    def disconnect(cls):
+        cls._check_connected()
+        signal.signal(signal.SIGTERM, cls._prev_handler)
+        cls._prev_handler = None
+        cls.connected = False
+
+    @classmethod
+    def acquire(cls, *args, **kwargs):
+        if cls._owner == thread_ident():
+            cls._reentrancy_level += 1
+            return
+        result = cls._kill_lock.acquire(*args, **kwargs)
+        with cls._release_lock:
+            # Do not proceed until the previous holder of the lock has processed any
+            # SIGTERM that arrived while the lock was held.
+            return result
 
     __enter__ = acquire
 
     @classmethod
-    def _handler(cls, sig, frame):
-        cls._terminated = True
-        msg = "SIGTERM received while kill lock held: will terminate when released."
-        print(msg, file=sys.stderr)
+    def _term(cls):
+        cls.disconnect()
+        os.kill(os.getpid(), signal.SIGTERM)
+        # Set things back to how they were in case the previous SIGTERM handler
+        # doesn't termiante the process
+        cls.connect()
+
+    # staticmethod so that the method has a fixed id() for the identity check in
+    # _check_connected:
+    @staticmethod
+    def _handler(sig, frame):
+        cls = KillLock
+        if cls._do_term:
+            # We are being triggered to respond to SIGTERM upon release of the kill
+            # lock. The release lock is held, and it is up to us to release it when we
+            # are done.
+            cls._sigterm_received = False
+            cls._do_term = False
+            try:
+                cls._term()
+            finally:
+                cls._release_lock.release()
+            return
+
+        # Otherwise, what's the situation? Prevent any releasing of the kill lock whilst
+        # we check:
+        with cls._release_lock:
+            if cls._kill_lock.acquire(False):
+                # Kill lock not held by anyone. Terminate.
+                try:
+                    cls._term()
+                finally:
+                    cls._kill_lock.release()
+            else:
+                # Kill lock is held. Store a flag to respond to it when the kill lock is
+                # released:
+                cls._sigterm_received = True
+                msg = "SIGTERM while kill lock held: will terminate when released."
+                print(msg, file=sys.stderr)
 
     @classmethod
     def release(cls):
-        cls._count -= 1
-        if cls._count == 0:
-            cls._connected = False
-            signal.signal(signal.SIGTERM, cls._prev_handler)
-            cls._prev_handler = None
-            if cls._terminated:
-                # Lock is being released, and we received SIGTERM while it was held:
-                os.kill(os.getpid(), signal.SIGTERM)
-        return cls._lock.release()
+        if cls._owner == thread_ident() and cls._reentrancy_level > 0:
+            cls._reentrancy_level -= 1
+            print('decrementing reentrancy_level of kill lock')
+            return
+        cls._release_lock.acquire()
+        cls._kill_lock.release()
+        if cls._sigterm_received:
+            # If sigterm received while lock held, terminate. The signal handler will
+            # release _release_lock when it is done (if the previous signal handler
+            # doesn't actually terminate the process).
+            cls._do_term = True
+            os.kill(os.getpid(), signal.SIGTERM)
+        else:
+            cls._release_lock.release()
 
     @classmethod
     def __exit__(cls, t, v, tb):
@@ -159,7 +234,7 @@ class HeartbeatClient(object):
                 msg = self.sock.recv()
                 if not msg == pid:
                     break
-            print('Heartbeat failure', file=sys.stderr)
+            # print('Heartbeat failure', file=sys.stderr)
             os.kill(os.getpid(), signal.SIGTERM)
         except zmq.ContextTerminated:
             # Shutting down:
@@ -894,7 +969,7 @@ class Process(object):
         self.parent_host = None
         self.to_parent = None
         self.from_parent = None
-        self.kill_lock = KillLock()
+        self.kill_lock = None
         self.remote_process_client = remote_process_client
         self.subclass_fullname = subclass_fullname
         self.startup_timeout = startup_timeout
@@ -1041,6 +1116,7 @@ class Process(object):
         self.to_parent = self.process_tree.to_parent
         self.from_parent = self.process_tree.from_parent
         self.parent_host = self.process_tree.parent_host
+        self.kill_lock = self.process_tree.kill_lock
         args, kwargs = self.from_parent.get()
         self.run(*args, **kwargs)
 
@@ -1115,7 +1191,7 @@ class ProcessTree(object):
         self.remote_output_receiver = None
         self.to_parent = None
         self.from_parent = None
-        self.kill_lock = KillLock()
+        self.kill_lock = None
         self.log_paths = {}
         self.startup_timeout = None
 
@@ -1394,6 +1470,7 @@ class ProcessTree(object):
         self.broker_host = parentinfo['broker_host']
         self.broker_in_port = parentinfo['broker_in_port']
         self.broker_out_port = parentinfo['broker_out_port']
+        self.kill_lock = self.heartbeat_client.lock
         self.log_paths = parentinfo['log_paths']
 
     @classmethod
