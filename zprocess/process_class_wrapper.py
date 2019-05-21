@@ -18,6 +18,10 @@ def _setup():
     import sys, os
     import importlib
     import traceback
+    if sys.version_info.major == 2:
+        str_ = unicode
+    else:
+        str_ = str
 
     # Ensure the zprocess we import is the same on as we are running from,
     # relevant particularly for running the test suite:
@@ -56,7 +60,7 @@ def _setup():
         # Get the class from the parent, either as a class or a string for the import
         # path:
         process_cls = process_tree.from_parent.get(timeout=process_tree.startup_timeout)
-        if isinstance(process_cls, str):
+        if isinstance(process_cls, (str_, bytes)):
             # The parent process is passing us the import path to a class rather
             # than a class itself. It's up to us to do the import and find the class
             # without inheriting any of the parent process's code or environment:
