@@ -347,10 +347,12 @@ class _Sender(object):
         data=None,
         timeout=5,
         interruptor=None,
+        raise_server_exceptions=True,
     ):
         """If self.push_only, send data on the push socket.
         Otherwise, uses reliable request-reply to send data to a zmq REP
-        socket, and return the reply"""
+        socket, and return the reply. If raise_server_exceptions set to False, then
+        returns exception objects from the server instead of raising them."""
         # We cache the socket so as to not exhaust ourselves of tcp
         # ports. However if a different server is in use, we need a new
         # socket. Also if we don't have a socket, we also need a new one:
@@ -401,7 +403,7 @@ class _Sender(object):
                 raise Interrupted(interruption_sock.recv().decode('utf8'))
             assert events[self.local.sock] == zmq.POLLIN
             response = self.local.recv()
-            if isinstance(response, Exception):
+            if isinstance(response, Exception) and raise_server_exceptions:
                 raise response
             return response
         except:
