@@ -1,0 +1,18 @@
+# Common to al platforms:
+xmlrunner
+
+# On Windows, do not auto-install pyzmq. Setup.py will check for it, and throw an error
+# if the user does not have it. This is because conda zmq must be used, and we do not
+# want pip to install pyzmq from pip, as it is not compiled with libsodium and so has
+# slow crypto
+
+pyzmq >= 18.0; sys_platform != win32
+
+# Backported modules for py2:
+ipaddress; python_version == '2.7'
+subprocess32; python_version == '2.7'
+enum34; python_version == '2.7'
+
+# Windows-specific modules:
+pywin32; sys_platform == win32
+windows-curses; sys_platform == win32
