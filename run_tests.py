@@ -6,14 +6,6 @@ import errno
 from os.path import dirname
 
 
-PYTHON2 = 'python2'
-PYTHON3 = 'python3'
-
-
-# The version we're testing:
-PYTHONS = {'2': PYTHON2, '3': PYTHON3}
-
-
 TEST_FILES = ['test_zlog_server.py', 'tests.py', 'test_zlock_server.py']
 COVERAGE_PROCESS_START = os.path.abspath('.coveragerc')
 
@@ -26,7 +18,6 @@ def mkdir_p(path):
             pass
         else:
             raise
-
 
 def get_python_version(executable):
     cmds = [executable, '--version']
@@ -48,8 +39,8 @@ def get_coverage_path(executable):
     return check_output(cmds).decode('utf8').strip()
 
 
-def run_tests(executable):
-
+def run_tests():
+    executable = sys.executable
     version = get_python_version(executable)
     full_executable = get_python_full_executable(executable)
 
@@ -78,8 +69,7 @@ def run_tests(executable):
 
 
 if __name__ == '__main__':
-    for python_version in PYTHONS:
-        run_tests(PYTHONS[python_version])
+    run_tests()
     try:
         call([sys.executable, '-m', 'coverage', 'combine'])
         call([sys.executable, '-m', 'coverage', 'html', '--rcfile=.coveragerc'])
