@@ -12,13 +12,12 @@
 #####################################################################
 
 from __future__ import division, unicode_literals, print_function, absolute_import
-import os #no
+import os
 
-if 'COVERAGE_PROCESS_START' in os.environ: # pragma: no cover
+if 'COVERAGE_PROCESS_START' in os.environ:
     # We're running with coverage.py, likely running the test suite. Add
     # sigterm handler so that atexit handlers run even when terminated and
     # coverage data is saved:
-    import coverage; coverage.process_startup()  # pragma: no cover
     import signal
     def sigterm_handler(_signo, _stack_frame):
         raise SystemExit(0)

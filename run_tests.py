@@ -48,11 +48,22 @@ def run_tests():
 
     environ = os.environ.copy()
     environ['COVERAGE_PROCESS_START'] = COVERAGE_PROCESS_START
+    environ['PYTHONPATH'] = os.getcwd()
 
-    for test_file in TEST_FILES:
-        rc = call([executable, os.path.join('tests', test_file)], env=environ)
-        if rc:
-            sys.exit(rc)
+    SITECUSTOMIZE = os.path.abspath('usercustomize.py')
+    try:
+        with open(SITECUSTOMIZE, 'w') as f:
+            f.write("import coverage; coverage.process_startup()")
+
+        for test_file in TEST_FILES:
+            rc = call([executable, os.path.join('tests', test_file)], env=environ)
+            if rc:
+                sys.exit(rc)
+    finally:
+        try:
+            os.unlink(SITECUSTOMIZE)
+        except Exception:
+            pass
 
 if __name__ == '__main__':
     run_tests()
