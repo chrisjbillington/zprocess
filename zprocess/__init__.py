@@ -12,9 +12,19 @@
 #####################################################################
 
 from __future__ import division, unicode_literals, print_function, absolute_import
-import os
+import os #no
+
+if 'COVERAGE_PROCESS_START' in os.environ: # pragma: no cover
+    # We're running with coverage.py, likely running the test suite. Add
+    # sigterm handler so that atexit handlers run even when terminated and
+    # coverage data is saved:
+    import coverage; coverage.process_startup()  # pragma: no cover
+    import signal
+    def sigterm_handler(_signo, _stack_frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, sigterm_handler)
+
 import sys
-import signal
 
 PY2 = sys.version_info[0] == 2
 if PY2:
@@ -44,14 +54,6 @@ PICKLE_PROTOCOL = 2
 # So that test code can suppress some output:
 _silent = False
 
-if 'COVERAGE_PROCESS_START' in os.environ:
-    # We're running with coverage.py, likely running the test suite. Add
-    # sigterm handler so that atexit handlers run even when terminated and
-    # coverage data is saved:
-    import coverage; coverage.process_startup()
-    def sigterm_handler(_signo, _stack_frame):
-        raise SystemExit(0)
-    signal.signal(signal.SIGTERM, sigterm_handler)
 
 
 from zprocess.utils import (

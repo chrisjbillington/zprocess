@@ -12,7 +12,7 @@
 #####################################################################
 
 # Ensure coverage.py is set up in the new process:
-import zprocess
+import zprocess  # pragma: no cover
 
 def _setup():
     # Clear the namespace of any evidence we were here:

@@ -58,7 +58,6 @@ class RaiseExceptionInThreadTest(unittest.TestCase):
             exc_info = sys.exc_info()
             with self.assertRaises(TestError):
                 raise_exception_in_thread(exc_info)
-            self.assertTrue(False)
             self.assertTrue(self.mock_thread.used)
 
     def tearDown(self):
