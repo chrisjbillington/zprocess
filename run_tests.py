@@ -50,7 +50,7 @@ def run_tests():
     environ['COVERAGE_PROCESS_START'] = COVERAGE_PROCESS_START
     environ['PYTHONPATH'] = os.getcwd()
 
-    SITECUSTOMIZE = os.path.abspath('usercustomize.py')
+    SITECUSTOMIZE = os.path.abspath('sitecustomize.py')
     try:
         with open(SITECUSTOMIZE, 'w') as f:
             f.write("import coverage; coverage.process_startup()")
