@@ -46,27 +46,11 @@ def run_tests():
 
     print('doing tests for {}: {}'.format(full_executable, version))
 
-    user_site = get_user_site(executable)
-    if not os.path.exists(user_site):
-        mkdir_p(user_site)
-    path_file = os.path.join(user_site, 'coverage.pth')
-
-    coverage_path = dirname(dirname(get_coverage_path(executable)))
     environ = os.environ.copy()
     environ['COVERAGE_PROCESS_START'] = COVERAGE_PROCESS_START
 
-    try:
-        with open(path_file, 'w') as f:
-            f.write("import sys; sys.path.insert(0, '{}')\n".format(coverage_path))
-            f.write("import coverage; coverage.process_startup()" + '\n')
-        for test_file in TEST_FILES:
-            call([executable, os.path.join('tests', test_file)], env=environ)
-    finally:
-        try:
-            os.unlink(path_file)
-        except OSError:
-            pass
-
+    for test_file in TEST_FILES:
+        call([executable, os.path.join('tests', test_file)], env=environ)
 
 if __name__ == '__main__':
     run_tests()
