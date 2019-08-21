@@ -50,7 +50,9 @@ def run_tests():
     environ['COVERAGE_PROCESS_START'] = COVERAGE_PROCESS_START
 
     for test_file in TEST_FILES:
-        call([executable, os.path.join('tests', test_file)], env=environ)
+        rc = call([executable, os.path.join('tests', test_file)], env=environ)
+        if rc:
+            sys.exit(rc)
 
 if __name__ == '__main__':
     run_tests()
