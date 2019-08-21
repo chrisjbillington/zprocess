@@ -16,9 +16,6 @@ sys.path.insert(0, parent_dir)
 
 BITBUCKET = os.getenv('CI', None) is not None
 
-if 'COVERAGE_PROCESS_START' in os.environ:
-    import coverage; coverage.process_startup()
-    
 from zprocess.zlog.server import (
     ZMQLogServer,
     ERR_INVALID_COMMAND,

@@ -11,10 +11,13 @@
 #                                                                   #
 #####################################################################
 
+# Ensure coverage.py is set up in the new process:
+import zprocess
 
 def _setup():
     # Clear the namespace of any evidence we were here:
     del globals()['_setup']
+    del globals()['zprocess']
     import sys, os
     import importlib
     import traceback

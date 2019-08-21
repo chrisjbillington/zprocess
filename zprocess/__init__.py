@@ -44,10 +44,11 @@ PICKLE_PROTOCOL = 2
 # So that test code can suppress some output:
 _silent = False
 
-if 'zprocess' in  os.getenv('COVERAGE_PROCESS_START', ''):
+if 'COVERAGE_PROCESS_START' in os.environ:
     # We're running with coverage.py, likely running the test suite. Add
     # sigterm handler so that atexit handlers run even when terminated and
     # coverage data is saved:
+    import coverage; coverage.process_startup()
     def sigterm_handler(_signo, _stack_frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, sigterm_handler)

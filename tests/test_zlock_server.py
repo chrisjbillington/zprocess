@@ -13,9 +13,6 @@ if PY2:
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-if 'COVERAGE_PROCESS_START' in os.environ:
-    import coverage; coverage.process_startup()
-    
 from zprocess.zlock.server import (
     ZMQLockServer,
     Lock,

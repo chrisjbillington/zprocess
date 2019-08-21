@@ -18,10 +18,6 @@ import xmlrunner
 parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, parent_dir)
 
-if 'COVERAGE_PROCESS_START' in os.environ:
-    import coverage; coverage.process_startup()
-
-
 import zprocess
 zprocess._silent = True
 from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,

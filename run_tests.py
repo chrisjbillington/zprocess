@@ -56,9 +56,8 @@ def run_tests():
 
 if __name__ == '__main__':
     run_tests()
-    try:
-        call([sys.executable, '-m', 'coverage', 'combine'])
-        call([sys.executable, '-m', 'coverage', 'html', '--rcfile=.coveragerc'])
-        call([sys.executable, '-m', 'coverage', 'erase'])
-    except Exception:
-        pass
+    # try:
+    #     # call([sys.executable, '-m', 'coverage', 'combine'])
+    #     # call([sys.executable, '-m', 'coverage', 'html', '--rcfile=.coveragerc'])
+    # except Exception:
+    #     pass
