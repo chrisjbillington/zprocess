@@ -912,13 +912,7 @@ def rich_print(*values, **kwargs):
     stream does not support the 'charformat' keyword argument, then formatting will be
     ignored."""
 
-    file = kwargs.pop('file', sys.stdout)
-
-    if not getattr(file, 'supports_rich_write', False):
-        return print(*values, file=file, **kwargs)
-
-    sep = kwargs.pop('sep', ' ')
-    end = kwargs.pop('end', '\n')
+    file = kwargs.get('file', sys.stdout)
 
     if file is sys.stderr:
         color = 'red'
@@ -926,9 +920,17 @@ def rich_print(*values, **kwargs):
     else:
         color = 'white'
         bold = False
+
     bold = kwargs.pop('bold', bold)
     color = kwargs.pop('color', color)
     italic = kwargs.pop('italic', False)
+
+    if not getattr(file, 'supports_rich_write', False):
+        return print(*values, **kwargs)
+
+    sep = kwargs.pop('sep', ' ')
+    end = kwargs.pop('end', '\n')
+
     charformat = repr((color, bold, italic)).encode('utf8')
     file.write(sep.join(str(s) for s in values) + end, charformat=charformat)
 
