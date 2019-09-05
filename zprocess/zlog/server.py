@@ -6,6 +6,7 @@ import threading
 import logging
 import logging.handlers
 import uuid
+from binascii import hexlify
 
 import zmq
 from zmq.utils.win32 import allow_interrupt
@@ -109,7 +110,7 @@ class ZMQLogServer(object):
     def __init__(
         self,
         port=None,
-        bind_address='tcp://0.0.0.0',
+        bind_address='tcp://*',
         silent=False,
         handler_class=FileHandler,
         handler_kwargs=None,
@@ -125,12 +126,13 @@ class ZMQLogServer(object):
         self.handler_kwargs = handler_kwargs if handler_kwargs is not None else {}
         self.context = None
         self.router = None
+        self.stop_sock = None
+        self.shutdown_endpoint = None
         self.poller = None
         self.tasks = TaskQueue()
         self.timeout_tasks = {}
 
         self.run_thread = None
-        self.stopping = False
         self.started = threading.Event()
         self.running = False
         self.silent = silent
@@ -240,12 +242,16 @@ class ZMQLogServer(object):
         self.router = self.context.socket(
             zmq.ROUTER, allow_insecure=self.allow_insecure
         )
+        self.stop_sock = self.context.socket(zmq.PULL)
         self.poller = zmq.Poller()
         self.poller.register(self.router, zmq.POLLIN)
+        self.poller.register(self.stop_sock, zmq.POLLIN)
         if self.port is not None:
             self.router.bind('%s:%d' % (self.bind_address, self.port))
         else:
             self.port = self.router.bind_to_random_port(self.bind_address)
+        self.shutdown_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
+        self.stop_sock.bind(self.shutdown_endpoint)
         global logger
         logger = setup_logging('zlog', self.silent)
         if not self.silent:
@@ -270,12 +276,14 @@ class ZMQLogServer(object):
         finally:
             self.router.close()
             self.router = None
+            self.stop_sock.close()
+            self.stop_sock = None
+            self.shutdown_endpoint = None
             self.context = None
             self.port = self._initial_port
             self.running = False
             self.started.clear()
             self._interrupted = False
-            self.stopping = False
 
     def _win32_keyboardinterrupt(self):
         self._interrupted = True
@@ -288,7 +296,10 @@ class ZMQLogServer(object):
                 timeout = max(0, 1000 * self.tasks.next().due_in())
             else:
                 timeout = None
-            events = self.poller.poll(timeout)
+            events = dict(self.poller.poll(timeout))
+            if self.stop_sock in events:
+                assert self.stop_sock.recv() == b'stop'
+                break
             if events:
                 # A request was received:
                 request = self.router.recv_multipart()
@@ -314,8 +325,6 @@ class ZMQLogServer(object):
                     self.check_access(routing_id, ip, args)
                 elif command == b'done':
                     self.done(routing_id, ip, args)
-                elif command == b'stop' and self.stopping:
-                    break
                 else:
                     self.send(routing_id, ERR_INVALID_COMMAND)
                     logger.info("[%s] sent an invalid command", ip)
@@ -335,9 +344,8 @@ class ZMQLogServer(object):
     def stop(self):
         if not self.running:
             raise RuntimeError('Not running')
-        self.stopping = True
-        sock = self.context.socket(zmq.REQ, allow_insecure=self.allow_insecure)
-        sock.connect('tcp://127.0.0.1:%d' % self.port)
+        sock = self.context.socket(zmq.PUSH)
+        sock.connect(self.shutdown_endpoint)
         sock.send(b'stop')
         if self.run_thread is not None:
             self.run_thread.join()

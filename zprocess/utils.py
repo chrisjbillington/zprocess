@@ -5,6 +5,8 @@ import threading
 import subprocess
 import logging, logging.handlers
 from binascii import hexlify
+import socket
+import ipaddress
 
 import zmq
 
@@ -296,3 +298,20 @@ def setup_logging(name, silent=False):
     elif file_handler_success:
         logger.info('logging to %s', logpath)
     return logger
+
+
+def gethostbyname(host, prefer_ipv4=True, require_ipv4=False):
+    """Like socket.gethostbyname, but may return an IPv6 address."""
+    if require_ipv4:
+        family = socket.AF_INET
+    else:
+        family = 0
+    results = socket.getaddrinfo(
+        host, None, family, socket.SOCK_STREAM, socket.IPPROTO_TCP
+    )
+    if prefer_ipv4:
+        for family, _, _, _, sockaddr in results:
+            if family == socket.AF_INET:
+                return sockaddr[0]
+    family, _, _, _, sockaddr = results[0]
+    return sockaddr[0]

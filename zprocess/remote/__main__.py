@@ -27,9 +27,9 @@ def main():
         '-a',
         '--bind-address',
         type=str,
-        default='0.0.0.0',
-        help="""Interface to listen on. Set to 0.0.0.0 (default) for all interfaces, or
-        127.0.0.1 for localhost only.""",
+        default='*',
+        help="""Interface to listen on. Set to '*' (default) for all interfaces, or
+            '127.0.0.1' or '::1' for loopback ipv4 or ipv6 interfaces only""",
     )
 
     exclusive_grp = parser.add_mutually_exclusive_group()

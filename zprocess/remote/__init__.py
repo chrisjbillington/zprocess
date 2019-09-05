@@ -112,7 +112,7 @@ class RemoteOutputReceiver(ZMQServer):
     def __init__(
         self,
         port=None,
-        bind_address='tcp://0.0.0.0',
+        bind_address='tcp://*',
         shared_secret=None,
         allow_insecure=False,
     ):

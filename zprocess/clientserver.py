@@ -19,6 +19,7 @@ import time
 import traceback
 from functools import partial
 from socket import gethostbyname
+from binascii import hexlify
 
 import zmq
 
@@ -91,7 +92,7 @@ def _typecheck_or_convert_data(data, dtype):
 class ZMQServer(object):
     """Wrapper around a zmq.REP or zmq.PULL socket"""
     def __init__(self, port=None, dtype='pyobj', pull_only=False, 
-                 bind_address='tcp://0.0.0.0', shared_secret=None,
+                 bind_address='tcp://*', shared_secret=None,
                  allow_insecure=False, timeout_interval=None):
         self.port = port
         self.dtype = dtype
@@ -129,6 +130,11 @@ class ZMQServer(object):
         else:
             self.port = self.sock.bind_to_random_port(self.bind_address)
         self.poller.register(self.sock, zmq.POLLIN)
+
+        self._shutdown_sock = self.context.socket(zmq.PULL)
+        self._shutdown_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
+        self._shutdown_sock.bind(self._shutdown_endpoint)
+        self.poller.register(self._shutdown_sock, zmq.POLLIN)
 
         if self.dtype == 'raw':
             self.send = self.sock.send
@@ -191,7 +197,7 @@ class ZMQServer(object):
                 if next_timeout is not None:
                     timeout = next_timeout - monotonic()
                     timeout = max(0, timeout)
-                    events = self.poller.poll(int(timeout*1000))
+                    events = dict(self.poller.poll(int(timeout*1000)))
                     if not events:
                         # Timed out. Run our timeout method
                         try:
@@ -204,9 +210,12 @@ class ZMQServer(object):
                         # Compute next timeout time
                         next_timeout = monotonic() + self.timeout_interval
                         continue
-                request_data = self.recv()
-                if self.stopping:
+                else:
+                    events = dict(self.poller.poll())
+                if self._shutdown_sock in events:
+                    assert self._shutdown_sock.recv() == b'stop'
                     break
+                request_data = self.recv()
                 try:
                     response_data = self.handler(request_data)
                     if self.pull_only and response_data is not None:
@@ -242,15 +251,9 @@ class ZMQServer(object):
             
     def shutdown(self):
         self.stopping = True
-        if self.pull_only:
-            sock = self.context.socket(zmq.PUSH)
-        else:
-            sock = self.context.socket(zmq.REQ)
-        sock.connect('tcp://127.0.0.1:%s' % self.port)
-        if self.dtype == 'pyobj':
-            sock.send_pyobj('stop')
-        else:
-            sock.send(b'stop')
+        sock = self.context.socket(zmq.PUSH)
+        sock.connect(self._shutdown_endpoint)
+        sock.send(b'stop')
         self.mainloop_thread.join()
         sock.close(linger=True)
         self.sock.close(linger=False)
@@ -343,7 +346,7 @@ class _Sender(object):
     def __call__(
         self,
         port,
-        host='127.0.0.1',
+        host='localhost',
         data=None,
         timeout=5,
         interruptor=None,
@@ -455,7 +458,7 @@ _ZMQServer = ZMQServer
 class ZMQServer(_ZMQServer):
     """Wrapper around a zmq.REP or zmq.PULL socket"""
     def __init__(self, port, dtype=None, pull_only=False, 
-                 bind_address='tcp://0.0.0.0', shared_secret=None,
+                 bind_address='tcp://*', shared_secret=None,
                  allow_insecure=True, **kwargs):
         # Allow old kwarg "type" instead of "dtype":
         if 'type' in kwargs:

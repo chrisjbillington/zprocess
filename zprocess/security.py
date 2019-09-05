@@ -2,7 +2,6 @@ from __future__ import print_function, unicode_literals, division
 import sys
 import base64
 import weakref
-from socket import gethostbyname
 import os
 import ipaddress
 import zmq
@@ -15,7 +14,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
     # development:
     sys.path.insert(0, _path)
 
-from zprocess.utils import Interrupted, TimeoutError
+from zprocess.utils import gethostbyname, Interrupted, TimeoutError
 
 if sys.version_info[0] == 2:
     str = unicode
@@ -76,6 +75,14 @@ network even if messages contain no sensitive information.""".splitlines()
 )
 
 
+def ip_is_loopback(ip):
+    """Return whether an IP address is on the loopback interface"""
+    ip = ipaddress.ip_address(ip)
+    if ip.version == 6 and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
 def generate_shared_secret():
     """Compute a new pair of random CurveZMQ secret keys, decode them from z85
     encoding, and return the result as a base64 encoded unicode string as suitable
@@ -127,6 +134,8 @@ class SecureSocket(zmq.Socket):
         # instead
         self.logger = None
         self.secure = self.context.secure
+        # Enable IPv6 by default:
+        self.ipv6 = True
 
     def _is_internal(self, endpoint):
         """Return whether a bind or connect endpoint is on an internal
@@ -135,12 +144,14 @@ class SecureSocket(zmq.Socket):
             return True
         if endpoint.startswith('tcp://'):
             host = ''.join(''.join(endpoint.split('//')[1:]).split(':')[0])
+            if host.startswith('[') and host.endswith(']'):
+                host = host[1:-1]
             if host == '*':
                 return False
             address = gethostbyname(host)
             if isinstance(address, bytes):
                 address = address.decode()
-            return ipaddress.ip_address(address).is_loopback
+            return ip_is_loopback(address)
         return False
 
     def _configure_curve(self, server):
@@ -268,7 +279,7 @@ class SecureSocket(zmq.Socket):
                     # messages via some internal mechanism if a subscriber disconnects.
                     self.peer_ip = None
                 else:
-                    is_loopback = ipaddress.ip_address(self.peer_ip).is_loopback
+                    is_loopback = ip_is_loopback(self.peer_ip)
                     if not (is_loopback or self.secure or self.allow_insecure):
                         # Unsecured data on external interface and allow_insecure has
                         # not been set. Print a message and ignore it.

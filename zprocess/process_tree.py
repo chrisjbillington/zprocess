@@ -10,8 +10,8 @@ import json
 import ctypes
 import atexit
 from ctypes.util import find_library
-from socket import gethostbyname
 import logging
+from binascii import hexlify 
 
 import zmq
 
@@ -24,7 +24,7 @@ if _cwd == 'zprocess' and _path not in sys.path:
 import ipaddress
 import zprocess
 from zprocess.security import SecureContext
-from zprocess.utils import Interruptor, Interrupted, TimeoutError
+from zprocess.utils import gethostbyname, Interruptor, Interrupted, TimeoutError
 from zprocess.remote import (
     RemoteProcessClient,
     RemoteOutputReceiver,
@@ -163,7 +163,7 @@ class HeartbeatServer(object):
     process has a HeartbeatServer to provide heartbeating to its subprocesses -
     there is not only one in the top process.
     """
-    def __init__(self, bind_address='tcp://0.0.0.0', 
+    def __init__(self, bind_address='tcp://*', 
                  shared_secret=None):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REP)
@@ -239,7 +239,7 @@ class EventBroker(object):
     # (and any subscriptions) have been processed.
     WELCOME_MESSAGE = b'_zprocess_broker_hello\0'
 
-    def __init__(self, bind_address='tcp://0.0.0.0', shared_secret=None,
+    def __init__(self, bind_address='tcp://*', shared_secret=None,
                  allow_insecure=False):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.frontend = context.socket(zmq.PULL, allow_insecure=allow_insecure)
@@ -476,15 +476,20 @@ class ReadQueue(object):
     for breaking out of blocking recv()s, though that use case is now better served by
     interrupt()"""
 
-    def __init__(self, sock, to_self_sock):
+    def __init__(self, sock):
         self.sock = sock
-        self.to_self_sock = to_self_sock
+        self.to_self = sock.context.socket(zmq.PUSH)
+        self.from_self = sock.context.socket(zmq.PULL)
+        self_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
+        self.from_self.bind(self_endpoint)
+        self.to_self.connect(self_endpoint)
         self.lock = threading.Lock()
         self.to_self_lock = threading.Lock()
         self.in_poller = zmq.Poller()
         self.in_poller.register(self.sock)
+        self.in_poller.register(self.from_self)
         self.out_poller = zmq.Poller()
-        self.out_poller.register(self.to_self_sock)
+        self.out_poller.register(self.to_self)
         self.interruptor = Interruptor()
 
     def get(self, timeout=None, interruptor=None):
@@ -506,7 +511,12 @@ class ReadQueue(object):
                     raise TimeoutError('get() timed out')
                 if interruption_sock in events:
                     raise Interrupted(interruption_sock.recv().decode('utf8'))
-                return self.sock.recv_pyobj()
+                if self.from_self in events:
+                    sock = self.from_self
+                else:
+                    assert self.sock in events
+                    sock = self.sock
+                return sock.recv_pyobj()
             finally:
                 self.in_poller.unregister(interruption_sock)
                 interruptor.unsubscribe()
@@ -531,7 +541,7 @@ class ReadQueue(object):
                     if interruption_sock in events:
                         raise Interrupted(interruption_sock.recv().decode('utf8'))
                     try:
-                        return self.to_self_sock.send_pyobj(
+                        return self.to_self.send_pyobj(
                             obj, protocol=zprocess.PICKLE_PROTOCOL, flags=zmq.NOBLOCK
                         )
                     except zmq.ZMQError:
@@ -1285,11 +1295,9 @@ class ProcessTree(object):
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
-        to_self = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
 
-        from_child_port = from_child.bind_to_random_port('tcp://0.0.0.0')
-        to_self.connect('tcp://127.0.0.1:%s' % from_child_port)
-        to_child_port = to_child.bind_to_random_port('tcp://0.0.0.0')
+        from_child_port = from_child.bind_to_random_port('tcp://*')
+        to_child_port = to_child.bind_to_random_port('tcp://*')
         self.check_broker()
         if self.heartbeat_server is None:
             # First child process, we need a heartbeat server:
@@ -1393,7 +1401,7 @@ class ProcessTree(object):
             )
 
         to_child = WriteQueue(to_child)
-        from_child = ReadQueue(from_child, to_self)
+        from_child = ReadQueue(from_child)
         if startup_queue is not None:
             startup_queue.put(child)
         try:
@@ -1417,19 +1425,16 @@ class ProcessTree(object):
         context = SecureContext.instance(shared_secret=self.shared_secret)
         to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
         from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
-        to_self = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
 
-        port_to_self = to_self.bind_to_random_port('tcp://127.0.0.1')
         from_parent.connect(
             'tcp://%s:%d' % (self.parent_host, parentinfo['from_parent_port'])
         )
-        from_parent.connect('tcp://127.0.0.1:%d' % port_to_self)
         to_parent.connect(
             "tcp://%s:%s" % (self.parent_host, parentinfo['to_parent_port'])
         )
 
         self.startup_timeout = parentinfo.get('startup_timeout', None)
-        self.from_parent = ReadQueue(from_parent, to_self)
+        self.from_parent = ReadQueue(from_parent)
         self.to_parent = WriteQueue(to_parent)
         self.to_parent.put('hello', timeout=self.startup_timeout)
 
