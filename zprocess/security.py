@@ -134,8 +134,12 @@ class SecureSocket(zmq.Socket):
         # instead
         self.logger = None
         self.secure = self.context.secure
+
+        # Disabled for now, have observed problems with BLACS subprocesses when using a
+        # remote process server on localhost with no encryption:
+
         # Enable IPv6 by default:
-        self.ipv6 = True
+        # self.ipv6 = True
 
     def _is_internal(self, endpoint):
         """Return whether a bind or connect endpoint is on an internal

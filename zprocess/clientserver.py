@@ -89,7 +89,15 @@ def _typecheck_or_convert_data(data, dtype):
     return data
 
 
+class _NO_RESPONSE(object):
+    """Sentinel for use as a return value from ZMQServer.handler to indicate that a
+    response has already been sent to the client manually via ZMQServer.send(), and that
+    the server mainloop should not send a response"""
+    pass
+
+
 class ZMQServer(object):
+    NO_RESPONSE = _NO_RESPONSE
     """Wrapper around a zmq.REP or zmq.PULL socket"""
     def __init__(self, port=None, dtype='pyobj', pull_only=False, 
                  bind_address='tcp://*', shared_secret=None,
@@ -218,6 +226,8 @@ class ZMQServer(object):
                 request_data = self.recv()
                 try:
                     response_data = self.handler(request_data)
+                    if response_data is self.NO_RESPONSE:
+                        continue
                     if self.pull_only and response_data is not None:
                         msg = ("Pull-only server hander() method returned " +
                                "non-None value %s. Ignoring." % str(response_data))
