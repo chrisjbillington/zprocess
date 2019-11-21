@@ -258,32 +258,34 @@ def embed():
         kernel_has_quit.set()
 
 
-def setup_logging(name, silent=False):
+def setup_logging(name, silent=False, directory=None):
     """Basic logging setup used by zprocess servers. silent=True will configure logging
-    calls to be no-ops."""
+    calls to be no-ops. directory must be specified for logging to file, otherwise only
+    terminal logging will be produced. Directory will be created if it doesn't exist,
+    but its parent directories must already exist"""
     LOGLEVEL = logging.DEBUG
-    if os.name == 'nt':
-        logpath = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), '%s.log' % name
-        )
+    if directory is not None:
+        logpath = os.path.join(directory, '%s.log' % name)
+        if not os.path.exists(directory):
+            os.mkdir(directory)
     else:
-        logpath = '/var/log/%s.log' % name
-
+        logpath = None
     logger = logging.Logger(name)
     logger.setLevel(LOGLEVEL)
     formatter = logging.Formatter('[%(asctime)s] %(levelname)s %(message)s')
     file_handler_success = False
     if not silent:
-        try:
-            handler = logging.handlers.RotatingFileHandler(
-                logpath, maxBytes=50 * 1024 ** 2, backupCount=1
-            )
-            handler.setLevel(LOGLEVEL)
-            handler.setFormatter(formatter)
-            logger.addHandler(handler)
-            file_handler_success = True
-        except (OSError, IOError):
-            file_handler_success = False
+        if logpath is not None:
+            try:
+                handler = logging.handlers.RotatingFileHandler(
+                    logpath, maxBytes=50 * 1024 ** 2, backupCount=1
+                )
+                handler.setLevel(LOGLEVEL)
+                handler.setFormatter(formatter)
+                logger.addHandler(handler)
+                file_handler_success = True
+            except (OSError, IOError):
+                file_handler_success = False
         if sys.stdout is not None and sys.stdout.isatty():
             stream_handler = logging.StreamHandler(sys.stdout)
             stream_handler.setLevel(LOGLEVEL)
@@ -291,7 +293,7 @@ def setup_logging(name, silent=False):
             logger.addHandler(stream_handler)
     if silent:
         logger.addHandler(logging.NullHandler())
-    if not silent and not file_handler_success:
+    if not silent and not file_handler_success and logpath is not None:
         msg = 'Can\'t open or do not have permission to write to log file '
         msg += logpath + '. Only terminal logging will be output.'
         logger.warning(msg)

@@ -408,12 +408,14 @@ class ZMQLockServer(object):
         silent=False,
         shared_secret=None,
         allow_insecure=True,
+        server_log_dir=None
     ):
         self.port = port
         self._initial_port = port
         self.bind_address = bind_address
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
+        self.server_log_dir = server_log_dir
         self.context = None
         self.router = None
         self.stop_sock = None
@@ -448,7 +450,7 @@ class ZMQLockServer(object):
         self.stop_sock.bind(self.shutdown_endpoint)
 
         global logger
-        logger = setup_logging('zlock', self.silent)
+        logger = setup_logging('zlock', self.silent, self.server_log_dir)
         if not self.silent:
             # Log insecure connection attempts:
             self.router.logger = logger

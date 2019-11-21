@@ -129,6 +129,14 @@ def main():
         help="""Filepath to the shared secret used for secure communication.""",
     )
 
+    parser.add_argument(
+        '-l',
+        '--server-log-dir',
+        type=str,
+        default=None,
+        help="""Directory for the (optional) log file of the zlock server.""",
+    )
+
     exclusive_grp = parser.add_mutually_exclusive_group()
 
     exclusive_grp.add_argument(
@@ -168,6 +176,7 @@ def main():
         bind_address=bind_address,
         shared_secret=shared_secret,
         allow_insecure=allow_insecure,
+        server_log_dir=args.server_log_dir
     )
     disable_quick_edit()
     try:

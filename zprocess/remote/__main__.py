@@ -65,6 +65,14 @@ def main():
     )
 
     parser.add_argument(
+        '-l',
+        '--server-log-dir',
+        type=str,
+        default=None,
+        help="""Directory for the (optional) log file of the zprocess remote server.""",
+    )
+
+    parser.add_argument(
         '-tui',
         '--text-interface',
         action='store_true',
@@ -103,6 +111,7 @@ def main():
             bind_address=bind_address,
             shared_secret=shared_secret,
             allow_insecure=allow_insecure,
+            server_log_dir=args.server_log_dir
         )
         server.shutdown_on_interrupt()
 
@@ -119,6 +128,7 @@ def main():
             bind_address=bind_address,
             shared_secret=shared_secret,
             allow_insecure=allow_insecure,
+            server_log_dir=args.server_log_dir
         )
         server.shutdown_on_interrupt()
 

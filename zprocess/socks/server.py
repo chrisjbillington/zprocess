@@ -409,10 +409,17 @@ class AllowRule(object):
 
 
 class SocksProxyServer(object):
-    def __init__(self, port=DEFAULT_PORT, bind_address='0.0.0.0', silent=False):
+    def __init__(
+        self,
+        port=DEFAULT_PORT,
+        bind_address='0.0.0.0',
+        silent=False,
+        server_log_dir=None,
+    ):
         self.port = port
         self.bind_address = bind_address
-        self.silent=silent
+        self.silent = silent
+        self.server_log_dir = server_log_dir
         self.rules = set()
         self.listener = None
         self.connections = WeakSet()
@@ -451,7 +458,7 @@ class SocksProxyServer(object):
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
         self.started.wait()
-        self.logger = setup_logging('zprocess-socks', self.silent)
+        self.logger = setup_logging('zprocess-socks', self.silent, self.server_log_dir)
         msg = 'This is zprocess-socks server, running on %s:%d'
         self.logger.info(msg, self.bind_address, self.port)
 

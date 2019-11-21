@@ -115,7 +115,8 @@ class ZMQLogServer(object):
         handler_class=FileHandler,
         handler_kwargs=None,
         shared_secret=None,
-        allow_insecure=True
+        allow_insecure=True,
+        server_log_dir=None
     ):
         self.port = port
         self._initial_port = port
@@ -123,6 +124,7 @@ class ZMQLogServer(object):
         self.handler_class = handler_class
         self.shared_secret = shared_secret
         self.allow_insecure = allow_insecure
+        self.server_log_dir = server_log_dir
         self.handler_kwargs = handler_kwargs if handler_kwargs is not None else {}
         self.context = None
         self.router = None
@@ -253,7 +255,7 @@ class ZMQLogServer(object):
         self.shutdown_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
         self.stop_sock.bind(self.shutdown_endpoint)
         global logger
-        logger = setup_logging('zlog', self.silent)
+        logger = setup_logging('zlog', self.silent, self.server_log_dir)
         if not self.silent:
             # Log insecure connection attempts:
             self.router.logger = logger

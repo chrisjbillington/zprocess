@@ -57,6 +57,7 @@ class RemoteProcessServer(ZMQServer):
         shared_secret=None,
         allow_insecure=True,
         silent=False,
+        server_log_dir=None
     ):
         # Entries should be removed from this dict if the parent calls __del__ on
         # the proxy, or if the child dies for some other reason.
@@ -79,7 +80,7 @@ class RemoteProcessServer(ZMQServer):
             timeout_interval=1,
         )
         global logger
-        logger = setup_logging('zprocess-remote', silent)
+        logger = setup_logging('zprocess-remote', silent, server_log_dir)
         if not silent:
             self.sock.logger = logger
         msg = 'This is zprocess-remote server, running on %s:%d'
