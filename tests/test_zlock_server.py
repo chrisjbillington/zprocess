@@ -50,15 +50,17 @@ class monkeypatch(object):
 class Client(object):
     """Context manager for a mock client"""
 
-    def __init__(self, testcase, port, key, client_id):
-        context = zmq.Context.instance()
-        self.sock = context.socket(zmq.REQ)
+    def __init__(self, testcase, port, key, client_id, read_only=False):
         self.port = port
         self.key = key
         self.client_id = client_id
         self.testcase = testcase
+        self.sock = None
+        self.read_only = read_only
 
     def __enter__(self):
+        context = zmq.Context.instance()
+        self.sock = context.socket(zmq.REQ)
         self.sock.connect('tcp://127.0.0.1:%d' % self.port)
         return self
 
@@ -77,7 +79,9 @@ class Client(object):
     def poll(self, *args, **kwargs):
         return self.sock.poll(*args, **kwargs)
 
-    def acquire(self, timeout=30, read_only=False):
+    def acquire(self, timeout=30, read_only=None):
+        if read_only is None:
+            read_only = self.read_only
         timeout = str(timeout).encode('utf8')
         msg = [b'acquire', self.key, self.client_id, timeout]
         if read_only:
@@ -109,8 +113,8 @@ class ZLockServerTests(unittest.TestCase):
         self.server = None
         self.port = None
 
-    def client(self, key, client_id):
-        return Client(self, self.port, key, client_id)
+    def client(self, key, client_id, read_only=False):
+        return Client(self, self.port, key, client_id, read_only)
 
     def test_hello(self):
         with self.client(None, None) as client:
@@ -536,6 +540,74 @@ class ZLockServerTests(unittest.TestCase):
                         # And finally releases:
                         client2.release()
                         client2.assertReceived(b'ok')
+
+    def test_give_up_triggers(self):
+        # Test that when a waiting client gives up, other waiting clients that should
+        # receive the lock as a result do, and that those that shouldn't, don't. The
+        # only case when a give_up should result in a waiting client getting the lock is
+        # when the lock is held by readers, a writer gives up, and the only other
+        # waiters are readers.
+        reader1 = self.client(b'key_foo', b'reader1', read_only=True)
+        reader2 = self.client(b'key_foo', b'reader2', read_only=True)
+        writer1 = self.client(b'key_foo', b'writer1', read_only=False)
+        writer2 = self.client(b'key_foo', b'writer2', read_only=False)
+        writer3 = self.client(b'key_foo', b'writer3', read_only=False)
+        for holder, give_upper, waiter in [
+            (reader1, writer1, reader2),  # reader2 gets the lock upon give_up
+            (writer1, writer2, reader2),  # reader2 doesn't get the lock upon give_up
+            (reader1, writer1, writer2),  # writer2 doesn't get the lock upon give_up
+            (writer1, reader1, writer2),  # writer2 doesn't get the lock upon give_up
+            (writer1, writer2, writer3),  # writer3 doesn't get the lock upon give_up
+        ]:
+            with holder, give_upper, waiter:
+                # Holder acquires the lock:
+                holder.acquire()
+                holder.assertReceived(b'ok')
+                with monkeypatch(zprocess.zlock.server, 'MAX_RESPONSE_TIME', 0.1):
+                    with monkeypatch(zprocess.zlock.server, 'MAX_ABSENT_TIME', 0.4):
+                        # give_upper is blocked trying to acquire the lock:
+                        give_upper.acquire()
+                        # It is told to retry, but doesn't.
+                        give_upper.assertReceived(b'retry')
+                        # In 0.3s the acquisition will give-up without a retry request
+
+                        # waiter attempts to acquire the lock but is blocked by the
+                        # waiting give_upper:
+                        waiter.acquire()
+                        waiter.assertReceived(b'retry')
+                        # We are now 0.2s away from give_upper giving up, and 0.4s away
+                        # from waiter giving up
+                    
+                        # Give upper waits too long to retry and loses its spot in the
+                        # queue:
+                        time.sleep(0.3)
+                        
+                        # Waiter retries in time:
+                        waiter.acquire()                        
+
+                        if (holder, give_upper, waiter) == (reader1, writer1, reader2):
+                            # Waiting reader is given the lock, since there are no
+                            # writers now:
+                            waiter.assertReceived(b'ok')
+                            # It releases it:
+                            waiter.release()
+                            # Holder releases:
+                            holder.release()
+                        else:
+                            # In all other cases, the waiter should not receive the
+                            # lock:
+                            waiter.assertReceived(b'retry')
+                            # It retries
+                            waiter.acquire()
+                            # Holder releases
+                            holder.release()
+                            holder.assertReceived(b'ok')
+                            # Waiter gets it now:
+                            waiter.assertReceived(b'ok')
+                            # And releases. No locks held now.
+                            waiter.release()
+                            waiter.assertReceived(b'ok')
+
 
     def test_locks_independent(self):
         client1 = self.client(b'key_foo', b'client1')
