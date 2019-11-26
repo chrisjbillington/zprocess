@@ -266,17 +266,17 @@ class LockRequest(object):
     def on_triggered_acquisition(self):
         """The lock has been acquired for this client in response to being released by
         one or more other clients"""
+        acqtype = 'r' if self.read_only else 'r/w'
         if self.state is rs.PRESENT_WAITING:
             self.server.send(self.routing_id, b'ok')
-            msg = '[%s] %s acquired %s'
-            logger.info(msg, self.ip, _ds(self.client_id), _ds(self.key))
+            msg = '[%s] %s acquired (%s) %s'
+            logger.info(msg, self.ip, _ds(self.client_id), acqtype, _ds(self.key))
             self.schedule_timeout_release(self.timeout)
             self.cancel_advise_retry()
             self.state = rs.HELD
         elif self.state is rs.ABSENT_WAITING:
-            logger.info(
-                '[in absentia] %s acquired %s', _ds(self.client_id), _ds(self.key)
-            )
+            msg = '[in absentia] %s acquired (%s) %s'
+            logger.info(msg, _ds(self.client_id), acqtype, _ds(self.key))
             self.cancel_give_up()
             self.schedule_timeout_release(MAX_ABSENT_TIME)
             self.state = rs.ABSENT_HELD
@@ -290,7 +290,9 @@ class LockRequest(object):
         lock = Lock.instance(self.key, self.server)
         if lock.acquire(self.client_id, read_only):
             self.server.send(routing_id, b'ok')
-            logger.info('[%s] %s acquired %s', ip, _ds(self.client_id), _ds(self.key))
+            acqtype = 'r' if self.read_only else 'r/w'
+            msg = '[%s] %s acquired (%s) %s'
+            logger.info(msg, ip, _ds(self.client_id), acqtype, _ds(self.key))
             self.schedule_timeout_release(timeout)
             self.state = rs.HELD
         else:
@@ -357,6 +359,7 @@ class LockRequest(object):
                 self.routing_id = routing_id
                 self.schedule_advise_retry()
                 self.state = rs.PRESENT_WAITING
+                self.ip = ip
         elif self.state is rs.PRESENT_WAITING:
             # Client not allowed to make two requests without waiting for a response:
             self.server.send(routing_id, ERR_CONCURRENT)
