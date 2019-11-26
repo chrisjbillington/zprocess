@@ -16,6 +16,7 @@ sys.path.insert(0, parent_dir)
 from zprocess.zlock.server import (
     ZMQLockServer,
     Lock,
+    NotWaiting,
     NotHeld,
     AlreadyWaiting,
     InvalidReentry,
@@ -671,6 +672,12 @@ class ImplementationUnitTests(unittest.TestCase):
             lock.acquire(b'client_bar', read_only=False)
         with self.assertRaises(AlreadyWaiting):
             lock.acquire(b'client_bar', read_only=True)
+
+
+        lock = Lock.instance(b'key_foo', server)
+        # Can't give up if not waiting:
+        with self.assertRaises(NotWaiting):
+            lock.give_up(b'client_foo')
 
 
 class OtherTests(unittest.TestCase):

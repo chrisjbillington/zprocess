@@ -38,6 +38,10 @@ ERR_READ_ONLY_WRONG = b"error: argument 4 if present can only 'read_only'"
 PROTOCOL_VERSION = '1.1.0'
 
 
+class NotWaiting(ValueError):
+    pass
+
+
 class AlreadyWaiting(ValueError):
     pass
 
@@ -184,14 +188,31 @@ class Lock(object):
             self._check_cleanup()
 
     def give_up(self, client_id):
-        """Remove the client from the list of waiting clients"""
+        """Remove the client from the list of waiting clients. If this makes the lock
+        available for other waiting clients, acquire the lock for those clients. Return
+        a set of client ids that acquired the lock in this way. Raises NotWaiting if the
+        client was not in the list of waiting clients."""
         if self.invalid:
             self._invalid()
-        if client_id in self.waiting_readers:
-            self.waiting_readers.remove(client_id)
-        elif client_id in self.waiting_writers:
-            self.waiting_writers.remove(client_id)
-        self._check_cleanup()
+        try:
+            if client_id in self.waiting_readers:
+                self.waiting_readers.remove(client_id)
+            elif client_id in self.waiting_writers:
+                self.waiting_writers.remove(client_id)
+                # Was this the only waiting writer blocking readers from acquiring the
+                # lock?
+                if not self.waiting_writers and self.writer is None:
+                    # Give the lock to any readers that were blocked in this way:
+                    for reader_client_id in self.waiting_readers:
+                        self.readers[reader_client_id] += 1
+                    acquired = self.waiting_readers
+                    self.waiting_readers = set()
+                    return acquired
+            else:
+                raise NotWaiting("give_up() called for client that was not waiting")
+            return set()
+        finally:
+            self._check_cleanup()
 
     def isheldby(self, client_id):
         """Return whether the given client has the lock"""
@@ -385,7 +406,10 @@ class LockRequest(object):
     def give_up(self, cleanup=True):
         """Stop trying to acquire the lock"""
         lock = Lock.instance(self.key, self.server)
-        lock.give_up(self.client_id)
+        acquirers = lock.give_up(self.client_id)
+        for client_id in acquirers:
+            other_request = LockRequest.instance(self.key, client_id, self.server)
+            other_request.on_triggered_acquisition()
         if cleanup:
             self._cleanup()
 
