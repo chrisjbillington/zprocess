@@ -1,68 +1,35 @@
-#!/usr/bin/env python
-
-# To upload a version to PyPI, run:
-#
-#    python setup.py sdist upload
-#
-# If the package is not registered with PyPI yet, do so with:
-#
-# python setup.py register
-
 from setuptools import setup
 import os
+
+try:
+    from setuptools_conda import conda_dist
+except ImportError:
+    conda_dist = None
 
 VERSION = '2.18.1'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
-    f.write("__version__ = '%s'\n"%VERSION)
+    f.write("__version__ = '%s'\n" % VERSION)
 
-
-# Do a check for pyzmq separately from specifying dependencies to setuptools, because we
-# do not want pip to install pyzmq automatically on Windows. The user should use conda
-# to install it, otherwise they will have slow cryptography.
-MIN_PYZMQ_VERSION = '18.0'
-
-
-def zmq_version_ok():
-    try:
-        import zmq
-    except ImportError:
-        return '<none>', False
-    if zmq.__version__.split('.') < MIN_PYZMQ_VERSION.split('.'):
-        return zmq.__version__, False
-    return zmq.__version__, True
-
-_pyzmq_msg = """pyzmq %s found. zprocess requires pyzmq >= %s. Please install or upgrade
-pyzmq prior to installing zprocess. It is strongly recommended to use conda to install
-pyzmq on Windows, as the conda package is built with faster encryption."""
-
-pyzmq_version, version_ok = zmq_version_ok()
-
-if os.name == 'nt' and not version_ok:
-    raise RuntimeError(_pyzmq_msg % (pyzmq_version, MIN_PYZMQ_VERSION))
-
-
-dependencies = ['pyzmq >= %s' % MIN_PYZMQ_VERSION, 'xmlrunner']
-
-import sys
-if sys.version_info.major == 2:
-    # Backported modules:
-    dependencies.append('ipaddress')
-    dependencies.append('subprocess32')
-    dependencies.append('enum34')
-if os.name == 'nt':
-    # Windows-specific modules:
-    dependencies.append('pywin32')
-    dependencies.append('windows-curses')
+INSTALL_REQUIRES = [
+    "pyzmq >=18.0",
+    "ipaddress;         python_version == '2.7'",
+    "subprocess32;      python_version == '2.7'",
+    "enum34;            python_version == '2.7'",
+    "pywin32;           sys_platform == 'win32'",
+    "windows-curses;    sys_platform == 'win32'",
+]
 
 setup(
     name='zprocess',
     version=VERSION,
     description="A set of utilities for multiprocessing using zeromq.",
+    long_description=open('README.md').read(),
+    long_description_content_type='text/markdown',
     author='Chris Billington',
     author_email='chrisjbillington@gmail.com',
-    url='https://bitbucket.org/cbillington/zprocess/',
+    url='http://github.com/chrisjbillington/zprocess',
     license="BSD",
     packages=[
         'zprocess',
@@ -71,7 +38,18 @@ setup(
         'zprocess.zlog',
         'zprocess.remote',
         'zprocess.examples',
-        'zprocess.socks'
+        'zprocess.socks',
     ],
-    install_requires=dependencies,
+    zip_safe=False,
+    setup_requires=['setuptools', 'setuptools_scm'],
+    include_package_data=True,
+    python_requires=">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5",
+    install_requires=INSTALL_REQUIRES if 'CONDA_BUILD' not in os.environ else [],
+    cmdclass={'conda_dist': conda_dist} if conda_dist is not None else {},
+    command_options={
+        'conda_dist': {
+            'pythons': (__file__, ['2.7', '3.6', '3.7']),
+            'platforms': (__file__, 'all'),
+        },
+    },
 )

@@ -5,3 +5,7 @@ test-reports/
 dist/
 zprocess/__version__.py
 zprocess.egg-info/
+build/*
+conda_build/*
+conda_dist/*
+.eggs/*
