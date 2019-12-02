@@ -2,11 +2,11 @@ from setuptools import setup
 import os
 
 try:
-    from setuptools_conda import conda_dist
+    from setuptools_conda import dist_conda
 except ImportError:
-    conda_dist = None
+    dist_conda = None
 
-VERSION = '2.18.1'
+VERSION = '2.19.0.dev1'
 
 # Auto generate a __version__ package for the package to import
 with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
@@ -45,10 +45,10 @@ setup(
     include_package_data=True,
     python_requires=">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5",
     install_requires=INSTALL_REQUIRES if 'CONDA_BUILD' not in os.environ else [],
-    cmdclass={'conda_dist': conda_dist} if conda_dist is not None else {},
+    cmdclass={'dist_conda': dist_conda} if dist_conda is not None else {},
     command_options={
-        'conda_dist': {
-            'pythons': (__file__, ['2.7', '3.6', '3.7']),
+        'dist_conda': {
+            'pythons': (__file__, ['3.6', '3.7', '3.8']),
             'platforms': (__file__, 'all'),
         },
     },

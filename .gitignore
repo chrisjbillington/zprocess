@@ -7,5 +7,5 @@ zprocess/__version__.py
 zprocess.egg-info/
 build/*
 conda_build/*
-conda_dist/*
+conda_packages/*
 .eggs/*
