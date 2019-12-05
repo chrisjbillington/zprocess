@@ -1,16 +1,11 @@
 from setuptools import setup
 import os
+from runpy import run_path
 
 try:
     from setuptools_conda import dist_conda
 except ImportError:
     dist_conda = None
-
-VERSION = '2.19.0.dev1'
-
-# Auto generate a __version__ package for the package to import
-with open(os.path.join('zprocess', '__version__.py'), 'w') as f:
-    f.write("__version__ = '%s'\n" % VERSION)
 
 INSTALL_REQUIRES = [
     "pyzmq >=18.0",
@@ -23,7 +18,7 @@ INSTALL_REQUIRES = [
 
 setup(
     name='zprocess',
-    version=VERSION,
+    version=run_path(os.path.join('zprocess', '__version__.py'))['__version__'],
     description="A set of utilities for multiprocessing using zeromq.",
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
