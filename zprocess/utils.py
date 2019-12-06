@@ -2,17 +2,23 @@ from __future__ import division, unicode_literals, print_function, absolute_impo
 import sys
 import os
 import threading
-import subprocess
 import logging, logging.handlers
 from binascii import hexlify
 import socket
-import ipaddress
+import tempfile
 
 import zmq
 
 PY2 = sys.version_info[0] == 2
 if PY2:
+    import subprocess32 as subprocess
+    if os.name == 'nt':
+        subprocess.DETACHED_PROCESS = 0x00000008
+        subprocess.CREATE_NO_WINDOW = 0x08000000
+        subprocess.CREATE_NEW_CONSOLE = 0x00000010
     str = unicode
+else:
+    import subprocess
 
 
 
@@ -120,27 +126,35 @@ def raise_exception_in_thread(exc_info):
 
 
 def start_daemon(cmd_args):
-    """calls subprocess.Popen configured to detach the subprocess from the
-    parent, such that it keeps running even if the parent exits. Returns None.
-    Note that the child process will have its current working directory set to
-    the value of tempfile.gettempdir(), rather than remaining in the parent's
-    working directory. In Windows this prevents it holding a lock on the
-    current directory, which would prevent it from being deleted, and the
-    behaviour is the same on unix for consistency."""
-    import tempfile
+    """calls subprocess.Popen configured to detach the subprocess from the parent, such
+    that it keeps running even if the parent exits. Returns None. Note that the child
+    process will have its current working directory set to the value of
+    tempfile.gettempdir(), rather than remaining in the parent's working directory. In
+    Windows this prevents it holding a lock on the current directory, which would
+    prevent it from being deleted, and the behaviour is the same on unix for
+    consistency."""
+    kwargs = {}
     if os.name == 'nt':
-        creationflags=0x00000008 # DETACHED_PROCESS from the win32 API
-        subprocess.Popen(cmd_args,
-                         creationflags=creationflags, stdout=None, stderr=None,
-                         close_fds=True, cwd=tempfile.gettempdir())
+        kwargs['creationflags'] = (
+            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+        )
     else:
-        devnull = open(os.devnull,'w')
-        if not os.fork():
-            os.setsid()
-            subprocess.Popen(cmd_args,
-                             stdin=devnull, stdout=devnull, stderr=devnull,
-                             close_fds=True, cwd=tempfile.gettempdir())
-            os._exit(0)
+        childpid = os.fork()
+        if childpid:
+            os.waitpid(childpid, 0)
+            return
+        os.setsid()
+    subprocess.Popen(
+        cmd_args,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        cwd=tempfile.gettempdir(),
+        **kwargs
+    )
+    if os.name == 'posix':
+        os._exit(0)
 
 
 def disable_quick_edit():
@@ -180,82 +194,13 @@ def disable_quick_edit():
 
         
 def embed():
-    """embeds an IPython qt console in the calling scope.
-    Intended for debugging. May cause strange interpreter behaviour."""
-
-    # Imports, including ones we only need in the qtconsole process,
-    # so that the user gets errors about them rather than just no qtconsole:
-
-    from IPython.utils.frame import extract_module_locals
-    from ipykernel.kernelapp import IPKernelApp
-    from IPython.core.interactiveshell import InteractiveShell
-
-
-    from zmq.eventloop import ioloop
-
-
-    def launch_qtconsole():
-        subprocess.call([sys.executable, '-c',
-                        'from qtconsole.qtconsoleapp import main; main()',
-                        '--existing', app.connection_file])
-        if not kernel_has_quit.is_set():
-            ioloop.IOLoop.instance().stop()
-
-    kernel_has_quit = threading.Event()
-    qtconsole_thread = threading.Thread(target=launch_qtconsole)
-    qtconsole_thread.daemon = True
-
-
-    # Hack to prevent the kernel app from disabline SIGINT:
-    IPKernelApp.init_signal = lambda self: None
-
-    # Get some interpreter state that will need to be restored after the
-    # kernel quits:
-    sys_state = sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook
-    ps1 = getattr(sys, 'ps1', None)
-    ps2 = getattr(sys, 'ps2', None)
-    ps3 = getattr(sys, 'ps3', None)
-
-    # Some of the below copied from ipykernel.embed.embed_kernel
-    app = IPKernelApp()
-    app.initialize([])
-
-    # Remove the exit handler, we'll run it manually rather than at
-    # interpreter exit:
-    # atexit.unregister(app.kernel.shell.atexit_operations)
-
-    # Undo unnecessary sys module mangling from init_sys_modules.
-    # This would not be necessary if we could prevent it
-    # in the first place by using a different InteractiveShell
-    # subclass, as in the regular embed case.
-    main = app.kernel.shell._orig_sys_modules_main_mod
-    if main is not None:
-        sys.modules[app.kernel.shell._orig_sys_modules_main_name] = main
-
-    # load the calling scope if not given
-    (caller_module, caller_locals) = extract_module_locals(1)
-    app.kernel.user_module = caller_module
-    app.kernel.user_ns = caller_locals
-    app.shell.set_completer_frame()
-
-    qtconsole_thread.start()
-    try:
-        app.start()
-    finally:
-        sys.stdin, sys.stdout, sys.stderr, sys.displayhook, sys.excepthook = sys_state
-        if ps1 is not None:
-            sys.ps1 = ps1
-        else:
-            del sys.ps1
-        if ps2 is not None:
-            sys.ps2 = ps2
-        else:
-            del sys.ps2
-        if ps3 is not None:
-            sys.ps3 = ps3
-        else:
-            del sys.ps3
-        kernel_has_quit.set()
+    # Note to self, use subprocess.CREATE_NEW_CONSOLE on Windows to ensure a new console
+    # can be created.
+    msg = (
+        "This function no longer works with newer IPython "
+        + "and I have yet to make a replacement"
+    )
+    raise NotImplementedError(msg)
 
 
 def setup_logging(name, silent=False, directory=None):
