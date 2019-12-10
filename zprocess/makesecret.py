@@ -22,12 +22,15 @@ if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
 
 from zprocess.security import generate_shared_secret
 
-"""This is a script to generate a shared secret file for use with zprocess security
-mechanisms"""
+
 
 def main():
 
-    parser = argparse.ArgumentParser(description="zprocess.makesecret.")
+    parser = argparse.ArgumentParser( description=""" zprocess.makesecret - this is a
+        script to generate a shared secret file for use with zprocess security
+        mechanisms. The contents of the file can be passed to
+        zprocess.security.SecureContext(), or the filepath to the file passed as a
+        command line argument to the zlog, zlock, or zprocess.remote servers.""" )
 
     parser.add_argument(
         'outfile',
