@@ -23,11 +23,15 @@ def main():
     )
 
     parser.add_argument(
-        'server_port', type=str, help="""Server port to connect to""",
+        'server_port',
+        metavar='server-port',
+        type=str,
+        help="""Server port to connect to""",
     )
 
     parser.add_argument(
         'shared_secret_file',
+        metavar='shared-secret-file',
         type=str,
         help="""Filepath to the shared secret used for secure communication""",
     )
