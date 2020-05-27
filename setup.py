@@ -1,25 +1,26 @@
+import os
 from setuptools import setup
-
-try:
-    from setuptools_conda import dist_conda
-except ImportError:
-    dist_conda = None
 
 INSTALL_REQUIRES = [
     "pyzmq >=18.0",
     "ipaddress;         python_version == '2.7'",
     "subprocess32;      python_version == '2.7'",
     "enum34;            python_version == '2.7'",
-    "pathlib;           python_version == '2.7'"
+    "pathlib;           python_version == '2.7'",
     "pywin32;           sys_platform == 'win32'",
     "windows-curses;    sys_platform == 'win32'",
     "importlib_metadata; python_version < '3.8'",
     "setuptools_scm",
 ]
 
+VERSION_SCHEME = {
+    "version_scheme": os.getenv("SCM_VERSION_SCHEME", "guess-next-dev"),
+    "local_scheme": os.getenv("SCM_LOCAL_SCHEME", "node-and-date"),
+}
+
 setup(
     name='zprocess',
-    use_scm_version=True,
+    use_scm_version=VERSION_SCHEME,
     description="A set of utilities for multiprocessing using zeromq.",
     long_description=open('README.md').read(),
     long_description_content_type='text/markdown',
@@ -33,10 +34,4 @@ setup(
     include_package_data=True,
     python_requires=">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*, !=3.4.*, !=3.5",
     install_requires=INSTALL_REQUIRES,
-    cmdclass={'dist_conda': dist_conda} if dist_conda is not None else {},
-    command_options={
-        'dist_conda': {
-            'pythons': (__file__, ['3.6', '3.7', '3.8']),
-        },
-    },
 )

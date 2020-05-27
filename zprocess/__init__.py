@@ -46,13 +46,7 @@ try:
 except ImportError:
     import importlib_metadata
 
-try:
-    __version__ = setuptools_scm.get_version(Path(__file__).parent.parent)
-except LookupError:
-    try:
-        __version__ = importlib_metadata.version(__name__)
-    except importlib_metadata.PackageNotFoundError:
-        __version__ = None
+from .__version__ import __version__
 
 # For communication between Python 2 and Python 3. Can be set by importing
 # code to use a higher protocol in the case that it is known that both peers
