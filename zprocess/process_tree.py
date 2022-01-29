@@ -24,7 +24,13 @@ if _cwd == 'zprocess' and _path not in sys.path:
 import ipaddress
 import zprocess
 from zprocess.security import SecureContext
-from zprocess.utils import gethostbyname, Interruptor, Interrupted, TimeoutError
+from zprocess.utils import (
+    gethostbyname,
+    Interruptor,
+    Interrupted,
+    TimeoutError,
+    get_venv_executable_and_env,
+)
 from zprocess.remote import (
     RemoteProcessClient,
     RemoteOutputReceiver,
@@ -1386,9 +1392,9 @@ class ProcessTree(object):
             extra_env = {k.encode(): v.encode() for k, v in extra_env.items()}
 
         if remote_process_client is None:
-            env = os.environ.copy()
+            executable, env = get_venv_executable_and_env(os.environ.copy())
             env.update(extra_env)
-            child = subprocess.Popen([sys.executable] + cmd, env=env)
+            child = subprocess.Popen([executable] + cmd, env=env)
         else:
             # The remote server will prefix the path to its own Python interpreter.
             # Also, it will pass to Popen an env consisting of its own env updated with
