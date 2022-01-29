@@ -14,7 +14,7 @@ INSTALL_REQUIRES = [
 ]
 
 VERSION_SCHEME = {
-    "version_scheme": "release-branch-semver",
+    "version_scheme": "guess-next-dev",
     "local_scheme": os.getenv("SCM_LOCAL_SCHEME", "node-and-date"),
 }
 
