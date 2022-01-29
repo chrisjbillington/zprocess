@@ -139,7 +139,7 @@ class SecureSocket(zmq.Socket):
         # remote process server on localhost with no encryption:
 
         # Enable IPv6 by default:
-        # self.ipv6 = True
+        self.ipv6 = True
 
     def _is_internal(self, endpoint):
         """Return whether a bind or connect endpoint is on an internal
@@ -147,7 +147,7 @@ class SecureSocket(zmq.Socket):
         if endpoint.startswith('inproc://'):
             return True
         if endpoint.startswith('tcp://'):
-            host = ''.join(''.join(endpoint.split('//')[1:]).split(':')[0])
+            host = endpoint.split('//', 1)[1].rsplit(':', 1)[0]
             if host.startswith('[') and host.endswith(']'):
                 host = host[1:-1]
             if host == '*':
@@ -276,7 +276,11 @@ class SecureSocket(zmq.Socket):
             msg = zmq.Socket.recv(self, flags=flags, copy=False, track=track)
             if self.tcp:
                 try:
-                    self.peer_ip = msg.get('Peer-Address')
+                    peer_ip = msg.get('Peer-Address')
+                    peer_ip = ipaddress.ip_address(peer_ip)
+                    if peer_ip.version == 6 and peer_ip.ipv4_mapped is not None:
+                        peer_ip = peer_ip.ipv4_mapped
+                    self.peer_ip = str(peer_ip)
                 except zmq.error.ZMQError:
                     # Sent by a non-TCP client, even though we are a TCP socket. This is
                     # possible sometimes. For example, XPUB seems to receive unsubscribe
