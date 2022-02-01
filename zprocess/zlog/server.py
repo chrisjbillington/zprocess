@@ -77,6 +77,7 @@ class FileHandler(logging.FileHandler):
                 return
         try:
             self.stream.write(message + '\n')
+            self.flush()
         except (OSError, IOError):
             # Nothing to be done.
             return
