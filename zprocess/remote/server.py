@@ -14,7 +14,7 @@ else:
 from weakref import WeakSet
 import atexit
 from zprocess import ZMQServer
-from zprocess.utils import setup_logging
+from zprocess.utils import setup_logging, get_venv_executable_and_env
 from zprocess.remote import PROTOCOL_VERSION
 
 ERR_INVALID_COMMAND = 'error: invalid command'
@@ -163,9 +163,11 @@ class RemoteProcessServer(ZMQServer):
 
     def proxy_Popen(self, cmd, *args, **kwargs):
         if kwargs.pop('prepend_sys_executable', False):
-            cmd = [sys.executable] + cmd
+            executable, kwargs['env'] = get_venv_executable_and_env(os.environ.copy())
+            cmd = [executable] + cmd
+        else:
+            kwargs['env'] = os.environ.copy()
         # Update current environment with the contents of 'extra_env', if given:
-        kwargs['env'] = os.environ.copy()
         kwargs['env'].update(kwargs.pop('extra_env', {}))
         if any(kwarg in kwargs for kwarg in ['stdout', 'stdin', 'stderr']):
             msg = "Cannot specify stdout, stdin or stderr for remote process."

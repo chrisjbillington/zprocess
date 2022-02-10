@@ -48,8 +48,8 @@ class ZLockClient(object):
 
     def __init__(
         self,
-        host,
-        port,
+        host='localhost',
+        port=DEFAULT_PORT,
         shared_secret=None,
         allow_insecure=True,
         default_timeout=DEFAULT_TIMEOUT,

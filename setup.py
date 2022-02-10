@@ -10,11 +10,11 @@ INSTALL_REQUIRES = [
     "pywin32;           sys_platform == 'win32'",
     "windows-curses;    sys_platform == 'win32'",
     "importlib_metadata; python_version < '3.8'",
-    "setuptools_scm",
+    "setuptools_scm >=4.1.0",
 ]
 
 VERSION_SCHEME = {
-    "version_scheme": os.getenv("SCM_VERSION_SCHEME", "guess-next-dev"),
+    "version_scheme": "guess-next-dev",
     "local_scheme": os.getenv("SCM_LOCAL_SCHEME", "node-and-date"),
 }
 

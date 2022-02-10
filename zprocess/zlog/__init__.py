@@ -47,7 +47,13 @@ class ZLogClient(object):
 
     RESPONSE_TIMEOUT = 5000
 
-    def __init__(self, host, port, shared_secret=None, allow_insecure=True):
+    def __init__(
+        self,
+        host='localhost',
+        port=DEFAULT_PORT,
+        shared_secret=None,
+        allow_insecure=True,
+    ):
         self.host = socket.gethostbyname(host)
         self.port = port
         self.shared_secret = shared_secret
@@ -194,12 +200,12 @@ class ZMQLoggingHandler(Handler):
 
 
 
-# Backwards compatibility follots
+# Backwards compatibility follows
 
 _default_zlog_client = None
 
 _ZMQLoggingHandler = ZMQLoggingHandler
-"""Backward compatibility to allow instantiating a lock without a ZLockClient as the
+"""Backward compatibility to allow instantiating a lock without a ZLogClient as the
 first argument"""
 class ZMQLoggingHandler(_ZMQLoggingHandler):
     def __init__(self, *args, **kwargs):
