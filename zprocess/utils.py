@@ -7,6 +7,7 @@ from binascii import hexlify
 import socket
 import tempfile
 from pathlib import Path
+import io
 
 import zmq
 
@@ -167,9 +168,17 @@ def disable_quick_edit():
     function disables the feature, and and adds an atexit() hook to set it back back to
     its initial configuration when Python exits.
     """
+
+    def _get_fileno(stream):
+        try:
+            return stream.fileno()
+        except io.UnsupportedOperation:
+            # IDLE or Jupyter. Return an invalid fileno
+            return -1
+
     if os.name == 'nt' and all(
         [
-            a is not None and a.isatty() and a.fileno() >= 0
+            a is not None and a.isatty() and _get_fileno(a) >= 0
             for a in (sys.stdin, sys.stdout, sys.stderr)
         ]
     ):
