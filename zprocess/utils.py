@@ -159,6 +159,15 @@ def start_daemon(cmd_args):
         os._exit(0)
 
 
+def _get_fileno(stream):
+    """Return stream.get_fileno(), or -1 if the call raises io.UnsupportedOperation"""
+    try:
+        return stream.fileno()
+    except io.UnsupportedOperation:
+        # IDLE or Jupyter. Return an invalid fileno
+        return -1
+
+
 def disable_quick_edit():
     """Disable the 'quick-edit' misfeature of Windows' cmd.exe, in which a single click
     on the console puts it in 'select' mode indefinitely, causing writes to stdout from
@@ -168,14 +177,6 @@ def disable_quick_edit():
     function disables the feature, and and adds an atexit() hook to set it back back to
     its initial configuration when Python exits.
     """
-
-    def _get_fileno(stream):
-        try:
-            return stream.fileno()
-        except io.UnsupportedOperation:
-            # IDLE or Jupyter. Return an invalid fileno
-            return -1
-
     if os.name == 'nt' and all(
         [
             a is not None and a.isatty() and _get_fileno(a) >= 0

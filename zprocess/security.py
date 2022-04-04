@@ -8,6 +8,8 @@ import zmq
 import zmq.auth.thread
 from zmq.utils.monitor import recv_monitor_message
 
+from zprocess.utils import _get_fileno
+
 _path, _cwd = os.path.split(os.getcwd())
 if _cwd == 'zprocess' and _path not in sys.path:
     # Running from within zprocess dir? Add to sys.path for testing during
@@ -37,7 +39,7 @@ def _check_versions():
     except ImportError:
         # No bundled zmq.
         return
-    if sys.stderr is not None and sys.stderr.fileno() >= 0:
+    if sys.stderr is not None and _get_fileno(sys.stderr) >= 0:
         sys.stderr.write(_bundle_warning)
 
 # Events to tell when a conneciton has succeeded, including authentication:
@@ -294,7 +296,7 @@ class SecureSocket(zmq.Socket):
                         msg = INSECURE_RECV_WARNING % self.peer_ip
                         if self.logger is not None:
                             self.logger.warning(msg)
-                        elif sys.stderr is not None and sys.stderr.fileno() >= 0:
+                        elif sys.stderr is not None and _get_fileno(sys.stderr) >= 0:
                             sys.stderr.write(msg + '\n')
                         # Disregard the insecure message and call recv() again
                         continue

@@ -30,6 +30,7 @@ from zprocess.utils import (
     Interrupted,
     TimeoutError,
     get_venv_executable_and_env,
+    _get_fileno
 )
 from zprocess.remote import (
     RemoteProcessClient,
@@ -791,7 +792,7 @@ class OutputInterceptor(object):
                 raise RuntimeError(msg)
             self.streams_connected[self.streamname] = self
             stream = getattr(sys, self.streamname)
-            if stream is not None and stream.fileno() > 0:
+            if stream is not None and _get_fileno(stream) > 0:
                 self.stream_fd = stream.fileno()
             else:
                 # On Windows with pythonw, sys.stdout and sys.stderr are None or
