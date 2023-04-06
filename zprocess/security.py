@@ -330,12 +330,23 @@ class SecureContext(zmq.Context):
             self.client_secretkey, self.server_secretkey = keys
             self.client_publickey = zmq.curve_public(self.client_secretkey)
             self.server_publickey = zmq.curve_public(self.server_secretkey)
-            # Don't hold ref to auth: needed for auto cleanup at shutdown:
+            
+            # There are potential reference cycles causing the authentication thread to
+            # prevent the interpreter from shutting down. In pyzmq <25, the
+            # authentication thread holds a reference to the context. So we must avoid
+            # holding a reference to it. In pyzmq 25+, the authentication thread and
+            # threadauthenticator objects both hold references to each other. So we
+            # replace one with a weakref to break the cycle.
+
             auth = zmq.auth.thread.ThreadAuthenticator(self)
             auth.start()
+
+            if auth.thread.authenticator is auth:
+                auth.thread.authenticator = weakref.proxy(auth)
+
             # Allow only clients who have the client public key:
-            auth.thread.authenticator.allow_any = False
-            auth.thread.authenticator.certs['*'] = {self.client_publickey: True}
+            auth.allow_any = False
+            auth.certs['*'] = {self.client_publickey: True}
             self.secure = True
 
     @classmethod
