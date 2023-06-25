@@ -3,6 +3,7 @@ import sys
 import base64
 import weakref
 import os
+import threading
 import ipaddress
 import zmq
 import zmq.auth.thread
@@ -24,6 +25,7 @@ if sys.version_info[0] == 2:
 else:
     from time import monotonic
 
+PYZMQ_VER_MAJOR = int(zmq.__version__.split('.')[0])
 
 _bundle_warning = """zprocess warning: pyzmq is using bundled libzmq, which on Windows
 is not built with the cryptography library libsodium. Encryption/decryption will be
@@ -165,9 +167,10 @@ class SecureSocket(zmq.Socket):
         are a server or not"""
         orig_server = self.curve_server
         if server:
+            self.curve_server = True
+            self.zap_domain = self.context.zap_domain
             self.curve_publickey = self.context.server_publickey
             self.curve_secretkey = self.context.server_secretkey
-            self.curve_server = True
         else:
             self.curve_server = False
             self.curve_publickey = self.context.client_publickey
@@ -306,6 +309,72 @@ class SecureSocket(zmq.Socket):
                 return msg
 
 
+class _ThreadAuthenticator:
+    # We roll our own thread authenticator (just implementing what we need) since a)
+    # zmq.auth.thread.ThreadAuthenticator uses asyncio, and we do not want to express an
+    # opinion on the kerfuffle that is Windows asyncio selectors (see:
+    # https://github.com/zeromq/pyzmq/issues/1423) and impose it on the rest of the
+    # interpreter, when we're not even using async stuff ourself and b)
+    # zmq.auth.thread.ThreadAuthenticator spawns a non-daemon thread which is difficult
+    # to ensure gets shut down at interpreter shutdown, and otherwise holds the
+    # interpreter open.
+    def __init__(self, ctx, zap_domain, allowed_clients):
+        if PYZMQ_VER_MAJOR >= 25:
+            self.zap_socket = ctx.socket(zmq.REP, socket_class=zmq.Socket)
+        else:
+            self.zap_socket = ctx.socket(zmq.REP)
+        self.zap_socket.linger = 1
+        self.zap_socket.bind("inproc://zeromq.zap.01")
+
+        # Note: we hold a reference to the zap socket, since if the thread crashes, we
+        # don't want the socket to be cleaned up and closed - that would have zmq
+        # (stupidly and dangerously) fall back to its default authentication method,
+        # which is to allow all.
+        self.thread = threading.Thread(
+            target=self.run,
+            args=(self.zap_socket, zap_domain, allowed_clients),
+            daemon=True,
+        )
+        self.started = threading.Event()
+        self.thread.start()
+
+    def run(self, zap_socket, zap_domain, allowed_clients):
+        VERSION = b'1.0'
+        MECHANISM = b'CURVE'
+        while True:
+            try:
+                msg = zap_socket.recv_multipart()
+            except zmq.error.ContextTerminated:
+                zap_socket.close()
+                return
+            version, request_id, domain, address, identity, mechanism = msg[:6]
+            credentials = msg[6:]
+            if version != VERSION:
+                status_code = b"400"
+                status_text = b"Invalid version"
+                user_id = b""
+            elif mechanism != MECHANISM:
+                status_code = b"400"
+                status_text = b"Security mechanism not supported"
+                user_id = b""
+            elif domain != zap_domain:
+                status_code = b"400"
+                status_text = b"Unknown domain"
+                user_id = b""
+            else:
+                key = zmq.utils.z85.encode(credentials[0])
+                if key in allowed_clients:
+                    status_code = b"200"
+                    status_text = b"OK"
+                    user_id = key
+                else:
+                    status_code = b"400"
+                    status_text = b"Unknown key"
+                    user_id = b""
+            response = [VERSION, request_id, status_code, status_text, user_id, b""]
+            zap_socket.send_multipart(response)
+
+
 class SecureContext(zmq.Context):
     """A ZeroMQ Context with SecureContext.socket() returning a
     SecureSocket(), which can authenticate and communicate securely with all
@@ -315,7 +384,10 @@ class SecureContext(zmq.Context):
 
     _socket_class = SecureSocket
     _instances = weakref.WeakValueDictionary()
+    zap_domain = b"zprocess"
+
     # Dummy class attrs to distinguish from zmq options:
+    auth = None
     secure = False
     client_publickey = None
     client_secretkey = None
@@ -331,22 +403,15 @@ class SecureContext(zmq.Context):
             self.client_publickey = zmq.curve_public(self.client_secretkey)
             self.server_publickey = zmq.curve_public(self.server_secretkey)
             
-            # There are potential reference cycles causing the authentication thread to
-            # prevent the interpreter from shutting down. In pyzmq <25, the
-            # authentication thread holds a reference to the context. So we must avoid
-            # holding a reference to it. In pyzmq 25+, the authentication thread and
-            # threadauthenticator objects both hold references to each other. So we
-            # replace one with a weakref to break the cycle.
-
-            auth = zmq.auth.thread.ThreadAuthenticator(self)
-            auth.start()
-
-            if auth.thread.authenticator is auth:
-                auth.thread.authenticator = weakref.proxy(auth)
-
-            # Allow only clients who have the client public key:
-            auth.allow_any = False
-            auth.certs['*'] = {self.client_publickey: True}
+            # Note: it is crucial we hold a reference to the authenticator, so that in
+            # the case the zap authentication thread crashes, the zap socket does not
+            # get cleaned up and closed - zmq will interpret that situation as us not
+            # requiring any authentication.
+            self.auth = _ThreadAuthenticator(
+                self,
+                zap_domain=self.zap_domain,
+                allowed_clients=[self.client_publickey],
+            )
             self.secure = True
 
     @classmethod
