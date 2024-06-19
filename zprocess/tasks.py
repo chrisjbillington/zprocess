@@ -42,6 +42,7 @@ import copy
 
 
 class Task(object):
+    _next_id = 0
     def __init__(self, due_in, func, *args, **kwargs):
         """Wrapper for a function call to be executed after a specified time interval.
         `due_in` is how long in the future, in seconds, the function should be called,
@@ -56,6 +57,8 @@ class Task(object):
         self.kwargs = kwargs
         self._called = False
         self.repeat = False
+        self._id = self._next_id
+        Task._next_id += 1
 
     def due_in(self):
         """The time interval in seconds until the task is due"""
@@ -71,6 +74,9 @@ class Task(object):
         # Tasks due sooner are 'greater than' tasks due later. This is necessary for
         # insort() and pop() as used with TaskQueue.
         return self.due_at < other.due_at
+
+    def __eq__(self, other):
+        return isinstance(other, Task) and self._id == other._id
 
 
 class TaskQueue(list):
@@ -96,6 +102,8 @@ class TaskQueue(list):
         be re-added to the queue after it is removed via a call to `TaskQueue.pop()`."""
         if repeat is not None:
             task.repeat = repeat
+        # Re-adding an already-called task resets it
+        task._called = False
         insort(self, task)
 
     def next(self):
