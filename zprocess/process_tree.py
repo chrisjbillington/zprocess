@@ -11,7 +11,7 @@ import ctypes
 import atexit
 from ctypes.util import find_library
 import logging
-from binascii import hexlify 
+from binascii import hexlify
 
 import zmq
 
@@ -170,7 +170,7 @@ class HeartbeatServer(object):
     process has a HeartbeatServer to provide heartbeating to its subprocesses -
     there is not only one in the top process.
     """
-    def __init__(self, bind_address='tcp://*', 
+    def __init__(self, bind_address='tcp://*',
                  shared_secret=None):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REP)
@@ -426,7 +426,7 @@ class WriteQueue(object):
         self.sock = sock
         self.lock = threading.Lock()
         self.poller = zmq.Poller()
-        self.poller.register(self.sock)
+        self.poller.register(self.sock, zmq.POLLOUT)
         self.interruptor = Interruptor()
 
     def put(self, obj, timeout=None, interruptor=None):
@@ -439,7 +439,7 @@ class WriteQueue(object):
         with self.lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.poller.register(interruption_sock)
+                self.poller.register(interruption_sock, zmq.POLLIN)
                 while True:
                     if timeout is not None:
                         timeout = max(0, (deadline - monotonic()) * 1000)
@@ -485,18 +485,18 @@ class ReadQueue(object):
 
     def __init__(self, sock):
         self.sock = sock
-        self.to_self = sock.context.socket(zmq.PUSH)
-        self.from_self = sock.context.socket(zmq.PULL)
+        self.to_self = sock.context.socket(zmq.PAIR)
+        self.from_self = sock.context.socket(zmq.PAIR)
         self_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
         self.from_self.bind(self_endpoint)
         self.to_self.connect(self_endpoint)
         self.lock = threading.Lock()
         self.to_self_lock = threading.Lock()
         self.in_poller = zmq.Poller()
-        self.in_poller.register(self.sock)
-        self.in_poller.register(self.from_self)
+        self.in_poller.register(self.sock, zmq.POLLIN)
+        self.in_poller.register(self.from_self, zmq.POLLIN)
         self.out_poller = zmq.Poller()
-        self.out_poller.register(self.to_self)
+        self.out_poller.register(self.to_self, zmq.POLLOUT)
         self.interruptor = Interruptor()
 
     def get(self, timeout=None, interruptor=None):
@@ -512,7 +512,7 @@ class ReadQueue(object):
         with self.lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.in_poller.register(interruption_sock)
+                self.in_poller.register(interruption_sock, zmq.POLLIN)
                 events = dict(self.in_poller.poll(timeout))
                 if not events:
                     raise TimeoutError('get() timed out')
@@ -740,11 +740,11 @@ class OutputInterceptor(object):
                     ("_bufsize", ctypes.c_int),
                     ("_tmpfname", ctypes.c_char_p),
                 ]
-        
+
             iob_func = getattr(self._libc, '__iob_func')
             iob_func.restype = ctypes.POINTER(FILE)
             iob_func.argtypes = []
-            
+
             array = iob_func()
             if self.streamname == 'stdout':
                 return ctypes.addressof(array[1])
@@ -806,14 +806,14 @@ class OutputInterceptor(object):
                     self.stream_fd = 2
                 else:
                     raise ValueError(self.streamname)
-                
+
             # os.dup() lets us take a sort of backup of the current file
             # descriptor for the stream, so that we can restore it later:
             self.backup_fd = os.dup(self.stream_fd)
-                
+
             # We set up a pipe and set the write end of it to be the output file
             # descriptor. C code and subprocesses will see this as the stream and
-            # write to it, and we will read from the read end of the pipe in a 
+            # write to it, and we will read from the read end of the pipe in a
             # thread to pass their output to the zmq socket.
             self.read_pipe_fd, write_pipe_fd = os.pipe()
             self.mainloop_thread = threading.Thread(target=self._mainloop)
@@ -862,7 +862,7 @@ class OutputInterceptor(object):
             setattr(sys, self.streamname, orig_stream)
             self.mainloop_thread.join()
             self.mainloop_thread = None
-            self.shutting_down = False          
+            self.shutting_down = False
 
     def _mainloop(self):
         streamname_bytes = self.streamname.encode('utf8')
@@ -916,7 +916,7 @@ class RichStreamHandler(logging.StreamHandler):
         except Exception:
             self.handleError(record)
 
-            
+
 def rich_print(*values, **kwargs):
     """A print function allowing bold, italics, and colour, if stdout.write or
     stderr.write supports a 'charformat' keyword argument and is connected to a
@@ -1109,7 +1109,7 @@ class Process(object):
         if response != 'ok':
             msg = "Error in child process importing specified Process subclass:\n\n%s"
             raise Exception(msg % str(response))
-            
+
         self.to_child.put(
             [args, kwargs],
             timeout=self.startup_timeout,
@@ -1300,8 +1300,8 @@ class ProcessTree(object):
         Process.interrupt_startup() (such as Process.terminate()) may wish to terminate
         the child process. TODO finish this and other docstrings."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
+        to_child = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+        from_child = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
 
         from_child_port = from_child.bind_to_random_port('tcp://*')
         to_child_port = to_child.bind_to_random_port('tcp://*')
@@ -1430,8 +1430,8 @@ class ProcessTree(object):
             self.zlock_client.set_process_name(name)
 
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
+        to_parent = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+        from_parent = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
 
         from_parent.connect(
             'tcp://%s:%d' % (self.parent_host, parentinfo['from_parent_port'])
@@ -1539,7 +1539,7 @@ class Process(_Process):
         ):
             args = (_default_process_tree,) + args
         _Process.__init__(self, *args, **kwargs)
-        
+
     def _run(self):
         # Set the process tree as the default for this process:
         global _default_process_tree
@@ -1581,5 +1581,3 @@ __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
     #     to_child, from_child, child = _default_process_tree.subprocess(
     #         'test_remote.py', remote_process_client=remote_client)
     # foo()
-
-    
