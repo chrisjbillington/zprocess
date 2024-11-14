@@ -87,10 +87,13 @@ class Interruptor(object):
         """Called by put()/get() upon interruption or end of blocking IO to ubsubscribe
         from interrupt messages. This is somewhat important so that messages do not pile
         up"""
-        if not hasattr(self._local, 'sub') or not self._local.subscribed:
-            raise RuntimeError('not subscribed')
-        self._local.subscribed = False
-        self._local.sub.unsubscribe(b'')
+        with self._lock:
+            if not hasattr(self._local, 'sub') or not self._local.subscribed:
+                raise RuntimeError('not subscribed')
+            self._local.sub.unsubscribe(b'')
+            # Ensure unsubscription is processed:
+            self._xpub.recv()
+            self._local.subscribed = False
 
     def set(self, reason=None):
         """Send an interrupt message containing the given reason to all present and
