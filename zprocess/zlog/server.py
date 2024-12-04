@@ -1,4 +1,3 @@
-from __future__ import print_function, division, absolute_import, unicode_literals
 import sys
 import os
 import traceback
@@ -10,10 +9,6 @@ from binascii import hexlify
 
 import zmq
 from zmq.utils.win32 import allow_interrupt
-
-# Ensure zprocess is in the path if we are running from this directory
-if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from zprocess.tasks import Task, TaskQueue
 from zprocess.security import SecureContext

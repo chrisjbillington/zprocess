@@ -1,30 +1,18 @@
-from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
 import os
 import threading
-import logging, logging.handlers
+import logging
+import logging.handlers
 from binascii import hexlify
 import socket
 import tempfile
 from pathlib import Path
 import io
+import subprocess
 
 import zmq
 
-PY2 = sys.version_info[0] == 2
-if PY2:
-    import subprocess32 as subprocess
-    if os.name == 'nt':
-        subprocess.DETACHED_PROCESS = 0x00000008
-        subprocess.CREATE_NO_WINDOW = 0x08000000
-        subprocess.CREATE_NEW_CONSOLE = 0x00000010
-    str = unicode
-else:
-    import subprocess
-
-
-
-class TimeoutError(zmq.ZMQError):
+class TimeoutError(zmq.ZMQError, TimeoutError):
     pass
 
 
@@ -118,11 +106,7 @@ class Interruptor(object):
 
 def _reraise(exc_info):
     exctype, value, traceback = exc_info
-    # handle python2/3 difference in raising exception        
-    if PY2:
-        exec('raise exctype, value, traceback', globals(), locals())
-    else:
-        raise value.with_traceback(traceback)
+    raise value.with_traceback(traceback)
 
 
 def raise_exception_in_thread(exc_info):

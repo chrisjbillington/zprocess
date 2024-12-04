@@ -1,17 +1,3 @@
-#####################################################################
-#                                                                   #
-# clientserver.py                                                   #
-#                                                                   #
-# Copyright 2013 - 2018, Chris Billington                           #
-#                                                                   #
-# This file is part of the zprocess project (see                    #
-# https://bitbucket.org/cbillington/zprocess) and is licensed under #
-# the Simplified BSD License. See the license.txt file in the root  #
-# of the project for the full license.                              #
-#                                                                   #
-#####################################################################
-
-from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
 import os
 import threading
@@ -20,14 +6,9 @@ import traceback
 from functools import partial
 from socket import gethostbyname
 from binascii import hexlify
+from time import monotonic
 
 import zmq
-
-_path, _cwd = os.path.split(os.getcwd())
-if _cwd == 'zprocess' and _path not in sys.path:
-    # Running from within zprocess dir? Add to sys.path for testing during
-    # development:
-    sys.path.insert(0, _path)
 
 import zprocess
 from zprocess.security import SecureContext
@@ -37,13 +18,6 @@ from zprocess.utils import (
     Interrupted,
     TimeoutError,
 )
-
-PY2 = sys.version_info[0] == 2
-if PY2:
-    from time import time as monotonic
-    str = unicode
-else:
-    from time import monotonic
 
 
 def _typecheck_or_convert_data(data, dtype):
@@ -70,9 +44,6 @@ def _typecheck_or_convert_data(data, dtype):
             msg = 'raw sockets can only send bytes, not {}.'.format(type(data))
             raise TypeError(msg)
     elif dtype == 'string':
-        if PY2 and isinstance(data, bytes):
-            # Auto convert assuming UTF8:
-            data = data.decode('utf8')
         if not isinstance(data, str):
             msg = ('string sockets can only send strings, ' +
                    'not {}.'.format(type(data)))

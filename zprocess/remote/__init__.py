@@ -1,18 +1,11 @@
-from __future__ import unicode_literals, print_function, division
 import sys
 import time
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
-    from time import time as monotonic
-else:
-    from time import monotonic
+from time import monotonic
 import zprocess
+from zprocess import ZMQServer
 
 DEFAULT_PORT = 7341
 PROTOCOL_VERSION = '1.0.0'
-
-from zprocess import ZMQServer
 
 
 class RemoteChildProxy(object):
@@ -131,14 +124,8 @@ class RemoteOutputReceiver(ZMQServer):
         # Print stderr to stderr and anything else to stdout regardless of
         # the charformat
         if charformat_repr == b'stderr':
-            if PY2:
-                sys.stderr.write(text)
-            else:
-                sys.stderr.buffer.write(text)  # Since it is binary data
+            sys.stderr.buffer.write(text)  # Since it is binary data
             sys.stderr.flush()
         else:
-            if PY2:
-                sys.stdout.write(text)
-            else:
-                sys.stdout.buffer.write(text)  # Since it is binary data
+            sys.stdout.buffer.write(text)  # Since it is binary data
             sys.stdout.flush()

@@ -1,23 +1,5 @@
-#####################################################################
-#                                                                   #
-# __main__.py                                                       #
-#                                                                   #
-# Copyright 2013, Chris Billington                                  #
-#                                                                   #
-# This file is part of the zprocess project (see                    #
-# https://bitbucket.org/cbillington/zprocess) and is licensed under #
-# the Simplified BSD License. See the license.txt file in the root  #
-# of the project for the full license.                              #
-#                                                                   #
-#####################################################################
-from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
-import os
 import argparse
-
-# Ensure zprocess is in the path if we are running from this directory
-if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 import zprocess.zlock as zlock
 from zprocess.zlock.server import ZMQLockServer

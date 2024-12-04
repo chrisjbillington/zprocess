@@ -1,5 +1,3 @@
-from __future__ import print_function, unicode_literals, division, absolute_import
-import sys
 import os
 import threading
 import socket
@@ -11,12 +9,6 @@ import errno
 import ipaddress
 import zmq
 
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
-    from StringIO import StringIO as BytesIO
-else:
-    from io import BytesIO
 
 from zprocess.socks import (
     socks5,

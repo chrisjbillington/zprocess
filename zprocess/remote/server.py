@@ -1,15 +1,6 @@
-from __future__ import unicode_literals, print_function, division
-import sys
 import os
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
-if PY2:
-    import subprocess32 as subprocess
-    from time import time as monotonic
-else:
-    import subprocess
-    from time import monotonic
+import subprocess
+from time import monotonic
 
 from weakref import WeakSet
 import atexit

@@ -1,22 +1,4 @@
-#####################################################################
-#                                                                   #
-# tasks.py                                                          #
-#                                                                   #
-# Copyright 2018, Chris Billington                                  #
-#                                                                   #
-# This file is part of the zprocess project (see                    #
-# https://bitbucket.org/cbillington/zprocess) and is licensed under #
-# the Simplified BSD License. See the license.txt file in the root  #
-# of the project for the full license.                              #
-#                                                                   #
-#####################################################################
-from __future__ import print_function, division, absolute_import, unicode_literals
-
-try:
-    from time import monotonic
-except ImportError:
-    from time import time as monotonic
-
+from time import monotonic
 from bisect import insort
 import copy
 

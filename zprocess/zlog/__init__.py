@@ -1,18 +1,3 @@
-#####################################################################
-#                                                                   #
-# __init__.py                                                       #
-#                                                                   #
-# Copyright 2013, Chris Billington                                  #
-#                                                                   #
-# This file is part of the zprocess project (see                    #
-# https://bitbucket.org/cbillington/zprocess) and is licensed under #
-# the Simplified BSD License. See the license.txt file in the root  #
-# of the project for the full license.                              #
-#                                                                   #
-#####################################################################
-
-from __future__ import division, unicode_literals, print_function, absolute_import
-
 import sys
 import os
 import socket
@@ -26,14 +11,10 @@ try:
 except ImportError:
     import __builtin__ as builtins
 
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
-    from time import time as monotonic
-else:
-    from time import monotonic
+from time import monotonic
 import zmq
 from zprocess.security import SecureContext
+
 DEFAULT_PORT = 7340
 
 _zmq_log_client = None

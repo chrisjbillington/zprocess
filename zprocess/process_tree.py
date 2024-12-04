@@ -1,6 +1,4 @@
-from __future__ import division, unicode_literals, print_function, absolute_import
 import sys
-PY2 = sys.version_info.major == 2
 import os
 import threading
 import time
@@ -12,16 +10,14 @@ import atexit
 from ctypes.util import find_library
 import logging
 from binascii import hexlify 
+import pickle
+from queue import Queue, Empty
+import subprocess
+from time import monotonic
+import ipaddress
 
 import zmq
 
-_path, _cwd = os.path.split(os.getcwd())
-if _cwd == 'zprocess' and _path not in sys.path:
-    # Running from within zprocess dir? Add to sys.path for testing during
-    # development:
-    sys.path.insert(0, _path)
-
-import ipaddress
 import zprocess
 from zprocess.security import SecureContext
 from zprocess.utils import (
@@ -41,21 +37,6 @@ from zprocess.locking import ZLockClient, DEFAULT_PORT as ZLOCK_DEFAULT_PORT
 from zprocess.zlog import ZLogClient, DEFAULT_PORT as ZLOG_DEFAULT_PORT
 
 PROCESS_CLASS_WRAPPER = 'zprocess.process_class_wrapper'
-
-PY2 = sys.version_info[0] == 2
-if PY2:
-    import cPickle as pickle
-    from Queue import Queue, Empty
-    import subprocess32 as subprocess
-    from time import time as monotonic
-    str = unicode
-    from thread import get_ident as thread_ident
-else:
-    import pickle
-    from queue import Queue, Empty
-    import subprocess
-    from time import monotonic
-    from threading import get_ident as thread_ident
 
 
 class KillLock(object):
@@ -618,12 +599,9 @@ class StreamProxy(object):
 
     def write(self, s, charformat=None):
         if isinstance(s, str):
-            if PY2:
-                s = s.encode('utf8')
-            else:
-                # Allow binary data embedded in the unicode string via surrogate escapes
-                # to turn back into the bytes it originally represented:
-                s = s.encode('utf8', errors='surrogateescape')
+            # Allow binary data embedded in the unicode string via surrogate escapes
+            # to turn back into the bytes it originally represented:
+            s = s.encode('utf8', errors='surrogateescape')
         if charformat is None:
             charformat = self.streamname_bytes
         elif isinstance(charformat, str):
@@ -1388,9 +1366,6 @@ class ProcessTree(object):
 
         # Add environment variable for parent connection details:
         extra_env = {'ZPROCESS_PARENTINFO': json.dumps(parentinfo)}
-        if PY2:
-            # Windows Python 2, only bytestrings allowed:
-            extra_env = {k.encode(): v.encode() for k, v in extra_env.items()}
 
         if remote_process_client is None:
             executable, env = get_venv_executable_and_env(os.environ.copy())
