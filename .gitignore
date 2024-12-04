@@ -1,10 +1,7 @@
-.coverage
-coverage_html_report/
-*.pyc
-test-reports/
+.coverage*
+__pycache__/
 dist/
-zprocess.egg-info/
+*.egg-info/
 build/*
 conda_build/*
 conda_packages/*
-.eggs/*

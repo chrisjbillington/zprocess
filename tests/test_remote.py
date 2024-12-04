@@ -1,14 +1,14 @@
-from __future__ import unicode_literals, print_function, division
 import sys
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
-import os
+from pathlib import Path
 import unittest
-import xmlrunner
+import pytest
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
+THIS_DIR = Path(__file__).absolute().parent
+
+# Add project root to import path
+PROJECT_ROOT = THIS_DIR.parent
+if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from zprocess.remote.server import RemoteProcessServer
 from zprocess.remote import RemoteProcessClient, PROTOCOL_VERSION
@@ -44,14 +44,15 @@ class ZprocessRemoteTests(unittest.TestCase):
         self.assertEqual(result, PROTOCOL_VERSION)
 
     def test_basic_process(self):
-        proc = TestProcess(self.process_tree, remote_process_client=self.client)
+        proc = Process(
+            self.process_tree,
+            remote_process_client=self.client,
+            # Give by import path relative to zprocess project directory where tests are running from
+            subclass_fullname='tests.test_remote.TestProcess',
+        )
         to_child, from_child = proc.start()
         to_child.put('hello')
         self.assertEqual(from_child.get(), 'hello')
 
 if __name__ == '__main__':
-    output = 'test-reports'
-    if PY2:
-        output = output.encode('utf8')
-    testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=3)
-    unittest.main(verbosity=3, testRunner=testRunner, exit=not sys.flags.interactive)
+    pytest.main([__file__, '-v'])

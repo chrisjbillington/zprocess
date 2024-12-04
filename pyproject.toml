@@ -39,3 +39,23 @@ Documentation = "https://github.com/chrisjbillington/zprocess"
 Repository = "https://github.com/chrisjbillington/zprocess"
 Downloads = "https://pypi.org/project/zprocess/"
 Tracker = "https://github.com/chrisjbillington/zprocess/issues"
+
+[project.optional-dependencies]
+test = [
+    "pytest",
+    "pytest-cov",
+]
+
+branch = true
+source = ["zprocess"]
+parallel = true
+concurrency = ["multiprocessing", "thread"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "pass",
+]

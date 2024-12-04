@@ -1,22 +1,19 @@
-#! /usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-from __future__ import unicode_literals, print_function, division
-
 import unittest
-
+from pathlib import Path
 import sys
-PY2 = sys.version_info.major == 2
 import os
 import time
 import threading
 
 import zmq
+import pytest
 
-import xmlrunner
+THIS_DIR = Path(__file__).absolute().parent
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
+# Add project root to import path
+PROJECT_ROOT = THIS_DIR.parent
+if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import zprocess
 zprocess._silent = True
@@ -212,13 +209,7 @@ class HeartbeatClientTestProcess(Process):
         self.from_parent.get()
         # If the parent sends a message, acquire the kill lock for 3 seconds:
         with self.kill_lock:
-            # Loop because the ignored SIGTERM still interrupts time.sleep() on PY2:
-            deadline = time.time() + 3
-            while True:
-                remaining = deadline - time.time()
-                if remaining <= 0:
-                    break
-                time.sleep(remaining)
+            time.sleep(3)
         time.sleep(10)
 
 
@@ -516,8 +507,4 @@ class ClientServerTests(unittest.TestCase):
             server.shutdown()
 
 if __name__ == '__main__':
-    output = 'test-reports'
-    if PY2:
-        output = output.encode('utf8')
-    testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=3)
-    unittest.main(verbosity=3, testRunner=testRunner, exit=not sys.flags.interactive)
+    pytest.main([__file__, '-v'])

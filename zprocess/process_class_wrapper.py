@@ -15,19 +15,19 @@
 def _setup():
     # Clear the namespace of any evidence we were here:
     del globals()['_setup']
-    import sys, os
+    import sys
+    from pathlib import Path
     import importlib
     import traceback
-    if sys.version_info.major == 2:
-        str_ = unicode
-    else:
-        str_ = str
 
     # Ensure the zprocess we import is the same on as we are running from,
     # relevant particularly for running the test suite:
-    parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if not parent_dir in sys.path:
-        sys.path.insert(0, parent_dir)
+    THIS_DIR = Path(__file__).absolute().parent
+
+    # Add project root to import path
+    PROJECT_ROOT = THIS_DIR.parent
+    if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
+        sys.path.insert(0, str(PROJECT_ROOT))
 
     from zprocess import ProcessTree
 
@@ -39,7 +39,7 @@ def _setup():
         # Set sys.path so that all modules imported in the user's code are
         # importable here:
         sys.path = syspath
-        sys.path.append(os.path.dirname(module_filepath))
+        sys.path.append(Path(module_filepath).parent)
         if module_name == '__main__':
             # Execute the user's module in __main__, so that the class is
             # unpickleable. Otherwise __main__ will refer to this file, which is
@@ -60,7 +60,7 @@ def _setup():
         # Get the class from the parent, either as a class or a string for the import
         # path:
         process_cls = process_tree.from_parent.get(timeout=process_tree.startup_timeout)
-        if isinstance(process_cls, (str_, bytes)):
+        if isinstance(process_cls, (str, bytes)):
             # The parent process is passing us the import path to a class rather
             # than a class itself. It's up to us to do the import and find the class
             # without inheriting any of the parent process's code or environment:
