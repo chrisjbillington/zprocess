@@ -45,17 +45,3 @@ test = [
     "pytest",
     "pytest-cov",
 ]
-
-branch = true
-source = ["zprocess"]
-parallel = true
-concurrency = ["multiprocessing", "thread"]
-
-[tool.coverage.report]
-exclude_lines = [
-    "pragma: no cover",
-    "def __repr__",
-    "raise NotImplementedError",
-    "if __name__ == .__main__.:",
-    "pass",
-]
