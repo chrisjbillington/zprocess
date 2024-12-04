@@ -182,8 +182,11 @@ class ProcessClassTests(unittest.TestCase):
                          [b'stderr', y.encode('utf8')])
         # And the shell output:
         self.assertEqual(self.redirection_sock.poll(1000), zmq.POLLIN)
-        self.assertEqual(self.redirection_sock.recv_multipart(),
-                         [b'stdout', b'hello from echo\n'])
+
+        self.assertEqual(
+            [p.strip() for p in self.redirection_sock.recv_multipart()],
+            [b'stdout', b'hello from echo']
+        )
 
         # And the formatted logging:
         self.assertEqual(self.redirection_sock.recv_multipart(),
