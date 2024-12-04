@@ -1,3 +1,41 @@
 [build-system]
-requires = ["setuptools", "wheel", "setuptools_scm>=4.1.0"]
+requires = ["setuptools", "wheel", "setuptools_scm"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+local_scheme = "no-local-version"
+
+[tool.setuptools.packages]
+find = {namespaces = false}
+
+[project]
+name = "zprocess"
+description = "A set of utilities for multiprocessing using zeromq"
+authors = [
+    {name = "Christopher Billington", email = "chrisjbillington@gmail.com"},
+]
+keywords = ["multiprocessing", "IPC", "zeromq"]
+license = {file = 'LICENSE.txt'}
+classifiers = [
+    "License :: OSI Approved :: BSD License",
+    "Programming Language :: Python :: 3 :: Only",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "setuptools_scm",
+    "pyzmq",
+    "pywin32;           sys_platform == 'win32'",
+    "windows-curses;    sys_platform == 'win32'",
+]
+dynamic = ["version"]
+
+[project.readme]
+file = "README.md"
+content-type = "text/markdown"
+
+[project.urls]
+Homepage = "https://github.com/chrisjbillington/zprocess"
+Documentation = "https://github.com/chrisjbillington/zprocess"
+Repository = "https://github.com/chrisjbillington/zprocess"
+Downloads = "https://pypi.org/project/zprocess/"
+Tracker = "https://github.com/chrisjbillington/zprocess/issues"
