@@ -1,20 +1,18 @@
-from __future__ import unicode_literals, print_function, division
 import sys
+from pathlib import Path
 import os
 import uuid
 import shutil
 import zmq
 import unittest
-import xmlrunner
+import pytest
 
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
+THIS_DIR = Path(__file__).absolute().parent
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
-
-BITBUCKET = os.getenv('CI', None) is not None
+# Add project root to import path
+PROJECT_ROOT = THIS_DIR.parent
+if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from zprocess.zlog.server import (
     ZMQLogServer,
@@ -131,16 +129,13 @@ class ZLogServerTests(unittest.TestCase):
             client.send_multipart([b'check_access', b'\xff'])
             client.assertReceived(ERR_BAD_ENCODING)
 
-    # The following two tests fail on Bitbucket pipelines, because for some reason
-    # creating and accessing files always succeeds in the CI environment even if there
-    # are insufficient permissions.
-    @unittest.skipIf(BITBUCKET or os.name == 'nt', 'Skip on Windows and BitBucket')
+    @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
     def test_no_access(self):
         with self.client(None) as client:
             client.send_multipart([b'check_access', b'/test.log'])
             self.assertIn(b'[Errno 13] Permission denied', client.recv())
 
-    @unittest.skipIf(BITBUCKET or os.name == 'nt', 'Skip on Windows and BitBucket')
+    @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
     def test_cant_create_files(self):
         os.mkdir('testdir')
         os.system('touch testdir/foo.log')
@@ -178,8 +173,4 @@ class ZLogServerTests(unittest.TestCase):
                 self.assertEqual(f.read(), msg + '\n')
 
 if __name__ == '__main__':
-    output = 'test-reports'
-    if PY2:
-        output = output.encode('utf8')
-    testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=3)
-    unittest.main(verbosity=3, testRunner=testRunner, exit=not sys.flags.interactive)
+    pytest.main([__file__, '-v'])

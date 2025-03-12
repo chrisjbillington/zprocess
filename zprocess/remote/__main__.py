@@ -1,9 +1,5 @@
-from __future__ import unicode_literals, print_function, division
 import sys
 import locale
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
 import os
 import argparse
 

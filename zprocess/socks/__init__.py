@@ -1,16 +1,8 @@
-from __future__ import print_function, unicode_literals, division, absolute_import
-import sys
 import ipaddress
 from struct import pack, unpack
 from binascii import hexlify, unhexlify
 import enum
-
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
-    from StringIO import StringIO as BytesIO
-else:
-    from io import BytesIO
+from io import BytesIO
 
 DEFAULT_PORT = 7342
 

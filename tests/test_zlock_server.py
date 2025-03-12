@@ -1,17 +1,17 @@
-from __future__ import unicode_literals, print_function, division
 import sys
-import os
+from pathlib import Path
 import time
 import zmq
 import unittest
-import xmlrunner
 
-PY2 = sys.version_info.major == 2
-if PY2:
-    str = unicode
+import pytest
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, parent_dir)
+THIS_DIR = Path(__file__).absolute().parent
+
+# Add project root to import path
+PROJECT_ROOT = THIS_DIR.parent
+if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from zprocess.zlock.server import (
     ZMQLockServer,
@@ -712,42 +712,35 @@ class OtherTests(unittest.TestCase):
             server.stop()
 
 
-def test_speed():
-    with Client(None, 7339, b'key_foo', b'client_foo') as client:
-        start_time = time.time()
-        client.send(b'hello')
-        assert client.recv() == b'hello'
-        for _ in range(1000):
-            client.send(b'hello')
-            assert client.recv() == b'hello'
-        print('hello:', (time.time() - start_time) / 1000 * 1e6, 'us')
+# def test_speed():
+#     with Client(None, 7339, b'key_foo', b'client_foo') as client:
+#         start_time = time.time()
+#         client.send(b'hello')
+#         assert client.recv() == b'hello'
+#         for _ in range(1000):
+#             client.send(b'hello')
+#             assert client.recv() == b'hello'
+#         print('hello:', (time.time() - start_time) / 1000 * 1e6, 'us')
 
-        start_time = time.time()
-        for _ in range(1000):
-            client.send_multipart([b'acquire', b'foo', b'client_foo', b'30'])
-            assert client.recv() == b'ok'
-            client.send_multipart([b'release', b'foo', b'client_foo'])
-            assert client.recv() == b'ok'
-        print('acq/release:', (time.time() - start_time) / 1000 * 1e6, 'us')
+#         start_time = time.time()
+#         for _ in range(1000):
+#             client.send_multipart([b'acquire', b'foo', b'client_foo', b'30'])
+#             assert client.recv() == b'ok'
+#             client.send_multipart([b'release', b'foo', b'client_foo'])
+#             assert client.recv() == b'ok'
+#         print('acq/release:', (time.time() - start_time) / 1000 * 1e6, 'us')
 
-        start_time = time.time()
-        for _ in range(1000):
-            with open('/etc/hosts'):
-                pass
-        print('open/close:', (time.time() - start_time) / 1000 * 1e6, 'us')
+#         start_time = time.time()
+#         for _ in range(1000):
+#             with open('/etc/hosts'):
+#                 pass
+#         print('open/close:', (time.time() - start_time) / 1000 * 1e6, 'us')
 
-        start_time = time.time()
-        for _ in range(1000):
-            pass
-        print('nothing:', (time.time() - start_time) / 1000 * 1e6, 'us')
+#         start_time = time.time()
+#         for _ in range(1000):
+#             pass
+#         print('nothing:', (time.time() - start_time) / 1000 * 1e6, 'us')
 
-
-# test_speed()
 
 if __name__ == '__main__':
-
-    output = 'test-reports'
-    if PY2:
-        output = output.encode('utf8')
-    testRunner = xmlrunner.XMLTestRunner(output=output, verbosity=3)
-    unittest.main(verbosity=3, testRunner=testRunner, exit=not sys.flags.interactive)
+    pytest.main([__file__, '-v'])

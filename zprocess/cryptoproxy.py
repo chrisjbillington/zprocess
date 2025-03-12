@@ -1,11 +1,4 @@
-from __future__ import division, unicode_literals, print_function, absolute_import
-import os
-import sys
 import argparse
-
-# Ensure zprocess is in the path if we are running from this directory
-if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from zprocess.security import SecureContext
 import zmq

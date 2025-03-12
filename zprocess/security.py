@@ -1,48 +1,19 @@
-from __future__ import print_function, unicode_literals, division
 import sys
 import base64
 import weakref
-import os
 import threading
 import ipaddress
+from time import monotonic
+
 import zmq
 import zmq.auth.thread
 from zmq.utils.monitor import recv_monitor_message
 
 from zprocess.utils import _get_fileno
-
-_path, _cwd = os.path.split(os.getcwd())
-if _cwd == 'zprocess' and _path not in sys.path:
-    # Running from within zprocess dir? Add to sys.path for testing during
-    # development:
-    sys.path.insert(0, _path)
-
 from zprocess.utils import gethostbyname, Interrupted, TimeoutError
 
-if sys.version_info[0] == 2:
-    str = unicode
-    from time import time as monotonic
-else:
-    from time import monotonic
 
 PYZMQ_VER_MAJOR = int(zmq.__version__.split('.')[0])
-
-_bundle_warning = """zprocess warning: pyzmq is using bundled libzmq, which on Windows
-is not built with the cryptography library libsodium. Encryption/decryption will be
-slow. Use the conda pyzmq package for fast cryptography.\n"""
-
-
-def _check_versions():
-    """Check for bundled zmq on windows. It has slow crypto - warn the user"""
-    if os.name != 'nt':
-        return
-    try:
-        import zmq.libzmq
-    except ImportError:
-        # No bundled zmq.
-        return
-    if sys.stderr is not None and _get_fileno(sys.stderr) >= 0:
-        sys.stderr.write(_bundle_warning)
 
 # Events to tell when a conneciton has succeeded, including authentication:
 CONN_SUCCESS_EVENTS = {zmq.EVENT_HANDSHAKE_SUCCEEDED}
@@ -92,7 +63,6 @@ def generate_shared_secret():
     encoding, and return the result as a base64 encoded unicode string as suitable
     for passing to SecureContext() or storing on disk. We use base64 because it is
     more compatible with Python config files than z85."""
-    _check_versions()
     _, client_secret = zmq.curve_keypair()
     _, server_secret = zmq.curve_keypair()
     return base64.b64encode(zmq.utils.z85.decode(client_secret) + 
@@ -397,7 +367,6 @@ class SecureContext(zmq.Context):
     def __init__(self, io_threads=1, shared_secret=None):
         zmq.Context.__init__(self, io_threads)
         if shared_secret is not None:
-            _check_versions()
             keys = _unpack_shared_secret(shared_secret)
             self.client_secretkey, self.server_secretkey = keys
             self.client_publickey = zmq.curve_public(self.client_secretkey)
@@ -427,19 +396,3 @@ class SecureContext(zmq.Context):
             instance = cls(io_threads, shared_secret=shared_secret)
             cls._instances[cls, shared_secret] = instance
             return instance
-
-
-# if __name__ == '__main__':
-#     shared_secret = generate_shared_secret()
-#     other_secret = generate_shared_secret()
-
-#     server_ctx = SecureContext.instance(shared_secret=shared_secret)
-#     client_ctx = SecureContext.instance(shared_secret=shared_secret)
-
-#     server = server_ctx.socket(zmq.REP)
-#     client = client_ctx.socket(zmq.REQ)
-
-#     server.bind("tcp://127.0.0.1:6666")
-#     client.connect("tcp://127.0.0.1:6666", timeout=None)
-#     client.send(b'hello')
-#     assert server.recv() == b'hello'

@@ -1,22 +1,12 @@
-from __future__ import print_function, division, absolute_import, unicode_literals
-import sys
 import os
 import threading
 from collections import defaultdict
 import enum
 from binascii import hexlify
-
-try:
-    from time import monotonic
-except ImportError:
-    from time import time as monotonic
+from time import monotonic
 
 import zmq
 from zmq.utils.win32 import allow_interrupt
-
-# Ensure zprocess is in the path if we are running from this directory
-if os.path.abspath(os.getcwd()) == os.path.dirname(os.path.abspath(__file__)):
-    sys.path.insert(0, os.path.dirname(os.path.dirname(os.getcwd())))
 
 from zprocess.tasks import Task, TaskQueue
 from zprocess.utils import setup_logging
