@@ -1,5 +1,5 @@
 from zprocess import Process, ProcessTree
-import os
+
 
 """Before running this example program, you need to start a remote process server.
 Start one in a terminal with:
@@ -7,6 +7,8 @@ Start one in a terminal with:
     python -m zprocess.remote -tui
 
 then run this script.
+The example package 'remote_example_package' with the class 'Fo' must be present in
+the folder from where zprocess.remote is run.
 
 To test across multiple machines, set REMOTE_HOST below to the hostname of the other
 computer, and generate a shared secret and save it to file with:
@@ -33,16 +35,20 @@ else:
     shared_secret = None
 
 
+# The zprocess.remote server will remotely execute the Foo process below.
+"""
 class Foo(Process):
     def run(self, data):
-        print('this is a running foo in process %d' % os.getpid())
+        print('this is a running foo in process %d ' % os.getpid())
         print('data is', data)
         message = self.from_parent.get()
         print('foo, got a message:', message)
         self.to_parent.put('hello yourself!')
         import time
         time.sleep(1)
+"""
 
+REMOTE_CLASS = 'remote_example_package.Foo'
 
 # This __main__ check is important to stop the same code executing again in the child:
 if __name__ == '__main__':
@@ -50,7 +56,9 @@ if __name__ == '__main__':
     print("See comments in the script for instructions")
     process_tree = ProcessTree(shared_secret)
     remote_process_client = process_tree.remote_process_client(REMOTE_HOST)
-    foo = Foo(process_tree, remote_process_client=remote_process_client)
+    foo = Process(process_tree,
+                  remote_process_client=remote_process_client,
+                  subclass_fullname=REMOTE_CLASS)
     to_child, from_child = foo.start('bar')
     to_child.put('hello, foo!')
     response = from_child.get()
