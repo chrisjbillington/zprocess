@@ -72,8 +72,8 @@ def _setup():
     except Exception:
         # Tell the parent what went wrong:
         process_tree.to_parent.put(traceback.format_exc())
-        # Ensure message is sent before the process exits:
-        process_tree.to_parent.sock.close(linger=1)
+        # Ensure enough time for message to be sent before the process exits:
+        process_tree.to_parent.sock.close(linger=100)
         return
 
     # Tell the parent we have a class

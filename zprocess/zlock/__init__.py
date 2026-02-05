@@ -90,7 +90,7 @@ class ZLockClient(object):
                 raise zmq.ZMQError('Invalid repsonse from server: ' + response)
             raise zmq.ZMQError('No response from zlock server: timed out')
         except:
-            self.local.sock.close(linger=False)
+            self.local.sock.close(linger=0)
             del self.local.sock
             raise
 
@@ -115,7 +115,7 @@ class ZLockClient(object):
                     return response
             raise zmq.ZMQError('No response from zlock server: timed out')
         except:
-            self.local.sock.close(linger=False)
+            self.local.sock.close(linger=0)
             del self.local.sock
             raise
 
@@ -150,7 +150,7 @@ class ZLockClient(object):
                 raise zmq.ZMQError(response)
         except:
             if hasattr(self.local, 'sock'):
-                self.local.sock.close(linger=False)
+                self.local.sock.close(linger=0)
                 del self.local.sock
             raise
 
@@ -171,7 +171,7 @@ class ZLockClient(object):
             raise zmq.ZMQError(response)
         except:
             if hasattr(self.local, 'sock'):
-                self.local.sock.close(linger=False)
+                self.local.sock.close(linger=0)
                 del self.local.sock
             raise
 
