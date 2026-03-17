@@ -129,8 +129,10 @@ class ZMQServer(object):
                                 protocol=zprocess.PICKLE_PROTOCOL)
             self.recv = self.sock.recv_pyobj
         else:
-            msg = ("invalid dtype %s, must be 'raw', 'string', " +
-                   "'multipart' or 'pyobj'" % str(self.dtype))
+            msg = (
+                "invalid dtype %s, must be 'raw', 'string', "
+                "'multipart' or 'pyobj'"
+            ) % str(self.dtype)
             raise ValueError(msg)
             
         self.mainloop_thread = threading.Thread(target=self.mainloop)
@@ -318,8 +320,8 @@ class _Sender(object):
             else:
                 msg = (
                     "invalid dtype %s, must be 'raw', 'string', "
-                    + "'multipart' or 'pyobj'" % str(self.dtype)
-                )
+                    "'multipart' or 'pyobj'"
+                ) % str(self.dtype)
                 raise ValueError(msg)
         except:
             # Didn't work, don't keep it:
@@ -474,4 +476,3 @@ zmq_push_raw = _default_client.push_raw
 __all__ = ['ZMQServer', 'ZMQClient',
            'zmq_get', 'zmq_get_multipart', 'zmq_get_string', 'zmq_get_raw',
            'zmq_push', 'zmq_push_multipart', 'zmq_push_string', 'zmq_push_raw']
-

@@ -5,6 +5,7 @@ import os
 import time
 import threading
 import subprocess
+from unittest.mock import patch
 
 import zmq
 import pytest
@@ -408,6 +409,64 @@ class TaskTests(unittest.TestCase):
 
 
 class ClientServerTests(unittest.TestCase):
+
+    def test_invalid_dtype_server_raises_valueerror(self):
+        class InvalidServer(clientserver._ZMQServer):
+            def setup_auth(self, context):
+                return None
+
+        class FakeSocket(object):
+            def setsockopt(self, *args, **kwargs):
+                pass
+
+            def bind(self, *args, **kwargs):
+                pass
+
+            def close(self, *args, **kwargs):
+                pass
+
+        class FakeContext(object):
+            def socket(self, *args, **kwargs):
+                return FakeSocket()
+
+        class FakePoller(object):
+            def register(self, *args, **kwargs):
+                pass
+
+        with patch.object(clientserver.zmq, 'Context', FakeContext):
+            with patch.object(clientserver.zmq, 'Poller', FakePoller):
+                with self.assertRaisesRegex(ValueError, "invalid dtype invalid"):
+                    InvalidServer(
+                        port=1, dtype='invalid', bind_address='tcp://127.0.0.1'
+                    )
+
+    def test_invalid_dtype_sender_raises_valueerror(self):
+        class FakeSocket(object):
+            def setsockopt(self, *args, **kwargs):
+                pass
+
+            def connect(self, *args, **kwargs):
+                pass
+
+            def close(self, *args, **kwargs):
+                pass
+
+        class FakeContext(object):
+            def socket(self, *args, **kwargs):
+                return FakeSocket()
+
+        class FakePoller(object):
+            def register(self, *args, **kwargs):
+                pass
+
+        sender = clientserver._Sender(
+            dtype='invalid', interruptor=clientserver.Interruptor()
+        )
+
+        with patch.object(clientserver.SecureContext, 'instance', return_value=FakeContext()):
+            with patch.object(clientserver.zmq, 'Poller', FakePoller):
+                with self.assertRaisesRegex(ValueError, "invalid dtype invalid"):
+                    sender.new_socket('localhost', 1)
 
     def test_rep_server(self):
         class MyServer(ZMQServer):
