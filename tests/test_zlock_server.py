@@ -726,6 +726,15 @@ class ImplementationUnitTests(unittest.TestCase):
         self.assertEqual(client.thread_name.name, 'worker')
         self.assertIn(b'worker-', client.local.client_id)
 
+    def test_set_client_process_name_avoids_double_separator(self):
+        client = ZLockClient()
+        with monkeypatch(zlock, '_default_zlock_client', client):
+            zlock.set_client_process_name('worker')
+
+        process_identifier = client._make_client_id().split(':')[1]
+        self.assertTrue(process_identifier.startswith('worker-'))
+        self.assertNotIn('worker--', process_identifier)
+
 
 class OtherTests(unittest.TestCase):
     def test_default_bind_address(self):
