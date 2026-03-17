@@ -421,7 +421,7 @@ class ZMQLockServer(object):
     def __init__(
         self,
         port=None,
-        bind_address='tcp:/*',
+        bind_address='tcp://*',
         silent=False,
         shared_secret=None,
         allow_insecure=True,

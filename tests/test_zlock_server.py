@@ -681,6 +681,60 @@ class ImplementationUnitTests(unittest.TestCase):
 
 
 class OtherTests(unittest.TestCase):
+    def test_default_bind_address(self):
+        class FakeSocket(object):
+            def __init__(self):
+                self.logger = None
+
+            def bind_to_random_port(self, addr):
+                self.bound_addr = addr
+                return 7339
+
+            def bind(self, endpoint):
+                self.endpoint = endpoint
+
+            def close(self):
+                pass
+
+        class FakeContext(object):
+            def __init__(self):
+                self.sockets = []
+
+            def socket(self, *args, **kwargs):
+                sock = FakeSocket()
+                self.sockets.append(sock)
+                return sock
+
+        class FakePoller(object):
+            def register(self, *args, **kwargs):
+                pass
+
+        class FakeAllowInterrupt(object):
+            def __init__(self, handler):
+                self.handler = handler
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class FakeLogger(object):
+            def info(self, *args, **kwargs):
+                pass
+
+        fake_context = FakeContext()
+        server = ZMQLockServer(silent=True)
+
+        with monkeypatch(zprocess.zlock.server.SecureContext, 'instance', lambda *args, **kwargs: fake_context):
+            with monkeypatch(zprocess.zlock.server.zmq, 'Poller', FakePoller):
+                with monkeypatch(zprocess.zlock.server, 'allow_interrupt', FakeAllowInterrupt):
+                    with monkeypatch(zprocess.zlock.server, 'setup_logging', lambda *args, **kwargs: FakeLogger()):
+                        with monkeypatch(ZMQLockServer, '_mainloop', lambda self: None):
+                            server.run()
+
+        self.assertEqual(fake_context.sockets[0].bound_addr, 'tcp://*')
+
     def test_bind_to_port(self):
         # Run the server on a random port on localhost:
         import random
