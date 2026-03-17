@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import time
+import threading
 import zmq
 import unittest
 
@@ -28,6 +29,7 @@ from zprocess.zlock.server import (
     ERR_TIMEOUT_INVALID,
     ERR_READ_ONLY_WRONG,
 )
+from zprocess.zlock import ZLockClient
 import zprocess.zlock.server
 
 
@@ -678,6 +680,37 @@ class ImplementationUnitTests(unittest.TestCase):
         # Can't give up if not waiting:
         with self.assertRaises(NotWaiting):
             lock.give_up(b'client_foo')
+
+    def test_zlock_client_uses_instance_default_timeout(self):
+        class FakeSocket(object):
+            def __init__(self):
+                self.messages = []
+
+            def send_multipart(self, message, flags=0):
+                self.messages.append(message)
+
+            def recv(self):
+                return b'ok'
+
+            def close(self, linger=False):
+                pass
+
+        class FakePoller(object):
+            def poll(self, timeout):
+                return [object()]
+
+        client = ZLockClient(default_timeout=12.5)
+        client.local = threading.local()
+
+        def fake_new_socket(timeout=None):
+            client.local.sock = FakeSocket()
+            client.local.poller = FakePoller()
+            client.local.client_id = b'client'
+
+        client._new_socket = fake_new_socket
+        client.acquire('key_foo')
+
+        self.assertEqual(client.local.sock.messages[-1][3], b'12.5')
 
 
 class OtherTests(unittest.TestCase):

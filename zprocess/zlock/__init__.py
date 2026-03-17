@@ -121,7 +121,7 @@ class ZLockClient(object):
 
     def acquire(self, key, timeout=None, read_only=False):
         if timeout is None:
-            timeout = DEFAULT_TIMEOUT
+            timeout = self.default_timeout
         timeout = str(timeout).encode('utf8')
         if not hasattr(self.local, 'sock'):
             self._new_socket()
