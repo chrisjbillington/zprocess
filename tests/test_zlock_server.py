@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 import time
+import threading
 import zmq
 import unittest
 
@@ -28,6 +29,8 @@ from zprocess.zlock.server import (
     ERR_TIMEOUT_INVALID,
     ERR_READ_ONLY_WRONG,
 )
+import zprocess.zlock as zlock
+from zprocess.zlock import ZLockClient
 import zprocess.zlock.server
 
 
@@ -679,8 +682,115 @@ class ImplementationUnitTests(unittest.TestCase):
         with self.assertRaises(NotWaiting):
             lock.give_up(b'client_foo')
 
+    def test_zlock_client_uses_instance_default_timeout(self):
+        class FakeSocket(object):
+            def __init__(self):
+                self.messages = []
+
+            def send_multipart(self, message, flags=0):
+                self.messages.append(message)
+
+            def recv(self):
+                return b'ok'
+
+            def close(self, linger=False):
+                pass
+
+        class FakePoller(object):
+            def poll(self, timeout):
+                return [object()]
+
+        client = ZLockClient(default_timeout=12.5)
+        client.local = threading.local()
+
+        def fake_new_socket(timeout=None):
+            client.local.sock = FakeSocket()
+            client.local.poller = FakePoller()
+            client.local.client_id = b'client'
+
+        client._new_socket = fake_new_socket
+        client.acquire('key_foo')
+
+        self.assertEqual(client.local.sock.messages[-1][3], b'12.5')
+
+    def test_set_client_thread_name_requires_default_client(self):
+        with monkeypatch(zlock, '_default_zlock_client', None):
+            with self.assertRaisesRegex(RuntimeError, 'ZLockClient'):
+                zlock.set_client_thread_name('worker')
+
+    def test_set_client_thread_name_delegates_to_default_client(self):
+        client = ZLockClient()
+        with monkeypatch(zlock, '_default_zlock_client', client):
+            zlock.set_client_thread_name('worker')
+
+        self.assertEqual(client.thread_name.name, 'worker')
+        self.assertIn(b'worker-', client.local.client_id)
+
+    def test_set_client_process_name_avoids_double_separator(self):
+        client = ZLockClient()
+        with monkeypatch(zlock, '_default_zlock_client', client):
+            zlock.set_client_process_name('worker')
+
+        process_identifier = client._make_client_id().split(':')[1]
+        self.assertTrue(process_identifier.startswith('worker-'))
+        self.assertNotIn('worker--', process_identifier)
+
 
 class OtherTests(unittest.TestCase):
+    def test_default_bind_address(self):
+        class FakeSocket(object):
+            def __init__(self):
+                self.logger = None
+
+            def bind_to_random_port(self, addr):
+                self.bound_addr = addr
+                return 7339
+
+            def bind(self, endpoint):
+                self.endpoint = endpoint
+
+            def close(self):
+                pass
+
+        class FakeContext(object):
+            def __init__(self):
+                self.sockets = []
+
+            def socket(self, *args, **kwargs):
+                sock = FakeSocket()
+                self.sockets.append(sock)
+                return sock
+
+        class FakePoller(object):
+            def register(self, *args, **kwargs):
+                pass
+
+        class FakeAllowInterrupt(object):
+            def __init__(self, handler):
+                self.handler = handler
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        class FakeLogger(object):
+            def info(self, *args, **kwargs):
+                pass
+
+        fake_context = FakeContext()
+        server = ZMQLockServer(silent=True)
+
+        with monkeypatch(zprocess.zlock.server.SecureContext, 'instance', lambda *args, **kwargs: fake_context):
+            with monkeypatch(zprocess.zlock.server.zmq, 'Poller', FakePoller):
+                with monkeypatch(zprocess.zlock.server, 'allow_interrupt', FakeAllowInterrupt):
+                    with monkeypatch(zprocess.zlock.server, 'setup_logging', lambda *args, **kwargs: FakeLogger()):
+                        with monkeypatch(ZMQLockServer, '_mainloop', lambda self: None):
+                            server.run()
+
+        self.assertEqual(fake_context.sockets[0].bound_addr, 'tcp://*')
+
     def test_bind_to_port(self):
         # Run the server on a random port on localhost:
         import random

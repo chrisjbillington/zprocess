@@ -121,7 +121,7 @@ class ZLockClient(object):
 
     def acquire(self, key, timeout=None, read_only=False):
         if timeout is None:
-            timeout = DEFAULT_TIMEOUT
+            timeout = self.default_timeout
         timeout = str(timeout).encode('utf8')
         if not hasattr(self.local, 'sock'):
             self._new_socket()
@@ -289,7 +289,6 @@ def set_default_timeout(timeout):
 
 def set_client_process_name(name):
     """Deprecated. Instantiate a ZLockClient and call its method instead"""
-    name += '-'
     global _process_name
     if _default_zlock_client is not None:
         _default_zlock_client.set_process_name(name)
@@ -299,8 +298,8 @@ def set_client_process_name(name):
 
 def set_client_thread_name(name):
     """Deprecated. Instantiate a ZLockClient and call its method instead"""
-    if _default_zlock_client is not None:
-        raise RuntimeError("Can't set thread name before instantiating ZLogClient")
+    if _default_zlock_client is None:
+        raise RuntimeError("Can't set thread name before instantiating ZLockClient")
     _default_zlock_client.set_thread_name(name)
 
 
