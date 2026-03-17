@@ -299,8 +299,8 @@ def set_client_process_name(name):
 
 def set_client_thread_name(name):
     """Deprecated. Instantiate a ZLockClient and call its method instead"""
-    if _default_zlock_client is not None:
-        raise RuntimeError("Can't set thread name before instantiating ZLogClient")
+    if _default_zlock_client is None:
+        raise RuntimeError("Can't set thread name before instantiating ZLockClient")
     _default_zlock_client.set_thread_name(name)
 
 

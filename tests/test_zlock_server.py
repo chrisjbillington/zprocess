@@ -29,6 +29,7 @@ from zprocess.zlock.server import (
     ERR_TIMEOUT_INVALID,
     ERR_READ_ONLY_WRONG,
 )
+import zprocess.zlock as zlock
 from zprocess.zlock import ZLockClient
 import zprocess.zlock.server
 
@@ -711,6 +712,19 @@ class ImplementationUnitTests(unittest.TestCase):
         client.acquire('key_foo')
 
         self.assertEqual(client.local.sock.messages[-1][3], b'12.5')
+
+    def test_set_client_thread_name_requires_default_client(self):
+        with monkeypatch(zlock, '_default_zlock_client', None):
+            with self.assertRaisesRegex(RuntimeError, 'ZLockClient'):
+                zlock.set_client_thread_name('worker')
+
+    def test_set_client_thread_name_delegates_to_default_client(self):
+        client = ZLockClient()
+        with monkeypatch(zlock, '_default_zlock_client', client):
+            zlock.set_client_thread_name('worker')
+
+        self.assertEqual(client.thread_name.name, 'worker')
+        self.assertIn(b'worker-', client.local.client_id)
 
 
 class OtherTests(unittest.TestCase):
