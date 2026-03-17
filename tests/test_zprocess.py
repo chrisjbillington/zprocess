@@ -4,6 +4,7 @@ import sys
 import os
 import time
 import threading
+import subprocess
 
 import zmq
 import pytest
@@ -204,6 +205,23 @@ class ProcessClassTests(unittest.TestCase):
     def tearDown(self):
         self.process.terminate()
         self.redirection_sock.close()
+
+
+class ProcessTerminateTests(unittest.TestCase):
+    def test_terminate_ignores_local_wait_timeout(self):
+        class DummyChild(object):
+            def terminate(self, **kwargs):
+                pass
+
+            def wait(self, timeout=None, **kwargs):
+                raise subprocess.TimeoutExpired(cmd='dummy', timeout=timeout)
+
+        process = Process.__new__(Process)
+        process.child = DummyChild()
+        process.interrupt_startup = lambda reason=None: None
+
+        # Should not leak subprocess.TimeoutExpired for a local child wait timeout:
+        process.terminate(wait_timeout=0.1)
 
 
 class HeartbeatClientTestProcess(Process):

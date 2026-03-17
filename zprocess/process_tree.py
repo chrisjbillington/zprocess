@@ -1129,7 +1129,7 @@ class Process(object):
             try:
                 self.child.terminate(**kwargs)
                 self.child.wait(timeout=wait_timeout, **kwargs)
-            except (OSError, TimeoutError):
+            except (OSError, TimeoutError, subprocess.TimeoutExpired):
                 # process is already dead, or cannot contact remote server
                 pass
 
