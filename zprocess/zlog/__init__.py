@@ -92,7 +92,7 @@ class ZLogClient(object):
                 raise ValueError(response[1].decode('utf8'))
             return response[1]
         except:
-            self.local.sock.close(linger=False)
+            self.local.sock.close(linger=0)
             del self.local.sock
             del self.local.poller
             raise

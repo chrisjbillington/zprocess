@@ -347,7 +347,7 @@ class ZMQLogServer(object):
         sock.send(b'stop')
         if self.run_thread is not None:
             self.run_thread.join()
-        sock.close(linger=True)
+        sock.close(linger=100)
 
     def send(self, routing_id, message):
         self.router.send_multipart(routing_id + [b'', message])

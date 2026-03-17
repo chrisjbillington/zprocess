@@ -10,7 +10,7 @@ on:
 
 env:
   OS_LIST_UBUNTU: '["ubuntu-latest"]'
-  OS_LIST_ALL: '["ubuntu-latest", "windows-latest", "macos-latest", "macos-13"]'
+  OS_LIST_ALL: '["ubuntu-latest", "windows-latest", "macos-latest", "macos-15-intel"]'
 
 
 jobs:
@@ -264,7 +264,7 @@ jobs:
           miniforge-version: "latest"
           auto-update-conda: true
           conda-remove-defaults: true
-          auto-activate-base: true
+          auto-activate: true
           activate-environment: ""
 
       - name: Conda package
@@ -395,7 +395,7 @@ jobs:
           miniforge-version: "latest"
           auto-update-conda: true
           conda-remove-defaults: true
-          auto-activate-base: true
+          auto-activate: true
           activate-environment: ""
 
       - name: Install Anaconda cloud client
@@ -434,7 +434,7 @@ jobs:
           miniforge-version: "latest"
           auto-update-conda: true
           conda-remove-defaults: true
-          auto-activate-base: true
+          auto-activate: true
           activate-environment: ""
 
       - name: Install Anaconda cloud client

@@ -241,8 +241,8 @@ class ZMQServer(object):
         sock.connect(self._shutdown_endpoint)
         sock.send(b'stop')
         self.mainloop_thread.join()
-        sock.close(linger=True)
-        self.sock.close(linger=False)
+        sock.close(linger=100)
+        self.sock.close(linger=0)
         self.stopping = False
 
     def handler(self, request_data):
