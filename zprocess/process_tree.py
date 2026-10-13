@@ -156,6 +156,11 @@ class HeartbeatServer(object):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REP)
         self.port = self.sock.bind_to_random_port(bind_address)
+        if sys.platform == 'darwin':
+            # App Nap delays the replies of an idle GUI process, and its subprocesses
+            # would take it for dead:
+            import appnope
+            appnope.nope()
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
@@ -170,45 +175,56 @@ class HeartbeatServer(object):
 
 
 class HeartbeatClient(object):
+    """A heartbeating thread that terminates the process, unless a lock is held,
+    once allowed_missed_heartbeats heartbeats in a row have had no correct reply."""
+
+    DEFAULT_ALLOWED_MISSED_HEARTBEATS = 5
 
     # How long between heartbeats?
     HEARTBEAT_INTERVAL = 1
-    # How long without a heartbeat until we kill the process? Wait longer when the
-    # heartbeat server is remote to be more forgiving of the network:
+    # How long to wait for each reply? Wait longer when the heartbeat server is
+    # remote to be more forgiving of the network:
     LOCALHOST_TIMEOUT = 1
     REMOTE_TIMEOUT = 10
 
-    """A heartbeating thread that terminates the process if it doesn't get the
-    heartbeats back within one second, unless a lock is held."""
     def __init__(self, server_host, server_port,
-                 shared_secret=None, allow_insecure=False):
+                 shared_secret=None, allow_insecure=False,
+                 heartbeat_interval=HEARTBEAT_INTERVAL,
+                 allowed_missed_heartbeats=DEFAULT_ALLOWED_MISSED_HEARTBEATS):
         self.lock = KillLock()
-        context = SecureContext.instance(shared_secret=shared_secret)
-        self.sock = context.socket(zmq.REQ, allow_insecure=allow_insecure)
-        self.sock.setsockopt(zmq.LINGER, 0)
         server_ip = gethostbyname(server_host)
-        self.sock.connect('tcp://{}:{}'.format(server_ip, server_port))
-        self.mainloop_thread = threading.Thread(target=self.mainloop)
-        self.mainloop_thread.daemon = True
-        self.mainloop_thread.start()
         if isinstance(server_ip, bytes):
             server_ip = server_ip.decode()
+        context = SecureContext.instance(shared_secret=shared_secret)
+        # A DEALER, not a REQ, so that a late reply is still read after the next
+        # heartbeat is sent:
+        self.sock = context.socket(zmq.DEALER, allow_insecure=allow_insecure)
+        self.sock.setsockopt(zmq.LINGER, 0)
+        self.sock.connect('tcp://{}:{}'.format(server_ip, server_port))
+        self.heartbeat_interval = heartbeat_interval
+        self.allowed_missed_heartbeats = allowed_missed_heartbeats
+        self.missed_parent_contacts = 0
         if ipaddress.ip_address(server_ip).is_loopback:
             self.timeout = self.LOCALHOST_TIMEOUT
         else:
             self.timeout = self.REMOTE_TIMEOUT
+        self.mainloop_thread = threading.Thread(target=self.mainloop)
+        self.mainloop_thread.daemon = True
+        self.mainloop_thread.start()
 
     def mainloop(self):
         try:
             pid = str(os.getpid()).encode('utf8')
-            while True:
-                time.sleep(self.HEARTBEAT_INTERVAL)
-                self.sock.send(pid, zmq.NOBLOCK)
-                if not self.sock.poll(self.timeout * 1000):
-                    break
-                msg = self.sock.recv()
-                if not msg == pid:
-                    break
+            while self.missed_parent_contacts < self.allowed_missed_heartbeats:
+                time.sleep(self.heartbeat_interval)
+                self.sock.send_multipart([b'', pid])
+                self.missed_parent_contacts += 1
+                self.sock.poll(self.timeout * 1000)
+                # Read every reply waiting. A late one still counts, so that a parent
+                # that is merely slow to reply is not taken for dead:
+                while self.sock.poll(0):
+                    if self.sock.recv_multipart()[-1] == pid:
+                        self.missed_parent_contacts = 0
             if not zprocess._silent:
                 print('Heartbeat failure', file=sys.stderr)
             os.kill(os.getpid(), signal.SIGTERM)
@@ -1259,6 +1275,8 @@ class ProcessTree(object):
         output_redirection_port=None,
         remote_process_client=None,
         startup_timeout=5,
+        heartbeat_interval=HeartbeatClient.HEARTBEAT_INTERVAL,
+        allowed_missed_heartbeats=HeartbeatClient.DEFAULT_ALLOWED_MISSED_HEARTBEATS,
         pymodule=False,
         args=None,
         startup_queue=None,
@@ -1325,6 +1343,8 @@ class ProcessTree(object):
             'from_parent_port': to_child_port,
             'heartbeat_server_host': 'localhost',
             'heartbeat_server_port': self.heartbeat_server.port,
+            'heartbeat_interval': heartbeat_interval,
+            'allowed_missed_heartbeats': allowed_missed_heartbeats,
             'broker_host': self.broker_host,
             'broker_in_port': self.broker_in_port,
             'broker_out_port': self.broker_out_port,
@@ -1442,6 +1462,14 @@ class ProcessTree(object):
             heartbeat_server_port,
             shared_secret=self.shared_secret,
             allow_insecure=self.allow_insecure,
+            heartbeat_interval=parentinfo.get(
+                'heartbeat_interval',
+                HeartbeatClient.HEARTBEAT_INTERVAL,
+            ),
+            # TODO: remove legacy code in the future (introduced 2026)
+            # Older parents will not include this field, so preserve the legacy
+            # single-miss behavior when connecting to them.
+            allowed_missed_heartbeats=parentinfo.get('allowed_missed_heartbeats', 1),
         )
 
         self.broker_host = parentinfo['broker_host']

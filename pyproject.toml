@@ -25,6 +25,7 @@ requires-python = ">=3.8"
 dependencies = [
     "setuptools_scm",
     "pyzmq",
+    "appnope;           sys_platform == 'darwin'",
     "pywin32;           sys_platform == 'win32'",
     "windows-curses;    sys_platform == 'win32'",
 ]

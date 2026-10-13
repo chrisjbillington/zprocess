@@ -16,3 +16,6 @@ enum34; python_version == '2.7'
 # Windows-specific modules:
 pywin32; sys_platform == 'win32'
 windows-curses; sys_platform == 'win32'
+
+# macOS-specific modules:
+appnope; sys_platform == 'darwin'

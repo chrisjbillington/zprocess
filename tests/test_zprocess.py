@@ -260,59 +260,255 @@ class HeartbeatServerTestProcess(Process):
         time.sleep(1) # Ensure it sends before we return
 
 
+class ScriptedHeartbeatServer(object):
+    def __init__(self, shared_secret, script, default='good'):
+        import zmq
+
+        self.context = SecureContext.instance(shared_secret=shared_secret)
+        self.script = list(script)
+        self.default = default
+        self.actions = []
+        self.request_times = []
+        self._lock = threading.Lock()
+        self._running = True
+        self._request_event = threading.Event()
+        self.sock = self.context.socket(zmq.ROUTER)
+        self.port = self.sock.bind_to_random_port('tcp://127.0.0.1')
+        self.thread = threading.Thread(target=self.mainloop)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def _next_action(self):
+        with self._lock:
+            if self.script:
+                action = self.script.pop(0)
+            else:
+                action = self.default
+            self.actions.append(action)
+            return action
+
+    def request_count(self):
+        with self._lock:
+            return len(self.request_times)
+
+    def wait_for_requests(self, count, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.request_count() >= count:
+                return True
+            self._request_event.wait(min(0.1, deadline - time.time()))
+            self._request_event.clear()
+        return self.request_count() >= count
+
+    def inter_request_intervals(self):
+        with self._lock:
+            times = list(self.request_times)
+        return [later - earlier for earlier, later in zip(times, times[1:])]
+
+    def mainloop(self):
+        while self._running:
+            try:
+                if not self.sock.poll(100):
+                    continue
+                msg = self.sock.recv_multipart()
+                with self._lock:
+                    self.request_times.append(time.time())
+                self._request_event.set()
+                action = self._next_action()
+                payload = msg[-1]
+                if action == 'good':
+                    self.sock.send_multipart(msg[:-1] + [payload])
+                elif action == 'malformed':
+                    self.sock.send_multipart(msg[:-1] + [payload + b'wrong'])
+                elif action == 'drop':
+                    continue
+                else:
+                    raise ValueError(action)
+            except zmq.ZMQError:
+                if self._running:
+                    raise
+
+    def close(self):
+        self._running = False
+        self.sock.close(linger=0)
+        self.thread.join(timeout=1)
+
+
 class HeartbeatTests(unittest.TestCase):
     def setUp(self):
-        """Create a sock for output redirection and a zmq port to mock a heartbeat
-        server"""
-        import zmq
-        context = SecureContext.instance(shared_secret=shared_secret)
-        self.heartbeat_sock = context.socket(zmq.REP)
-        heartbeat_port = self.heartbeat_sock.bind_to_random_port('tcp://127.0.0.1')
+        self.heartbeat_server = None
 
-        class mock_heartbeat_server(object):
-            port = heartbeat_port
+    def _process_tree(
+        self, allowed_missed_heartbeats=None, heartbeat_interval=None
+    ):
+        if allowed_missed_heartbeats is None and heartbeat_interval is None:
+            return _default_process_tree
 
-        self.mock_heartbeat_server = mock_heartbeat_server
+        class ConfiguredHeartbeatProcessTree(type(_default_process_tree)):
+            def subprocess(tree_self, *args, **kwargs):
+                if allowed_missed_heartbeats is not None:
+                    kwargs.setdefault(
+                        'allowed_missed_heartbeats', allowed_missed_heartbeats
+                    )
+                if heartbeat_interval is not None:
+                    kwargs.setdefault('heartbeat_interval', heartbeat_interval)
+                return super(
+                    ConfiguredHeartbeatProcessTree, tree_self
+                ).subprocess(*args, **kwargs)
 
-    def test_subproc_lives_with_heartbeats(self):
-        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
-        self.process = HeartbeatClientTestProcess()
-        self.process.start()
-        for i in range(3):
-            # Wait for a heartbeat request:
-            self.assertTrue(self.heartbeat_sock.poll(3000))
-            # Echo it back:
-            self.heartbeat_sock.send(self.heartbeat_sock.recv())
+        process_tree = ConfiguredHeartbeatProcessTree(
+            shared_secret=shared_secret,
+            allow_insecure=_default_process_tree.allow_insecure,
+            zlock_host=_default_process_tree.zlock_host,
+            zlock_port=_default_process_tree.zlock_port,
+            zlog_host=_default_process_tree.zlog_host,
+            zlog_port=_default_process_tree.zlog_port,
+        )
+        process_tree.heartbeat_server = self.heartbeat_server
+        return process_tree
 
-    def test_subproc_dies_without_heartbeats(self):
-        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
-        self.process = HeartbeatClientTestProcess()
-        self.process.start()
-        # Wait for a heartbeat request:
-        self.assertTrue(self.heartbeat_sock.poll(3000))
-        # Don't respond to it
-        time.sleep(2)
-        # Process should be dead:
-        self.assertIsNot(self.process.child.poll(), None)
+    def _start_heartbeat_process(
+        self,
+        allowed_missed_heartbeats=None,
+        heartbeat_interval=None,
+        script=None,
+        default='good',
+    ):
+        self.heartbeat_server = ScriptedHeartbeatServer(
+            shared_secret, script or [], default=default
+        )
+        process_tree = self._process_tree(
+            allowed_missed_heartbeats,
+            heartbeat_interval=heartbeat_interval,
+        )
+        self.process = HeartbeatClientTestProcess(process_tree=process_tree)
+        return self.process.start()
 
-    def test_subproc_dies_on_incorrect_response(self):
-        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
-        self.process = HeartbeatClientTestProcess()
-        self.process.start()
-        # Wait for a heartbeat request:
-        self.assertTrue(self.heartbeat_sock.poll(3000))
-        # Echo it back wrongly:
-        self.heartbeat_sock.send(self.heartbeat_sock.recv() + b'wrong')
-        time.sleep(1)
-        # Process should be dead:
-        self.assertIsNot(self.process.child.poll(), None)
+    def _assert_process_exits_within(self, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.process.child.poll() is not None:
+                return
+            time.sleep(0.1)
+        self.fail('process did not exit within %.1f seconds' % timeout)
+
+    def _assert_alive_after_requests(self, request_count, timeout):
+        self.assertTrue(
+            self.heartbeat_server.wait_for_requests(request_count, timeout),
+            'server did not receive %d heartbeats' % request_count,
+        )
+        time.sleep(0.2)
+        self.assertIs(self.process.child.poll(), None)
+
+    def _assert_intervals_are_timeouts(self, minimum_interval):
+        intervals = self.heartbeat_server.inter_request_intervals()
+        self.assertTrue(intervals, 'expected at least two heartbeat requests')
+        self.assertTrue(
+            all(interval >= minimum_interval for interval in intervals),
+            'expected timeout-sized gaps, got %r' % intervals,
+        )
+
+    def _assert_intervals_are_immediate_retries(self, maximum_interval):
+        intervals = self.heartbeat_server.inter_request_intervals()
+        self.assertTrue(intervals, 'expected at least two heartbeat requests')
+        self.assertTrue(
+            all(interval <= maximum_interval for interval in intervals),
+            'expected malformed replies to avoid timeout gaps, got %r' % intervals,
+        )
+
+    def test_subproc_lives_with_working_heartbeats(self):
+        self._start_heartbeat_process(allowed_missed_heartbeats=5)
+        self._assert_alive_after_requests(3, 5)
+
+    def test_subproc_survives_missing_heartbeats_below_budget(self):
+        for failures in range(1, 5):
+            with self.subTest(failures=failures):
+                self._start_heartbeat_process(
+                    allowed_missed_heartbeats=failures + 1,
+                    script=['drop'] * failures + ['good'],
+                )
+                self._assert_alive_after_requests(failures + 1, (failures + 1) * 3)
+                self._assert_intervals_are_timeouts(1.5)
+                self.process.terminate()
+                self.heartbeat_server.close()
+                self.process = None
+                self.heartbeat_server = None
+
+    def test_subproc_dies_after_1_to_5_missing_heartbeats(self):
+        for failures in range(1, 6):
+            with self.subTest(failures=failures):
+                self._start_heartbeat_process(
+                    allowed_missed_heartbeats=failures,
+                    script=['drop'] * failures,
+                )
+                self.assertTrue(
+                    self.heartbeat_server.wait_for_requests(failures, failures * 3),
+                    'server did not receive %d dropped heartbeats' % failures,
+                )
+                self._assert_process_exits_within(3)
+                if failures > 1:
+                    self._assert_intervals_are_timeouts(1.5)
+                self.process = None
+                self.heartbeat_server.close()
+                self.heartbeat_server = None
+
+    def test_subproc_survives_malformed_heartbeats_below_budget(self):
+        for failures in range(1, 5):
+            with self.subTest(failures=failures):
+                self._start_heartbeat_process(
+                    allowed_missed_heartbeats=failures + 1,
+                    script=['malformed'] * failures + ['good'],
+                )
+                self._assert_alive_after_requests(failures + 1, (failures + 1) * 2)
+                self._assert_intervals_are_immediate_retries(1.5)
+                self.process.terminate()
+                self.heartbeat_server.close()
+                self.process = None
+                self.heartbeat_server = None
+
+    def test_subproc_dies_after_1_to_5_malformed_heartbeats(self):
+        for failures in range(1, 6):
+            with self.subTest(failures=failures):
+                self._start_heartbeat_process(
+                    allowed_missed_heartbeats=failures,
+                    script=['malformed'] * failures,
+                )
+                self.assertTrue(
+                    self.heartbeat_server.wait_for_requests(failures, failures * 2),
+                    'server did not receive %d malformed heartbeats' % failures,
+                )
+                self._assert_process_exits_within(2)
+                if failures > 1:
+                    self._assert_intervals_are_immediate_retries(1.5)
+                self.process = None
+                self.heartbeat_server.close()
+                self.heartbeat_server = None
+
+    def test_successful_heartbeat_resets_miss_counter(self):
+        self._start_heartbeat_process(
+            allowed_missed_heartbeats=2,
+            script=['malformed', 'good', 'malformed', 'good'],
+        )
+        self._assert_alive_after_requests(4, 8)
+        self._assert_intervals_are_immediate_retries(1.5)
+
+    def test_configured_heartbeat_interval_controls_request_cadence(self):
+        self._start_heartbeat_process(
+            allowed_missed_heartbeats=3,
+            heartbeat_interval=0.2,
+        )
+        self.assertTrue(self.heartbeat_server.wait_for_requests(3, 3))
+        intervals = self.heartbeat_server.inter_request_intervals()[:2]
+        self.assertTrue(
+            all(0.1 <= interval < 0.8 for interval in intervals),
+            'expected configured heartbeat-sized gaps, got %r' % intervals,
+        )
 
     def test_subproc_survives_until_kill_lock_released(self):
-        _default_process_tree.heartbeat_server = self.mock_heartbeat_server
-        self.process = HeartbeatClientTestProcess()
-        to_child, from_child = self.process.start()
-        # Wait for a heartbeat request:
-        self.assertTrue(self.heartbeat_sock.poll(3000))
+        to_child, from_child = self._start_heartbeat_process(
+            allowed_missed_heartbeats=1, script=['good', 'drop']
+        )
+        self.assertTrue(self.heartbeat_server.wait_for_requests(1, 3))
         # Tell child to acquire kill lock for 3 sec:
         to_child.put(None)
         # Don't respond to the heartbeat, process should still be alive 2 sec later
@@ -320,7 +516,7 @@ class HeartbeatTests(unittest.TestCase):
         # Process should be alive:
         self.assertIs(self.process.child.poll(), None)
         # After kill lock released, child should be terminated:
-        time.sleep(2)
+        self._assert_process_exits_within(3)
         # Process should be dead:
         self.assertIsNot(self.process.child.poll(), None)
 
@@ -334,9 +530,11 @@ class HeartbeatTests(unittest.TestCase):
         self.assertTrue(from_child.get())
 
     def tearDown(self):
-        self.heartbeat_sock.close()
+        if self.heartbeat_server is not None:
+            self.heartbeat_server.close()
         try:
-            self.process.terminate()
+            if getattr(self, 'process', None) is not None:
+                self.process.terminate()
         except Exception:
             pass # already dead
 
