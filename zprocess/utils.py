@@ -187,7 +187,12 @@ def disable_quick_edit():
             # Already disabled, nothing for us to do.
             return
         new_mode = (orig_mode | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT
-        console.SetConsoleMode(new_mode)
+        try:
+            console.SetConsoleMode(new_mode)
+        except pywintypes.error:
+            # The console does not accept the mode. This happens in a process
+            # relaunched from a ConPTY console such as Windows Terminal:
+            return
         atexit.register(console.SetConsoleMode, orig_mode)
 
         
