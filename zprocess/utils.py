@@ -187,7 +187,14 @@ def disable_quick_edit():
             # Already disabled, nothing for us to do.
             return
         new_mode = (orig_mode | ENABLE_EXTENDED_FLAGS) & ~ENABLE_QUICK_EDIT
-        console.SetConsoleMode(new_mode)
+        try:
+            console.SetConsoleMode(new_mode)
+        except pywintypes.error:
+            # The console rejects the mode. This happens when the process was relaunched
+            # from a PowerShell prompt: while PSReadLine waits for input it leaves
+            # ENABLE_ECHO_INPUT set without ENABLE_LINE_INPUT, and SetConsoleMode rejects
+            # any mode with that combination.
+            return
         atexit.register(console.SetConsoleMode, orig_mode)
 
         
