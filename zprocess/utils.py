@@ -190,8 +190,10 @@ def disable_quick_edit():
         try:
             console.SetConsoleMode(new_mode)
         except pywintypes.error:
-            # The console does not accept the mode. This happens in a process
-            # relaunched from a ConPTY console such as Windows Terminal:
+            # The console rejects the mode. This happens when the process was relaunched
+            # from a PowerShell prompt: while PSReadLine waits for input it leaves
+            # ENABLE_ECHO_INPUT set without ENABLE_LINE_INPUT, and SetConsoleMode rejects
+            # any mode with that combination.
             return
         atexit.register(console.SetConsoleMode, orig_mode)
 
