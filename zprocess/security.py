@@ -28,6 +28,10 @@ class InsecureConnection(RuntimeError):
     pass
 
 
+class CurveNotSupported(RuntimeError):
+    pass
+
+
 class AuthenticationFailure(RuntimeError):
     pass
 
@@ -50,6 +54,26 @@ network even if messages contain no sensitive information.""".splitlines()
 )
 
 
+CURVE_NOT_SUPPORTED_ERROR = ' '.join(
+    """The installed libzmq was built without CURVE support, which zprocess requires
+for encrypted and authenticated communication with a shared secret. This is the case
+for the pyzmq package on the Anaconda default channel for Windows. The pyzmq packages
+on conda-forge and on PyPI support CURVE.""".splitlines()
+)
+
+_curve_supported = None
+
+
+def _check_curve_support():
+    """Raise CurveNotSupported if libzmq was built without CURVE. The result of
+    zmq.has('curve') is cached after the first call."""
+    global _curve_supported
+    if _curve_supported is None:
+        _curve_supported = zmq.has('curve')
+    if not _curve_supported:
+        raise CurveNotSupported(CURVE_NOT_SUPPORTED_ERROR)
+
+
 def ip_is_loopback(ip):
     """Return whether an IP address is on the loopback interface"""
     ip = ipaddress.ip_address(ip)
@@ -63,6 +87,7 @@ def generate_shared_secret():
     encoding, and return the result as a base64 encoded unicode string as suitable
     for passing to SecureContext() or storing on disk. We use base64 because it is
     more compatible with Python config files than z85."""
+    _check_curve_support()
     _, client_secret = zmq.curve_keypair()
     _, server_secret = zmq.curve_keypair()
     return base64.b64encode(zmq.utils.z85.decode(client_secret) + 
@@ -135,6 +160,7 @@ class SecureSocket(zmq.Socket):
     def _configure_curve(self, server):
         """Set the curve configuration of the socket depending on whether we
         are a server or not"""
+        _check_curve_support()
         orig_server = self.curve_server
         if server:
             self.curve_server = True
@@ -367,6 +393,7 @@ class SecureContext(zmq.Context):
     def __init__(self, io_threads=1, shared_secret=None):
         zmq.Context.__init__(self, io_threads)
         if shared_secret is not None:
+            _check_curve_support()
             keys = _unpack_shared_secret(shared_secret)
             self.client_secretkey, self.server_secretkey = keys
             self.client_publickey = zmq.curve_public(self.client_secretkey)
