@@ -5,7 +5,14 @@ import zprocess
 from zprocess import ZMQServer
 
 DEFAULT_PORT = 7341
-PROTOCOL_VERSION = '1.0.0'
+# 1.1.0: child processes connect to their parent with PAIR sockets when the parent asks
+# for it with parentinfo['pair_sockets'].
+PROTOCOL_VERSION = '1.1.0'
+PAIR_SOCKETS_PROTOCOL_VERSION = '1.1.0'
+
+
+def _version_tuple(version):
+    return tuple(int(n) for n in version.split('.'))
 
 
 class RemoteChildProxy(object):
@@ -96,6 +103,12 @@ class RemoteProcessClient(zprocess.clientserver.ZMQClient):
 
     def get_protocol(self, **kwargs):
         return self.request('protocol', **kwargs)
+
+    def children_support_pair_sockets(self, **kwargs):
+        """Whether child processes started by the server connect to their parent with
+        PAIR sockets rather than PUSH and PULL sockets"""
+        protocol = self.get_protocol(**kwargs)
+        return _version_tuple(protocol) >= _version_tuple(PAIR_SOCKETS_PROTOCOL_VERSION)
 
 
 class RemoteOutputReceiver(ZMQServer):

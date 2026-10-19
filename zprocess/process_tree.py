@@ -482,8 +482,8 @@ class ReadQueue(object):
 
     def __init__(self, sock):
         self.sock = sock
-        self.to_self = sock.context.socket(zmq.PUSH)
-        self.from_self = sock.context.socket(zmq.PULL)
+        self.to_self = sock.context.socket(zmq.PAIR)
+        self.from_self = sock.context.socket(zmq.PAIR)
         self_endpoint = 'inproc://zpself' + hexlify(os.urandom(8)).decode()
         self.from_self.bind(self_endpoint)
         self.to_self.connect(self_endpoint)
@@ -1296,8 +1296,31 @@ class ProcessTree(object):
         Process.interrupt_startup() (such as Process.terminate()) may wish to terminate
         the child process. TODO finish this and other docstrings."""
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
+        if remote_process_client is None:
+            pair_sockets = True
+        else:
+            pair_sockets = remote_process_client.children_support_pair_sockets(
+                get_interruptor=startup_interruptor
+            )
+        if pair_sockets:
+            to_child = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+            from_child = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+        else:
+            # TODO: remove legacy code in the future (introduced 2026)
+            # Children started by a remote process server with protocol version 1.0.0
+            # connect with PUSH and PULL sockets.
+            if not zprocess._silent:
+                msg = (
+                    'zprocess on the remote process server at %s:%s is too old to '
+                    'use PAIR sockets; using PUSH and PULL sockets for this child '
+                    'process. Update zprocess on the remote computer.'
+                )
+                print(
+                    msg % (remote_process_client.host, remote_process_client.port),
+                    file=sys.stderr,
+                )
+            to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
+            from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
 
         from_child_port = from_child.bind_to_random_port('tcp://*')
         to_child_port = to_child.bind_to_random_port('tcp://*')
@@ -1341,6 +1364,7 @@ class ProcessTree(object):
             'parent_host': 'localhost',
             'to_parent_port': from_child_port,
             'from_parent_port': to_child_port,
+            'pair_sockets': pair_sockets,
             'heartbeat_server_host': 'localhost',
             'heartbeat_server_port': self.heartbeat_server.port,
             'heartbeat_interval': heartbeat_interval,
@@ -1425,8 +1449,14 @@ class ProcessTree(object):
             self.zlock_client.set_process_name(name)
 
         context = SecureContext.instance(shared_secret=self.shared_secret)
-        to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
-        from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
+        if parentinfo.get('pair_sockets', False):
+            to_parent = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+            from_parent = context.socket(zmq.PAIR, allow_insecure=self.allow_insecure)
+        else:
+            # TODO: remove legacy code in the future (introduced 2026)
+            # Older parents do not send this key and bind PUSH and PULL sockets.
+            to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
+            from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
 
         from_parent.connect(
             'tcp://%s:%d' % (self.parent_host, parentinfo['from_parent_port'])
