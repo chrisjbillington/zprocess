@@ -423,7 +423,7 @@ class WriteQueue(object):
         self.sock = sock
         self.lock = threading.Lock()
         self.poller = zmq.Poller()
-        self.poller.register(self.sock)
+        self.poller.register(self.sock, zmq.POLLOUT)
         self.interruptor = Interruptor()
 
     def put(self, obj, timeout=None, interruptor=None):
@@ -436,7 +436,7 @@ class WriteQueue(object):
         with self.lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.poller.register(interruption_sock)
+                self.poller.register(interruption_sock, zmq.POLLIN)
                 while True:
                     if timeout is not None:
                         timeout = max(0, (deadline - monotonic()) * 1000)
@@ -490,10 +490,10 @@ class ReadQueue(object):
         self.lock = threading.Lock()
         self.to_self_lock = threading.Lock()
         self.in_poller = zmq.Poller()
-        self.in_poller.register(self.sock)
-        self.in_poller.register(self.from_self)
+        self.in_poller.register(self.sock, zmq.POLLIN)
+        self.in_poller.register(self.from_self, zmq.POLLIN)
         self.out_poller = zmq.Poller()
-        self.out_poller.register(self.to_self)
+        self.out_poller.register(self.to_self, zmq.POLLOUT)
         self.interruptor = Interruptor()
 
     def get(self, timeout=None, interruptor=None):
@@ -509,7 +509,7 @@ class ReadQueue(object):
         with self.lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.in_poller.register(interruption_sock)
+                self.in_poller.register(interruption_sock, zmq.POLLIN)
                 events = dict(self.in_poller.poll(timeout))
                 if not events:
                     raise TimeoutError('get() timed out')
@@ -535,7 +535,7 @@ class ReadQueue(object):
         with self.to_self_lock:
             try:
                 interruption_sock = interruptor.subscribe()
-                self.out_poller.register(interruption_sock)
+                self.out_poller.register(interruption_sock, zmq.POLLIN)
                 while True:
                     if timeout is not None:
                         timeout = max(0, (deadline - monotonic()) * 1000)
