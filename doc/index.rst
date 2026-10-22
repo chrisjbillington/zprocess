@@ -73,3 +73,7 @@ Module reference
 
 .. autofunction:: zprocess.utils.start_daemon
 
+
+.. autofunction:: zprocess.process_tree.set_default_process_tree
+
+.. autofunction:: zprocess.process_tree.get_default_process_tree
