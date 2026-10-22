@@ -1575,19 +1575,38 @@ class ProcessTree(object):
         process_tree._connect_to_parent(parentinfo)
 
         ProcessTree.__instance = process_tree
+        set_default_process_tree(process_tree)
         return process_tree
 
 
 
 
 
-# Backwards compatability follows:
+# Event, Process and subprocess_with_queues() use this ProcessTree if they are not
+# given one. In a child process it is the ProcessTree connected to the parent:
+_default_process_tree = None
 
-# A default process tree for all out backward compat functions to work with:
-_default_process_tree = ProcessTree(allow_insecure=True)
+
+def set_default_process_tree(process_tree):
+    """Set the ProcessTree that Event, Process and subprocess_with_queues() use if they
+    are not given one."""
+    global _default_process_tree
+    _default_process_tree = process_tree
+
+
+def get_default_process_tree():
+    """Return the ProcessTree set with set_default_process_tree(). Raise RuntimeError if
+    none has been set."""
+    if _default_process_tree is None:
+        raise RuntimeError(
+            "No default ProcessTree. Pass a ProcessTree, or call "
+            + "zprocess.set_default_process_tree() first."
+        )
+    return _default_process_tree
+
 
 # Allow instantiating an Event without a ProcessTree as the first argument,
-# insert a default ProcessTree:
+# insert the default ProcessTree:
 _Event = Event
 class Event(_Event):
     def __init__(self, *args, **kwargs):
@@ -1596,11 +1615,11 @@ class Event(_Event):
             kwargs['role'] = kwargs['type']
             del kwargs['type']
         if not args or not isinstance(args[0], ProcessTree):
-            args = (_default_process_tree,) + args
+            args = (get_default_process_tree(),) + args
         _Event.__init__(self, *args, **kwargs)
 
 # Allow instantiating a Process() without a ProcessTree as the first argument,
-# insert a default ProcessTree:
+# insert the default ProcessTree:
 _Process = Process
 class Process(_Process):
     def __init__(self, *args, **kwargs):
@@ -1611,23 +1630,14 @@ class Process(_Process):
         if 'process_tree' not in kwargs and (
             not args or not isinstance(args[0], ProcessTree)
         ):
-            args = (_default_process_tree,) + args
+            args = (get_default_process_tree(),) + args
         _Process.__init__(self, *args, **kwargs)
-        
-    def _run(self):
-        # Set the process tree as the default for this process:
-        global _default_process_tree
-        _default_process_tree = self.process_tree
-        _Process._run(self)
 
 # New way is to call ProcessTree.connect_to_parent(lock) and get back a
 # ProcessTree. This is the old way, returning queues and (optionally) a lock
 # instead:
 def setup_connection_with_parent(lock=False):
     process_tree = ProcessTree.connect_to_parent()
-    # Set as the default for this process:
-    global _default_process_tree
-    _default_process_tree = process_tree
     if lock:
         return (process_tree.to_parent,
                 process_tree.from_parent,
@@ -1640,20 +1650,11 @@ def setup_connection_with_parent(lock=False):
 def subprocess_with_queues(path, output_redirection_port=None):
     if output_redirection_port == 0:  # This used to mean no redirection
         output_redirection_port = None
-    return _default_process_tree.subprocess(
+    return get_default_process_tree().subprocess(
         path, output_redirection_port=output_redirection_port
     )
 
 
 __all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
-           'subprocess_with_queues', 'Event']
-
-
-# if __name__ == '__main__':
-    # def foo():
-    #     remote_client = RemoteProcessClient('localhost', allow_insecure=True)
-    #     to_child, from_child, child = _default_process_tree.subprocess(
-    #         'test_remote.py', remote_process_client=remote_client)
-    # foo()
-
-    
+           'subprocess_with_queues', 'Event', 'set_default_process_tree',
+           'get_default_process_tree']
