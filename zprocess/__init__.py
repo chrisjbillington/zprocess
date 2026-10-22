@@ -35,6 +35,8 @@ from zprocess.process_tree import (
     setup_connection_with_parent,
     subprocess_with_queues,
     Event,
+    set_default_process_tree,
+    get_default_process_tree,
     RichStreamHandler,
     rich_print,
     ExternalBroker,

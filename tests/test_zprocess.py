@@ -24,8 +24,10 @@ from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_
                       ExternalBroker)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
-from zprocess.process_tree import _default_process_tree, EventBroker
-shared_secret = _default_process_tree.shared_secret
+from zprocess.process_tree import EventBroker, ProcessTree
+default_process_tree = ProcessTree(allow_insecure=True)
+zprocess.set_default_process_tree(default_process_tree)
+shared_secret = default_process_tree.shared_secret
 from zprocess.security import SecureContext
 from zprocess.tasks import Task, TaskQueue
 
@@ -342,9 +344,9 @@ class HeartbeatTests(unittest.TestCase):
         self, allowed_missed_heartbeats=None, heartbeat_interval=None
     ):
         if allowed_missed_heartbeats is None and heartbeat_interval is None:
-            return _default_process_tree
+            return default_process_tree
 
-        class ConfiguredHeartbeatProcessTree(type(_default_process_tree)):
+        class ConfiguredHeartbeatProcessTree(type(default_process_tree)):
             def subprocess(tree_self, *args, **kwargs):
                 if allowed_missed_heartbeats is not None:
                     kwargs.setdefault(
@@ -358,11 +360,11 @@ class HeartbeatTests(unittest.TestCase):
 
         process_tree = ConfiguredHeartbeatProcessTree(
             shared_secret=shared_secret,
-            allow_insecure=_default_process_tree.allow_insecure,
-            zlock_host=_default_process_tree.zlock_host,
-            zlock_port=_default_process_tree.zlock_port,
-            zlog_host=_default_process_tree.zlog_host,
-            zlog_port=_default_process_tree.zlog_port,
+            allow_insecure=default_process_tree.allow_insecure,
+            zlock_host=default_process_tree.zlock_host,
+            zlock_port=default_process_tree.zlock_port,
+            zlog_host=default_process_tree.zlog_host,
+            zlog_port=default_process_tree.zlog_port,
         )
         process_tree.heartbeat_server = self.heartbeat_server
         return process_tree
@@ -522,10 +524,10 @@ class HeartbeatTests(unittest.TestCase):
 
     def test_parent_correctly_responds_to_heartbeats(self):
         # No mock server this time, we're testing the real one:
-        _default_process_tree.heartbeat_server = None
+        default_process_tree.heartbeat_server = None
         self.process = HeartbeatServerTestProcess()
         to_child, from_child = self.process.start()
-        to_child.put(_default_process_tree.heartbeat_server.port)
+        to_child.put(default_process_tree.heartbeat_server.port)
         self.assertTrue(from_child.sock.poll(1000))
         self.assertTrue(from_child.get())
 
@@ -555,7 +557,7 @@ class TestExternalEventProcess(Process):
 class EventTests(unittest.TestCase):
     def test_events(self):
         proc = TestEventProcess()
-        event = _default_process_tree.event('hello', role='wait')
+        event = default_process_tree.event('hello', role='wait')
         proc.start()
         try:
             data = event.wait('1', timeout=1)
@@ -567,13 +569,26 @@ class EventTests(unittest.TestCase):
         broker = EventBroker(bind_address='tcp://127.0.0.1')
         broker_details = ExternalBroker('localhost', broker.in_port, broker.out_port)
         proc = TestExternalEventProcess()
-        event = _default_process_tree.event('hello', role='wait', external_broker=broker_details)
+        event = default_process_tree.event('hello', role='wait', external_broker=broker_details)
         proc.start(broker_details)
         try:
             data = event.wait('1', timeout=1)
             self.assertEqual(data, u'boo')
         finally:
             proc.terminate()
+
+
+class DefaultProcessTreeTests(unittest.TestCase):
+    def test_no_default_process_tree(self):
+        # A fresh interpreter, in which nothing has set a default:
+        result = subprocess.run(
+            [sys.executable, '-c', 'import zprocess; zprocess.Event("hello")'],
+            cwd=str(PROJECT_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('No default ProcessTree', result.stderr)
 
 
 class TaskTests(unittest.TestCase):
