@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import os
 import time
+import signal
 import threading
 import subprocess
 import tempfile
@@ -23,7 +24,7 @@ import zprocess
 zprocess._silent = True
 from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,
                       raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw,
-                      ExternalBroker)
+                      ExternalBroker, KillLock, interrupt_main_thread)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import (_default_process_tree, EventBroker, ReadQueue,
@@ -209,6 +210,115 @@ class ProcessClassTests(unittest.TestCase):
     def tearDown(self):
         self.process.terminate()
         self.redirection_sock.close()
+
+
+class InterruptMainThreadTests(unittest.TestCase):
+    """interrupt_main_thread() raises KeyboardInterrupt in the main thread. A blocking
+    call that Python can wake returns at once; one that it cannot wake returns in its
+    own time and the exception is raised then."""
+
+    # Delay from the start of the blocking call to the interrupt:
+    DELAY = 0.2
+    # An interrupt arriving later than this did not wake the blocking call:
+    PROMPT = 2
+
+    def setUp(self):
+        self.prev_handler = signal.signal(signal.SIGINT, signal.default_int_handler)
+
+    def tearDown(self):
+        signal.signal(signal.SIGINT, self.prev_handler)
+
+    def _time_to_interrupt(self, blocking_call):
+        """Run blocking_call in this (the main) thread, interrupt it after DELAY
+        seconds from another thread and return the time at which KeyboardInterrupt was
+        raised, measured from the start of the call."""
+        timer = threading.Timer(self.DELAY, interrupt_main_thread)
+        start = time.monotonic()
+        timer.start()
+        try:
+            with self.assertRaises(KeyboardInterrupt):
+                blocking_call()
+                # A pending interrupt that did not wake the call is raised here:
+                time.sleep(0.01)
+        finally:
+            timer.cancel()
+        return time.monotonic() - start
+
+    def test_sleep(self):
+        elapsed = self._time_to_interrupt(lambda: time.sleep(10))
+        self.assertLess(elapsed, self.PROMPT)
+
+    def test_lock_acquire(self):
+        lock = threading.Lock()
+        lock.acquire()
+        elapsed = self._time_to_interrupt(lambda: lock.acquire(timeout=4))
+        if os.name == 'nt' and sys.version_info < (3, 14):
+            # The wait is not woken; the exception is raised after the timeout.
+            self.assertGreater(elapsed, self.PROMPT)
+        else:
+            self.assertLess(elapsed, self.PROMPT)
+
+    def test_zmq_poll(self):
+        sock = zmq.Context.instance().socket(zmq.PULL)
+        sock.bind('tcp://127.0.0.1:0')
+        try:
+            elapsed = self._time_to_interrupt(lambda: sock.poll(4000))
+        finally:
+            sock.close(linger=0)
+        if os.name == 'nt':
+            # The poll is not woken; the exception is raised after it returns.
+            self.assertGreater(elapsed, self.PROMPT)
+        else:
+            self.assertLess(elapsed, self.PROMPT)
+
+    def test_python_loop(self):
+        def loop():
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                pass
+
+        elapsed = self._time_to_interrupt(loop)
+        self.assertLess(elapsed, self.PROMPT)
+
+    def test_requires_a_python_sigint_handler(self):
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        with self.assertRaises(RuntimeError):
+            interrupt_main_thread()
+
+
+class KillLockTests(unittest.TestCase):
+    def test_is_held(self):
+        lock = KillLock()
+        self.assertFalse(lock.is_held())
+        with lock:
+            self.assertTrue(lock.is_held())
+            with lock:
+                self.assertTrue(lock.is_held())
+            self.assertTrue(lock.is_held())
+        self.assertFalse(lock.is_held())
+
+    def test_exit_when_released_waits_for_release(self):
+        lock = KillLock()
+        exited = threading.Event()
+        with patch('os._exit', lambda status: exited.set()):
+            with lock:
+                thread = threading.Thread(target=lock.exit_when_released)
+                thread.daemon = True
+                thread.start()
+                self.assertFalse(exited.wait(0.5))
+            self.assertTrue(exited.wait(2))
+            thread.join(2)
+
+    def test_exit_when_released_times_out(self):
+        lock = KillLock()
+        exited = threading.Event()
+        with patch('os._exit', lambda status: exited.set()):
+            with lock:
+                thread = threading.Thread(target=lock.exit_when_released, kwargs={'timeout': 0.2})
+                thread.daemon = True
+                thread.start()
+                self.assertTrue(exited.wait(2))
+            thread.join(2)
 
 
 class ProcessTerminateTests(unittest.TestCase):

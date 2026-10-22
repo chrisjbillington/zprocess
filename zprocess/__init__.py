@@ -12,6 +12,7 @@ from zprocess.utils import (
     start_daemon,
     embed,
     raise_exception_in_thread,
+    interrupt_main_thread,
     disable_quick_edit,
     port_in_use,
 )
