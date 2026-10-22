@@ -5,6 +5,8 @@ import os
 import time
 import threading
 import subprocess
+import tempfile
+import json
 from unittest.mock import patch
 
 import zmq
@@ -783,6 +785,68 @@ class ClientServerTests(unittest.TestCase):
             self.assertNotIsInstance(server.context, SecureContext)
         finally:
             server.shutdown()
+
+DAEMON_CODE = """
+import os, sys, json, time
+started, finished = sys.argv[1:]
+info = {'pid': os.getpid(), 'cwd': os.getcwd()}
+if hasattr(os, 'getsid'):
+    info['sid'] = os.getsid(0)
+with open(started, 'w') as f:
+    json.dump(info, f)
+time.sleep(10)
+open(finished, 'w').close()
+"""
+
+# On macOS, the Tcl/Tk bundled with Python 3.12 and 3.13 makes a forked child of a
+# process that has imported tkinter fail if it forks again, so the launcher imports it.
+LAUNCHER_CODE = """
+import sys
+sys.path.insert(0, sys.argv[1])
+try:
+    import tkinter
+except ImportError:
+    pass
+from zprocess import start_daemon
+start_daemon([sys.executable, '-c', sys.argv[2], sys.argv[3], sys.argv[4]])
+"""
+
+
+class StartDaemonTests(unittest.TestCase):
+    def test_start_daemon(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            started = os.path.join(tmp, 'started.json')
+            finished = os.path.join(tmp, 'finished')
+            # The launcher's output is on pipes, so communicate() returning before the
+            # daemon finishes shows that the daemon does not hold them open.
+            launcher = subprocess.Popen(
+                [
+                    sys.executable,
+                    '-c',
+                    LAUNCHER_CODE,
+                    str(PROJECT_ROOT),
+                    DAEMON_CODE,
+                    started,
+                    finished,
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            _, stderr = launcher.communicate(timeout=30)
+            self.assertEqual(launcher.returncode, 0, stderr.decode())
+            self.assertFalse(os.path.exists(finished))
+            deadline = time.monotonic() + 60
+            while not os.path.exists(finished) and time.monotonic() < deadline:
+                time.sleep(0.1)
+            self.assertTrue(os.path.exists(finished), 'daemon did not run to completion')
+            with open(started) as f:
+                info = json.load(f)
+        self.assertEqual(
+            os.path.realpath(info['cwd']), os.path.realpath(tempfile.gettempdir())
+        )
+        if os.name == 'posix':
+            self.assertNotEqual(info['sid'], os.getsid(0))
+
 
 if __name__ == '__main__':
     pytest.main([__file__, '-v'])
