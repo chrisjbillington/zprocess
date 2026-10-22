@@ -329,9 +329,11 @@ class ScriptedHeartbeatServer(object):
                     raise
 
     def close(self):
+        # Stop the thread before closing the socket: a zmq socket is not thread-safe,
+        # and closing it while the thread polls it can crash the process.
         self._running = False
-        self.sock.close(linger=0)
         self.thread.join(timeout=1)
+        self.sock.close(linger=0)
 
 
 class HeartbeatTests(unittest.TestCase):
