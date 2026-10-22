@@ -44,6 +44,9 @@ class Interruptor(object):
         # make a send socket
         self._ctx = zmq.Context.instance()
         self._xpub = self._ctx.socket(zmq.XPUB)
+        # subscribe() and unsubscribe() wait for their message on this socket, so it must
+        # pass on every subscription and unsubscription, not only the first and last:
+        self._xpub.setsockopt(zmq.XPUB_VERBOSER, 1)
         self._endpoint = 'inproc://zpInterruptor' + hexlify(os.urandom(8)).decode()
         self._xpub.bind(self._endpoint)
         self._local = threading.local()
