@@ -133,7 +133,13 @@ class ZLogServerTests(unittest.TestCase):
     def test_no_access(self):
         with self.client(None) as client:
             client.send_multipart([b'check_access', b'/test.log'])
-            self.assertIn(b'[Errno 13] Permission denied', client.recv())
+            reply = client.recv()
+            # The root directory is read-only on macOS and not writable on Linux:
+            self.assertTrue(
+                b'[Errno 13] Permission denied' in reply
+                or b'[Errno 30] Read-only file system' in reply,
+                reply,
+            )
 
     @pytest.mark.skipif(os.name == 'nt', reason='Skip on Windows')
     def test_cant_create_files(self):
