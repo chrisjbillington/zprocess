@@ -2,6 +2,7 @@ import sys
 from pathlib import Path
 import unittest
 import pytest
+import zmq
 
 THIS_DIR = Path(__file__).absolute().parent
 
@@ -51,6 +52,21 @@ class ZprocessRemoteTests(unittest.TestCase):
             subclass_fullname='tests.test_remote.TestProcess',
         )
         to_child, from_child = proc.start()
+        self.assertEqual(to_child.sock.type, zmq.PAIR)
+        to_child.put('hello')
+        self.assertEqual(from_child.get(), 'hello')
+
+    def test_legacy_server_process(self):
+        """A remote process server with protocol version 1.0.0 starts children that
+        connect with PUSH and PULL sockets, so the parent binds those"""
+        self.client.get_protocol = lambda **kwargs: '1.0.0'
+        proc = Process(
+            self.process_tree,
+            remote_process_client=self.client,
+            subclass_fullname='tests.test_remote.TestProcess',
+        )
+        to_child, from_child = proc.start()
+        self.assertEqual(to_child.sock.type, zmq.PUSH)
         to_child.put('hello')
         self.assertEqual(from_child.get(), 'hello')
 
