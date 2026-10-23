@@ -26,7 +26,8 @@ from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_
                       ExternalBroker)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
-from zprocess.process_tree import _default_process_tree, EventBroker, ReadQueue
+from zprocess.process_tree import (_default_process_tree, EventBroker, ReadQueue,
+                                   ProcessTree)
 shared_secret = _default_process_tree.shared_secret
 from zprocess.security import SecureContext
 from zprocess.tasks import Task, TaskQueue
@@ -556,6 +557,14 @@ class TestExternalEventProcess(Process):
 
 
 
+class TestConcurrentEventProcess(Process):
+    def run(self, identifier):
+        event = self.process_tree.event('concurrent', role='post')
+        self.from_parent.get()
+        event.post(identifier)
+        time.sleep(5)
+
+
 class EventTests(unittest.TestCase):
     def test_events(self):
         proc = TestEventProcess()
@@ -578,6 +587,36 @@ class EventTests(unittest.TestCase):
             self.assertEqual(data, u'boo')
         finally:
             proc.terminate()
+
+
+    def test_events_from_processes_started_concurrently(self):
+        process_tree = ProcessTree(allow_insecure=True)
+        n_processes = 8
+        processes = [
+            TestConcurrentEventProcess(process_tree) for _ in range(n_processes)
+        ]
+        queues = [None] * n_processes
+        barrier = threading.Barrier(n_processes)
+
+        def start(i):
+            barrier.wait()
+            queues[i] = processes[i].start(i)
+
+        threads = [
+            threading.Thread(target=start, args=(i,)) for i in range(n_processes)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        try:
+            event = process_tree.event('concurrent', role='wait')
+            for i, (to_child, _) in enumerate(queues):
+                to_child.put(None)
+                self.assertEqual(event.wait(i, timeout=5), None)
+        finally:
+            for process in processes:
+                process.terminate()
 
 
 class TaskTests(unittest.TestCase):

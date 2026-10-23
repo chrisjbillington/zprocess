@@ -156,11 +156,6 @@ class HeartbeatServer(object):
         context = SecureContext.instance(shared_secret=shared_secret)
         self.sock = context.socket(zmq.REP)
         self.port = self.sock.bind_to_random_port(bind_address)
-        if sys.platform == 'darwin':
-            # App Nap delays the replies of an idle GUI process, and its subprocesses
-            # would take it for dead:
-            import appnope
-            appnope.nope()
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
@@ -1195,6 +1190,14 @@ class ProcessTree(object):
         self.kill_lock = None
         self.log_paths = {}
         self.startup_timeout = None
+        # Held while creating the broker and heartbeat server:
+        self._lock = threading.Lock()
+
+        if sys.platform == 'darwin':
+            # App Nap delays the heartbeat replies of an idle GUI process, and its
+            # subprocesses would take it for dead:
+            import appnope
+            appnope.nope()
 
         self.zlock_client = None
         if self.zlock_host is not None:
@@ -1219,14 +1222,15 @@ class ProcessTree(object):
         return ProcessTree.__instance
 
     def check_broker(self):
-        if self.broker_in_port is None:
-            # We don't have a parent with a broker: it is our responsibility to
-            # make a broker:
-            self.broker = EventBroker(shared_secret=self.shared_secret,
-                                      allow_insecure=self.allow_insecure)
-            self.broker_host = 'localhost'
-            self.broker_in_port = self.broker.in_port
-            self.broker_out_port = self.broker.out_port
+        with self._lock:
+            if self.broker_in_port is None:
+                # We don't have a parent with a broker: it is our responsibility to
+                # make a broker:
+                self.broker = EventBroker(shared_secret=self.shared_secret,
+                                          allow_insecure=self.allow_insecure)
+                self.broker_host = 'localhost'
+                self.broker_in_port = self.broker.in_port
+                self.broker_out_port = self.broker.out_port
 
     def event(self, event_name, role='wait', external_broker=None):
         return Event(self, event_name, role=role, external_broker=external_broker)
@@ -1325,9 +1329,12 @@ class ProcessTree(object):
         from_child_port = from_child.bind_to_random_port('tcp://*')
         to_child_port = to_child.bind_to_random_port('tcp://*')
         self.check_broker()
-        if self.heartbeat_server is None:
-            # First child process, we need a heartbeat server:
-            self.heartbeat_server = HeartbeatServer(shared_secret=self.shared_secret)
+        with self._lock:
+            if self.heartbeat_server is None:
+                # First child process, we need a heartbeat server:
+                self.heartbeat_server = HeartbeatServer(
+                    shared_secret=self.shared_secret
+                )
 
         if self.zlock_client is not None:
             zlock_process_name = self.zlock_client.process_name
