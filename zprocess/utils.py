@@ -117,36 +117,43 @@ def raise_exception_in_thread(exc_info):
     threading.Thread(target=_reraise, args=(exc_info,)).start()
 
 
+_DAEMON_LAUNCHER = """\
+import subprocess, sys
+subprocess.Popen(sys.argv[1:], stderr=subprocess.DEVNULL, start_new_session=True)
+"""
+
+
 def start_daemon(cmd_args):
-    """calls subprocess.Popen configured to detach the subprocess from the parent, such
-    that it keeps running even if the parent exits. Returns None. Note that the child
-    process will have its current working directory set to the value of
-    tempfile.gettempdir(), rather than remaining in the parent's working directory. In
-    Windows this prevents it holding a lock on the current directory, which would
-    prevent it from being deleted, and the behaviour is the same on unix for
-    consistency."""
-    kwargs = {}
-    if os.name == 'nt':
-        kwargs['creationflags'] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
-        )
-    else:
-        childpid = os.fork()
-        if childpid:
-            os.waitpid(childpid, 0)
-            return
-        os.setsid()
-    subprocess.Popen(
-        cmd_args,
+    """Start a subprocess that keeps running after the parent exits, and return None.
+    The subprocess has no standard input or output, is in a new process group on
+    Windows and a new session on Unix, and has the working directory
+    tempfile.gettempdir(). On Windows this working directory means that the subprocess
+    does not hold a lock on the parent's working directory. On Unix the subprocess is
+    started by a short-lived intermediate Python process, which this function waits
+    for, so the subprocess is not a child of the caller. Raises
+    subprocess.CalledProcessError if the intermediate process fails."""
+    kwargs = dict(
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
         close_fds=True,
         cwd=tempfile.gettempdir(),
-        **kwargs
     )
-    if os.name == 'posix':
-        os._exit(0)
+    if os.name == 'nt':
+        subprocess.Popen(
+            cmd_args,
+            stderr=subprocess.DEVNULL,
+            creationflags=(
+                subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+            ),
+            **kwargs
+        )
+    else:
+        subprocess.run(
+            [sys.executable, '-I', '-c', _DAEMON_LAUNCHER] + list(cmd_args),
+            stderr=subprocess.PIPE,
+            check=True,
+            **kwargs
+        )
 
 
 def _get_fileno(stream):
