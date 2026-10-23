@@ -24,7 +24,7 @@ from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_
                       ExternalBroker)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
-from zprocess.process_tree import _default_process_tree, EventBroker
+from zprocess.process_tree import _default_process_tree, EventBroker, ReadQueue
 shared_secret = _default_process_tree.shared_secret
 from zprocess.security import SecureContext
 from zprocess.tasks import Task, TaskQueue
@@ -604,6 +604,30 @@ class TaskTests(unittest.TestCase):
         # test cancel:
         queue.cancel(task2)
         self.assertEqual(queue, [task3])
+
+
+class ReadQueueTests(unittest.TestCase):
+    def test_put_while_another_thread_gets(self):
+        context = zmq.Context.instance()
+        sock = context.socket(zmq.PAIR)
+        sock.bind('inproc://zprocess-test-readqueue')
+        queue = ReadQueue(sock)
+        received = []
+        getter = threading.Thread(target=lambda: received.append(queue.get(timeout=5)))
+        getter.daemon = True
+        getter.start()
+        # Let the getter block in get():
+        time.sleep(0.2)
+        putter = threading.Thread(target=queue.put, args=('hello',))
+        putter.daemon = True
+        putter.start()
+        putter.join(2)
+        getter.join(2)
+        try:
+            self.assertFalse(putter.is_alive())
+            self.assertEqual(received, ['hello'])
+        finally:
+            sock.close(linger=0)
 
 
 class ClientServerTests(unittest.TestCase):
