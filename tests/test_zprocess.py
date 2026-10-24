@@ -29,7 +29,7 @@ from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import (_default_process_tree, EventBroker, ReadQueue,
                                    ProcessTree)
 shared_secret = _default_process_tree.shared_secret
-from zprocess.security import SecureContext
+from zprocess.security import SecureContext, generate_shared_secret
 from zprocess.tasks import Task, TaskQueue
 
 
@@ -617,6 +617,29 @@ class EventTests(unittest.TestCase):
         finally:
             for process in processes:
                 process.terminate()
+
+
+class SecureContextTests(unittest.TestCase):
+
+    def test_instance_from_concurrent_threads(self):
+        shared_secret = generate_shared_secret()
+        n_threads = 8
+        contexts = [None] * n_threads
+        barrier = threading.Barrier(n_threads)
+
+        def get_instance(i):
+            barrier.wait()
+            contexts[i] = SecureContext.instance(shared_secret=shared_secret)
+
+        threads = [
+            threading.Thread(target=get_instance, args=(i,)) for i in range(n_threads)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        for context in contexts:
+            self.assertIs(context, contexts[0])
 
 
 class TaskTests(unittest.TestCase):
