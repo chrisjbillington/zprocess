@@ -51,7 +51,14 @@ class KillLock(object):
     you wish to configure your own SIGTERM handler, either ensure it is configured
     before the kill lock singleton is created (keeping in mind that zprocess creates the
     singleton when connecting to parent processes), or call disconnect(), then connect
-    your signal handler, then call connect() again. """
+    your signal handler, then call connect() again.
+
+    The SIGTERM handler runs only when the main thread next executes Python code. On
+    Windows it never runs: Popen.terminate() and os.kill() end the process at once.
+    HeartbeatClient, which ends the process when the parent process stops responding,
+    does not send SIGTERM; it calls exit_when_released(), which waits for the lock to
+    be released and then exits, on every platform and whether or not the main thread
+    is executing Python code."""
 
     _instance = None
 
@@ -62,6 +69,8 @@ class KillLock(object):
             self._prev_handler = None
             self._sigterm_received = False
             self._lock = threading.RLock()
+            # Notified when the lock is released by its last holder:
+            self._released = threading.Condition(self._lock)
             self.connected = False
             self.connect()
         return cls._instance
@@ -138,12 +147,27 @@ class KillLock(object):
             if not self._n_acquires:
                 raise RuntimeError("Not held")
             self._n_acquires -= 1
-            if self._sigterm_received and not self._n_acquires:
-                # If sigterm received while lock held, terminate:
-                os.kill(os.getpid(), signal.SIGTERM)
+            if not self._n_acquires:
+                self._released.notify_all()
+                if self._sigterm_received:
+                    # If sigterm received while lock held, terminate:
+                    os.kill(os.getpid(), signal.SIGTERM)
 
     def __exit__(self, t, v, tb):
         self.release()
+
+    def is_held(self):
+        """Whether any thread holds the lock."""
+        with self._lock:
+            return self._n_acquires > 0
+
+    def exit_when_released(self, status=1):
+        """Block until no thread holds the lock, then end the process with
+        os._exit(status). No thread can acquire the lock between the check and the
+        exit. May be called from any thread."""
+        with self._released:
+            self._released.wait_for(lambda: not self._n_acquires)
+            os._exit(status)
 
 
 class HeartbeatServer(object):
@@ -170,8 +194,9 @@ class HeartbeatServer(object):
 
 
 class HeartbeatClient(object):
-    """A heartbeating thread that terminates the process, unless a lock is held,
-    once allowed_missed_heartbeats heartbeats in a row have had no correct reply."""
+    """A heartbeating thread that ends the process once allowed_missed_heartbeats
+    heartbeats in a row have had no correct reply, waiting first for the kill lock to
+    be released if it is held."""
 
     DEFAULT_ALLOWED_MISSED_HEARTBEATS = 5
 
@@ -221,8 +246,12 @@ class HeartbeatClient(object):
                     if self.sock.recv_multipart()[-1] == pid:
                         self.missed_parent_contacts = 0
             if not zprocess._silent:
-                print('Heartbeat failure', file=sys.stderr)
-            os.kill(os.getpid(), signal.SIGTERM)
+                if self.lock.is_held():
+                    msg = 'Heartbeat failure: will exit when kill lock released.'
+                else:
+                    msg = 'Heartbeat failure'
+                print(msg, file=sys.stderr)
+            self.lock.exit_when_released()
         except zmq.ContextTerminated:
             # Shutting down:
             self.sock.close(linger=0)
