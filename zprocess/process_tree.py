@@ -54,17 +54,24 @@ class KillLock(object):
     your signal handler, then call connect() again. """
 
     _instance = None
+    _instance_lock = threading.Lock()
 
     def __new__(cls):
-        if cls._instance is None:
-            cls._instance = self = object.__new__(cls)
-            self._n_acquires = 0
-            self._prev_handler = None
-            self._sigterm_received = False
-            self._lock = threading.RLock()
-            self.connected = False
-            self.connect()
-        return cls._instance
+        with cls._instance_lock:
+            if cls._instance is None:
+                self = object.__new__(cls)
+                self._n_acquires = 0
+                self._prev_handler = None
+                self._sigterm_received = False
+                self._lock = threading.RLock()
+                self.connected = False
+                cls._instance = self
+                try:
+                    self.connect()
+                except BaseException:
+                    cls._instance = None
+                    raise
+            return cls._instance
 
     def connect(self):
         with self._lock:
@@ -1352,11 +1359,12 @@ class ProcessTree(object):
             elif remote_process_client is not None:
                 # No existing redirection, and process is remote. Redirect its output to
                 # our own stdout using a RemoteOutputReceiver.
-                if self.remote_output_receiver is None:
-                    self.remote_output_receiver = RemoteOutputReceiver(
-                        shared_secret=self.shared_secret,
-                        allow_insecure=self.allow_insecure,
-                    )
+                with self._lock:
+                    if self.remote_output_receiver is None:
+                        self.remote_output_receiver = RemoteOutputReceiver(
+                            shared_secret=self.shared_secret,
+                            allow_insecure=self.allow_insecure,
+                        )
                 output_redirection_host = 'localhost'
                 output_redirection_port = self.remote_output_receiver.port
             else:
