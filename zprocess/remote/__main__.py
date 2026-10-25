@@ -69,6 +69,12 @@ def main():
     )
 
     parser.add_argument(
+        '--silent',
+        action='store_true',
+        help="""Do not log anything, to the terminal or to a file.""",
+    )
+
+    parser.add_argument(
         '-tui',
         '--text-interface',
         action='store_true',
@@ -107,7 +113,8 @@ def main():
             bind_address=bind_address,
             shared_secret=shared_secret,
             allow_insecure=allow_insecure,
-            server_log_dir=args.server_log_dir
+            server_log_dir=args.server_log_dir,
+            silent=args.silent,
         )
         server.shutdown_on_interrupt()
 
@@ -124,7 +131,8 @@ def main():
             bind_address=bind_address,
             shared_secret=shared_secret,
             allow_insecure=allow_insecure,
-            server_log_dir=args.server_log_dir
+            server_log_dir=args.server_log_dir,
+            silent=args.silent,
         )
         server.shutdown_on_interrupt()
 

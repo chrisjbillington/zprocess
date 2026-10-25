@@ -119,6 +119,12 @@ def main():
         help="""Directory for the (optional) log file of the zlock server.""",
     )
 
+    parser.add_argument(
+        '--silent',
+        action='store_true',
+        help="""Do not log anything, to the terminal or to a file.""",
+    )
+
     exclusive_grp = parser.add_mutually_exclusive_group()
 
     exclusive_grp.add_argument(
@@ -158,7 +164,8 @@ def main():
         bind_address=bind_address,
         shared_secret=shared_secret,
         allow_insecure=allow_insecure,
-        server_log_dir=args.server_log_dir
+        server_log_dir=args.server_log_dir,
+        silent=args.silent,
     )
     disable_quick_edit()
     try:
