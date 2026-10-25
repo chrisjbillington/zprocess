@@ -1320,16 +1320,6 @@ class ProcessTree(object):
             # TODO: remove legacy code in the future (introduced 2026)
             # Children started by a remote process server with protocol version 1.0.0
             # connect with PUSH and PULL sockets.
-            if not zprocess._silent:
-                msg = (
-                    'zprocess on the remote process server at %s:%s is too old to '
-                    'use PAIR sockets; using PUSH and PULL sockets for this child '
-                    'process. Update zprocess on the remote computer.'
-                )
-                print(
-                    msg % (remote_process_client.host, remote_process_client.port),
-                    file=sys.stderr,
-                )
             to_child = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
             from_child = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
 
