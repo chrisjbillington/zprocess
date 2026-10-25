@@ -408,6 +408,7 @@ class SecureContext(zmq.Context):
 
     _socket_class = SecureSocket
     _instances = weakref.WeakValueDictionary()
+    _instances_lock = threading.Lock()
     zap_domain = b"zprocess"
 
     # Dummy class attrs to distinguish from zmq options:
@@ -445,9 +446,10 @@ class SecureContext(zmq.Context):
         otherwise it will be used in the new instance. Takes into account subclasses
         such that a subclass calling this method will always get back an instance of its
         own class"""
-        try:
-            return cls._instances[cls, shared_secret]
-        except KeyError:
-            instance = cls(io_threads, shared_secret=shared_secret)
-            cls._instances[cls, shared_secret] = instance
-            return instance
+        with cls._instances_lock:
+            try:
+                return cls._instances[cls, shared_secret]
+            except KeyError:
+                instance = cls(io_threads, shared_secret=shared_secret)
+                cls._instances[cls, shared_secret] = instance
+                return instance
