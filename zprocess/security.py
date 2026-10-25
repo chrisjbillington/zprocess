@@ -3,6 +3,7 @@ import base64
 import weakref
 import threading
 import ipaddress
+import functools
 from time import monotonic
 
 import zmq
@@ -80,6 +81,17 @@ def ip_is_loopback(ip):
     if ip.version == 6 and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
     return ip.is_loopback
+
+
+@functools.lru_cache(maxsize=1024)
+def _parse_peer_address(peer_address):
+    """Return the IP address in a message's Peer-Address property as a string, with an
+    IPv4-mapped IPv6 address converted to IPv4, and whether it is on the loopback
+    interface"""
+    peer_ip = ipaddress.ip_address(peer_address)
+    if peer_ip.version == 6 and peer_ip.ipv4_mapped is not None:
+        peer_ip = peer_ip.ipv4_mapped
+    return str(peer_ip), peer_ip.is_loopback
 
 
 def generate_shared_secret():
@@ -277,18 +289,14 @@ class SecureSocket(zmq.Socket):
             msg = zmq.Socket.recv(self, flags=flags, copy=False, track=track)
             if self.tcp:
                 try:
-                    peer_ip = msg.get('Peer-Address')
-                    peer_ip = ipaddress.ip_address(peer_ip)
-                    if peer_ip.version == 6 and peer_ip.ipv4_mapped is not None:
-                        peer_ip = peer_ip.ipv4_mapped
-                    self.peer_ip = str(peer_ip)
+                    peer_address = msg.get('Peer-Address')
                 except zmq.error.ZMQError:
                     # Sent by a non-TCP client, even though we are a TCP socket. This is
                     # possible sometimes. For example, XPUB seems to receive unsubscribe
                     # messages via some internal mechanism if a subscriber disconnects.
                     self.peer_ip = None
                 else:
-                    is_loopback = ip_is_loopback(self.peer_ip)
+                    self.peer_ip, is_loopback = _parse_peer_address(peer_address)
                     if not (is_loopback or self.secure or self.allow_insecure):
                         # Unsecured data on external interface and allow_insecure has
                         # not been set. Print a message and ignore it.
