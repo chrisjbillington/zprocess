@@ -1,4 +1,6 @@
 import sys
+import errno
+import random
 import base64
 import weakref
 import threading
@@ -223,6 +225,24 @@ class SecureSocket(zmq.Socket):
     def bind(self, addr):
         """wrapper around bind, configuring security"""
         return self._bind_or_connect(addr, bind=True)
+
+    def bind_to_random_port(self, addr, min_port=49152, max_port=65536, max_tries=100):
+        """Bind to a random port in the range [min_port, max_port) and return the port.
+        zmq.Socket.bind_to_random_port lets the OS choose the port when given the default
+        range, and Linux chooses from 32768-60999, which contains ports that
+        applications bind as fixed ports. We always choose the port ourselves."""
+        for _ in range(max_tries):
+            port = random.randrange(min_port, max_port)
+            try:
+                self.bind('%s:%d' % (addr, port))
+            except zmq.ZMQError as e:
+                if e.errno == zmq.EADDRINUSE:
+                    continue
+                if sys.platform == 'win32' and e.errno == errno.EACCES:
+                    continue
+                raise
+            return port
+        raise zmq.ZMQBindError("Could not bind socket to random port.")
 
     def connect(self, addr, timeout=None, interruptor=None):
         """Wrapper around connect, configuring security. If timeout is not None, then
