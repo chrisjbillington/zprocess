@@ -279,6 +279,81 @@ def gethostbyname(host, prefer_ipv4=True, require_ipv4=False):
     return sockaddr[0]
 
 
+if sys.platform == 'win32':
+    import ctypes
+    from ctypes import wintypes
+
+    # From mstcpip.h
+    SIO_TCP_INITIAL_RTO = 0x98000011
+    TCP_INITIAL_RTO_UNSPECIFIED_RTT = 0xFFFF
+    TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS = 0xFE
+
+    class TCP_INITIAL_RTO_PARAMETERS(ctypes.Structure):
+        _fields_ = [('Rtt', wintypes.USHORT), ('MaxSynRetransmissions', ctypes.c_ubyte)]
+
+    _ws2_32 = ctypes.WinDLL('ws2_32', use_last_error=True)
+    _WSAIoctl = _ws2_32.WSAIoctl
+    _WSAIoctl.argtypes = [
+        ctypes.c_size_t,  # SOCKET
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+        ctypes.c_void_p,
+        ctypes.c_void_p,
+    ]
+    _WSAIoctl.restype = ctypes.c_int
+
+    def _disable_syn_retransmissions(sock):
+        """Make a connection attempt on the socket fail as soon as it is refused. By
+        default Windows retransmits the SYN after a refusal, so that a connection to a
+        port with no listener fails only after about a second."""
+        params = TCP_INITIAL_RTO_PARAMETERS(
+            TCP_INITIAL_RTO_UNSPECIFIED_RTT, TCP_INITIAL_RTO_NO_SYN_RETRANSMISSIONS
+        )
+        returned = wintypes.DWORD()
+        result = _WSAIoctl(
+            sock.fileno(),
+            SIO_TCP_INITIAL_RTO,
+            ctypes.byref(params),
+            ctypes.sizeof(params),
+            None,
+            0,
+            ctypes.byref(returned),
+            None,
+            None,
+        )
+        if result != 0:
+            raise ctypes.WinError(ctypes.get_last_error())
+
+
+def port_in_use(port, timeout=1):
+    """Return whether a process on this computer is listening on the TCP port. We
+    attempt a connection to the port on 127.0.0.1 and close it without sending anything,
+    so a ZMQServer on the port receives no message.
+
+    On Windows the connection attempt has no timeout, because a socket timeout adds
+    about 15 ms. With SYN retransmissions disabled, Windows completes or refuses a
+    connection to 127.0.0.1 at once, including when the listener's backlog is full, in
+    which case this returns False. On other platforms, a connection attempt that times
+    out after `timeout` seconds means that the listener's backlog is full, and this
+    returns True."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if sys.platform == 'win32':
+            _disable_syn_retransmissions(sock)
+        else:
+            sock.settimeout(timeout)
+        try:
+            sock.connect(('127.0.0.1', port))
+        except ConnectionRefusedError:
+            return False
+        except socket.timeout:
+            return True
+        return True
+
+
 def get_venv_executable_and_env(env=None):
     """Return the executable with which to start a Python subprocess, and the
     environment to pass to it. On Windows in a venv, sys.executable is a launcher that

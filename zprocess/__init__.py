@@ -13,6 +13,7 @@ from zprocess.utils import (
     embed,
     raise_exception_in_thread,
     disable_quick_edit,
+    port_in_use,
 )
 
 from zprocess.clientserver import (
