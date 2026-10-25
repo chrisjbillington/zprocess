@@ -1,5 +1,6 @@
 import sys
 import os
+import signal
 import threading
 import logging
 import logging.handlers
@@ -105,6 +106,35 @@ class Interruptor(object):
                 raise RuntimeError('Not set')
             self.is_set = False
             self.reason = ''
+
+
+def interrupt_main_thread():
+    """Raise KeyboardInterrupt in the main thread, as Ctrl-C does. May be called from
+    any thread. The SIGINT handler must be a Python function that raises the exception,
+    such as signal.default_int_handler, which Python installs at startup unless SIGINT
+    was ignored when the process started; otherwise RuntimeError is raised.
+
+    On POSIX the signal is sent to the main thread with pthread_kill(), so a blocking
+    system call in the main thread, such as time.sleep(), a lock acquisition or a zmq
+    poll, returns at once and the exception is raised. On Windows the signal is raised
+    in the calling thread, which sets the event that time.sleep() and, from Python
+    3.14, lock acquisitions in the main thread wait on; other blocking calls are not
+    woken, and the exception is raised when they return. On every platform, a call
+    into C code that does not check for signals, such as a NumPy operation, is not
+    interrupted, and the exception is raised when it returns."""
+    handler = signal.getsignal(signal.SIGINT)
+    if not callable(handler):
+        msg = (
+            "The SIGINT handler is not a Python function, so KeyboardInterrupt cannot "
+            "be raised in the main thread. Call "
+            "signal.signal(signal.SIGINT, signal.default_int_handler) in the main "
+            "thread first."
+        )
+        raise RuntimeError(msg)
+    if os.name == 'nt':
+        signal.raise_signal(signal.SIGINT)
+    else:
+        signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
 
 
 def _reraise(exc_info):
