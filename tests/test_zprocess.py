@@ -8,6 +8,7 @@ import threading
 import subprocess
 import tempfile
 import json
+import warnings
 from unittest.mock import patch
 
 import zmq
@@ -22,9 +23,9 @@ if PROJECT_ROOT not in [Path(s).absolute() for s in sys.path]:
 
 import zprocess
 zprocess._silent = True
-from zprocess import (ZMQServer, Process, TimeoutError, RichStreamHandler, rich_print,
-                      raise_exception_in_thread, zmq_get, zmq_push, zmq_get_raw,
-                      ExternalBroker, KillLock, interrupt_main_thread)
+from zprocess import (ZMQServer, ZMQClient, Process, TimeoutError, RichStreamHandler,
+                      rich_print, raise_exception_in_thread, zmq_get, ExternalBroker,
+                      KillLock, interrupt_main_thread)
 import zprocess.clientserver as clientserver
 from zprocess.clientserver import _typecheck_or_convert_data
 from zprocess.process_tree import EventBroker, ReadQueue, ProcessTree
@@ -908,17 +909,20 @@ class ClientServerTests(unittest.TestCase):
                     raise TestError
                 return data
 
-        server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        server = MyServer(
+            port=None, bind_address='tcp://127.0.0.1', allow_insecure=True
+        )
+        client = ZMQClient()
         try:
             self.assertIsInstance(server.context, SecureContext)
-            response = zmq_get(server.port, data='hello!')
+            response = client.get(server.port, data='hello!')
             self.assertEqual(response, 'hello!')
 
             # Ignore the exception in the other thread:
             clientserver.raise_exception_in_thread =  lambda *args: None
             try:
                 with self.assertRaises(TestError):
-                    zmq_get(server.port, data='error')
+                    client.get(server.port, data='error')
             finally:
                 clientserver.raise_exception_in_thread = raise_exception_in_thread
         finally:
@@ -931,25 +935,28 @@ class ClientServerTests(unittest.TestCase):
                     raise TestError
                 return data
 
+        client = ZMQClient()
         for argname in ["dtype", "type", "positional"]:
             if argname == 'dtype':
                 server = MyServer(port=None, dtype='raw',
-                                  bind_address='tcp://127.0.0.1')
+                                  bind_address='tcp://127.0.0.1', allow_insecure=True)
             elif argname == 'type':
-                server = MyServer(port=None, type='raw',
-                                  bind_address='tcp://127.0.0.1')
+                with self.assertWarnsRegex(FutureWarning, 'Use dtype instead'):
+                    server = MyServer(port=None, type='raw',
+                                      bind_address='tcp://127.0.0.1',
+                                      allow_insecure=True)
             elif argname == 'positional':
                 server = MyServer(None, 'raw',
-                                  bind_address='tcp://127.0.0.1')
+                                  bind_address='tcp://127.0.0.1', allow_insecure=True)
             try:
                 self.assertIsInstance(server.context, SecureContext)
-                response = zmq_get_raw(server.port, data=b'hello!')
+                response = client.get_raw(server.port, data=b'hello!')
                 self.assertEqual(response, b'hello!')
 
                 # Ignore the exception in the other thread:
                 clientserver.raise_exception_in_thread =  lambda *args: None
                 try:
-                    self.assertIn(b'TestError', zmq_get_raw(server.port, data=b'error'))
+                    self.assertIn(b'TestError', client.get_raw(server.port, data=b'error'))
                 finally:
                     clientserver.raise_exception_in_thread = \
                         raise_exception_in_thread
@@ -969,13 +976,14 @@ class ClientServerTests(unittest.TestCase):
                 got_data.set()
 
         server = MyPullServer(port=None, bind_address='tcp://127.0.0.1',
-                              pull_only=True)
+                              pull_only=True, allow_insecure=True)
+        client = ZMQClient()
 
         # So we can catch errors raised by raise_exception_in_thread
 
         try:
             self.assertIsInstance(server.context, SecureContext)
-            response = zmq_push(server.port, data='hello!')
+            response = client.push(server.port, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
@@ -995,16 +1003,37 @@ class ClientServerTests(unittest.TestCase):
             orig_thread = threading.Thread
             try:
                 threading.Thread = MockThread
-                response = zmq_push(server.port, data='error!')
+                response = client.push(server.port, data='error!')
                 self.assertEqual(got_error.wait(timeout=1), True)
             finally:
                 threading.Thread = orig_thread
 
             # Confirm the server still works:
-            response = zmq_push(server.port, data='hello!')
+            response = client.push(server.port, data='hello!')
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
+        finally:
+            server.shutdown()
+
+    def test_deprecated_defaults(self):
+        class MyServer(ZMQServer):
+            def handler(self, data):
+                return data
+
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', FutureWarning)
+            MyServer(
+                port=None, bind_address='tcp://127.0.0.1', allow_insecure=False
+            ).shutdown()
+
+        with self.assertWarnsRegex(FutureWarning, 'allow_insecure=True'):
+            server = MyServer(port=None, bind_address='tcp://127.0.0.1')
+        try:
+            self.assertTrue(server.allow_insecure)
+            with self.assertWarnsRegex(FutureWarning, 'zprocess.zmq_get()'):
+                response = zmq_get(server.port, data='hello!')
+            self.assertEqual(response, 'hello!')
         finally:
             server.shutdown()
 

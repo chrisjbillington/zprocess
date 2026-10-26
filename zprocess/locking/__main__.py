@@ -1,4 +1,4 @@
-# Backward compatibility submodule, will be removed in zprocess 3
+# Backward compatibility submodule, will be removed in zprocess 4
 
 import sys
 import os
