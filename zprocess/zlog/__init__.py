@@ -240,4 +240,4 @@ if __name__ == '__main__':
     logger.addHandler(ZMQLoggingHandler('test.log'))
     while True:
         time.sleep(1)
-        logger.info(str(time.time()) + ': this is a log message')
+        logger.info('%s: this is a log message', time.time())
