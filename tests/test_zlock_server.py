@@ -787,12 +787,16 @@ class OtherTests(unittest.TestCase):
         # Run the server on a random port on localhost:
         import random
 
-        for _ in range(1):
+        # A random port can be in use, or on Windows in an excluded port range:
+        for _ in range(10):
             port = random.randint(40000, 60000)
             server = ZMQLockServer(
                 bind_address='tcp://127.0.0.1', port=port, silent=True
             )
-            server.run_in_thread()
+            try:
+                server.run_in_thread()
+            except RuntimeError:
+                continue
             break
         else:
             raise RuntimeError("Couldn't bind to a specified port")
