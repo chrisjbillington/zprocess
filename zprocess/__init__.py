@@ -1,6 +1,6 @@
 from zprocess.__version__ import __version__
 
-PICKLE_PROTOCOL = 4
+PICKLE_PROTOCOL = 5
 
 # So that test code can suppress some output:
 _silent = False
