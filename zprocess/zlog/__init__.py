@@ -32,7 +32,7 @@ class ZLogClient(object):
         host='localhost',
         port=DEFAULT_PORT,
         shared_secret=None,
-        allow_insecure=True,
+        allow_insecure=False,
     ):
         self.host = socket.gethostbyname(host)
         self.port = port

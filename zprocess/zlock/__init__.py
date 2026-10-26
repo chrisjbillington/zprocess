@@ -27,7 +27,7 @@ class ZLockClient(object):
         host='localhost',
         port=DEFAULT_PORT,
         shared_secret=None,
-        allow_insecure=True,
+        allow_insecure=False,
         default_timeout=DEFAULT_TIMEOUT,
         process_name=''
     ):

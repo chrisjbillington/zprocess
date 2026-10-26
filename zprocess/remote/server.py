@@ -46,7 +46,7 @@ class RemoteProcessServer(ZMQServer):
         port=None,
         bind_address='tcp://*',
         shared_secret=None,
-        allow_insecure=True,
+        allow_insecure=False,
         silent=False,
         server_log_dir=None
     ):
