@@ -848,10 +848,6 @@ class ReadQueueTests(unittest.TestCase):
 class ClientServerTests(unittest.TestCase):
 
     def test_invalid_dtype_server_raises_valueerror(self):
-        class InvalidServer(clientserver._ZMQServer):
-            def setup_auth(self, context):
-                return None
-
         class FakeSocket(object):
             def setsockopt(self, *args, **kwargs):
                 pass
@@ -870,10 +866,10 @@ class ClientServerTests(unittest.TestCase):
             def register(self, *args, **kwargs):
                 pass
 
-        with patch.object(clientserver.zmq, 'Context', FakeContext):
+        with patch.object(clientserver.SecureContext, 'instance', return_value=FakeContext()):
             with patch.object(clientserver.zmq, 'Poller', FakePoller):
                 with self.assertRaisesRegex(ValueError, "invalid dtype invalid"):
-                    InvalidServer(
+                    clientserver._ZMQServer(
                         port=1, dtype='invalid', bind_address='tcp://127.0.0.1'
                     )
 
@@ -1009,17 +1005,6 @@ class ClientServerTests(unittest.TestCase):
             self.assertEqual(response, None)
             self.assertEqual(got_data.wait(timeout=1), True)
             got_data.clear()
-        finally:
-            server.shutdown()
-
-    def test_customauth_backcompat(self):
-        class MyCustomAuthServer(ZMQServer):
-            def setup_auth(self, context):
-                pass
-
-        server = MyCustomAuthServer(port=None, bind_address='tcp://127.0.0.1')
-        try:
-            self.assertNotIsInstance(server.context, SecureContext)
         finally:
             server.shutdown()
 

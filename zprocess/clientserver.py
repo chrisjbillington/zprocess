@@ -83,24 +83,11 @@ class ZMQServer(object):
         self._crashed = threading.Event()
         self.stopping = False
 
-        if 'setup_auth' in self.__class__.__dict__:
-            # Backward compatibility for subclasses implementing their own
-            # authentication:
-            self.context = zmq.Context()
-            self.auth = self.setup_auth(self.context)
-            if self.pull_only:
-                self.sock = self.context.socket(zmq.PULL)
-            else:
-                self.sock = self.context.socket(zmq.REP)
+        self.context = SecureContext.instance(shared_secret=shared_secret)
+        if self.pull_only:
+            self.sock = self.context.socket(zmq.PULL, allow_insecure=allow_insecure)
         else:
-            # Our shared secret authentication:
-            self.context = SecureContext.instance(shared_secret=shared_secret)
-            if self.pull_only:
-                self.sock = self.context.socket(zmq.PULL,
-                                                allow_insecure=allow_insecure)
-            else:
-                self.sock = self.context.socket(zmq.REP,
-                                                allow_insecure=allow_insecure)
+            self.sock = self.context.socket(zmq.REP, allow_insecure=allow_insecure)
         self.poller = zmq.Poller()
         self.sock.setsockopt(zmq.LINGER, 0)
 
@@ -138,12 +125,6 @@ class ZMQServer(object):
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
-
-    def setup_auth(self, context):
-        """Deprecated. To be overridden by subclasses setting up their
-        own authentication. If present in a subclass, this will be called
-        and no shared secret authentication will be used."""
-        pass
 
     def timeout(self):
         """A function to call every self.timeout_interval seconds in the same thread as

@@ -238,16 +238,6 @@ def disable_quick_edit():
         atexit.register(console.SetConsoleMode, orig_mode)
 
         
-def embed():
-    # Note to self, use subprocess.CREATE_NEW_CONSOLE on Windows to ensure a new console
-    # can be created.
-    msg = (
-        "This function no longer works with newer IPython "
-        + "and I have yet to make a replacement"
-    )
-    raise NotImplementedError(msg)
-
-
 def setup_logging(name, silent=False, directory=None):
     """Basic logging setup used by zprocess servers. silent=True sets the logger's level
     above CRITICAL, so that logging calls return without creating a record. directory
