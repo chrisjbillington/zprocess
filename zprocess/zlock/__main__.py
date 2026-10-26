@@ -132,11 +132,10 @@ def main():
         '--allow-insecure',
         action='store_true',
         dest='allow_insecure',
-        default=True, # TODO: default to False in zprocess 3.0
+        default=False,
         help="""Must be set to acknowledge that communication will be insecure if not
         using a shared secret, otherwise connections to hosts other than localhost will
-        raise an exception. Is by default set on zprocess 2 for backward compatibility,
-        but will be unset by default in zprocess 3.""",
+        raise an exception.""",
     )
 
     exclusive_grp.add_argument(
@@ -144,9 +143,7 @@ def main():
         '--no-allow-insecure',
         action='store_false',
         dest='allow_insecure',
-        help="""Set to explicitly disallow insecure connections. This will be
-        unnecessary on zprocess 3.0, when requiring secure connections will be the
-        default behaviour.""",
+        help="""Disallow insecure connections. This is the default.""",
     )
     
     args = parser.parse_args()

@@ -2,7 +2,6 @@ import sys
 import os
 import socket
 import threading
-import time
 from logging import Handler
 import uuid
 
@@ -33,7 +32,7 @@ class ZLogClient(object):
         host='localhost',
         port=DEFAULT_PORT,
         shared_secret=None,
-        allow_insecure=True,
+        allow_insecure=False,
     ):
         self.host = socket.gethostbyname(host)
         self.port = port
@@ -178,66 +177,3 @@ class ZMQLoggingHandler(Handler):
         """Format and send the record to the server"""
         msg = self.format(record)
         self.client.log(self.client_id, self.filepath, msg)
-
-
-
-# Backwards compatibility follows
-
-_default_zlog_client = None
-
-_ZMQLoggingHandler = ZMQLoggingHandler
-"""Backward compatibility to allow instantiating a lock without a ZLogClient as the
-first argument"""
-class ZMQLoggingHandler(_ZMQLoggingHandler):
-    def __init__(self, *args, **kwargs):
-        if not args or not isinstance(args[0], ZLogClient):
-            if _default_zlog_client is None:
-                raise RuntimeError('Not connected to a zlog server')
-            args = (_default_zlog_client,) + args
-        _ZMQLoggingHandler.__init__(self, *args, **kwargs)
-
-
-def ping(timeout=None):
-    """Deprecated. Instantiate a ZLogClient and call its ping() method instead."""
-    if _default_zlog_client is None:
-        raise RuntimeError('Not connected to a zlog server')
-    return _default_zlog_client.ping(timeout)
-
-
-def connect(host='localhost', port=DEFAULT_PORT, timeout=None):
-    """Deprecated. Instantiate a ZlogClient and call its ping() method to check
-    connectivity instead"""
-    global _default_zlog_client
-    _default_zlog_client = ZLogClient(host, port)
-    # We ping twice since the first does initialisation and so takes
-    # longer. The second will be more accurate:
-    _default_zlog_client.ping(timeout)
-    return _default_zlog_client.ping(timeout)
-
-
-def get_protocol_version(timeout=None):
-    """Deprecated. Instantiate a ZLogClient and call its method instead"""
-    if _default_zlog_client is None:
-        raise RuntimeError('Not connected to a zlog server')
-    return _default_zlog_client.get_protocol_version(timeout)
-
-
-def check_access(filepath, timeout=None):
-    """Deprecated. Instantiate a ZLogClient and call its method instead"""
-    if _default_zlog_client is None:
-        raise RuntimeError('Not connected to a zlog server')
-    return _default_zlog_client.check_access(filepath, timeout)
-
-
-if __name__ == '__main__':
-    import time
-    connect()
-    print(get_protocol_version())
-    import logging
-
-    logger = logging.Logger('test')
-    logger.setLevel(logging.DEBUG)
-    logger.addHandler(ZMQLoggingHandler('test.log'))
-    while True:
-        time.sleep(1)
-        logger.info('%s: this is a log message', time.time())

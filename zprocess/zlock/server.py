@@ -424,7 +424,7 @@ class ZMQLockServer(object):
         bind_address='tcp://*',
         silent=False,
         shared_secret=None,
-        allow_insecure=True,
+        allow_insecure=False,
         server_log_dir=None
     ):
         self.port = port

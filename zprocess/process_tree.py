@@ -1582,14 +1582,13 @@ class ProcessTree(object):
 
 
 
-# Event, Process and subprocess_with_queues() use this ProcessTree if they are not
-# given one. In a child process it is the ProcessTree connected to the parent:
+# Event and Process use this ProcessTree if they are not given one. In a child process
+# it is the ProcessTree connected to the parent:
 _default_process_tree = None
 
 
 def set_default_process_tree(process_tree):
-    """Set the ProcessTree that Event, Process and subprocess_with_queues() use if they
-    are not given one."""
+    """Set the ProcessTree that Event and Process use if they are not given one."""
     global _default_process_tree
     _default_process_tree = process_tree
 
@@ -1633,28 +1632,6 @@ class Process(_Process):
             args = (get_default_process_tree(),) + args
         _Process.__init__(self, *args, **kwargs)
 
-# New way is to call ProcessTree.connect_to_parent(lock) and get back a
-# ProcessTree. This is the old way, returning queues and (optionally) a lock
-# instead:
-def setup_connection_with_parent(lock=False):
-    process_tree = ProcessTree.connect_to_parent()
-    if lock:
-        return (process_tree.to_parent,
-                process_tree.from_parent,
-                process_tree.kill_lock)
-    else:
-        return process_tree.to_parent, process_tree.from_parent
 
-# New way is to instantiate a ProcessTree and call
-# process_tree.subprocess(). Old way is:
-def subprocess_with_queues(path, output_redirection_port=None):
-    if output_redirection_port == 0:  # This used to mean no redirection
-        output_redirection_port = None
-    return get_default_process_tree().subprocess(
-        path, output_redirection_port=output_redirection_port
-    )
-
-
-__all__ = ['Process', 'ProcessTree', 'setup_connection_with_parent',
-           'subprocess_with_queues', 'Event', 'set_default_process_tree',
+__all__ = ['Process', 'ProcessTree', 'Event', 'set_default_process_tree',
            'get_default_process_tree']

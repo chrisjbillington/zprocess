@@ -3,6 +3,7 @@ import os
 import threading
 import time
 import traceback
+import warnings
 from functools import partial
 from socket import gethostbyname
 from binascii import hexlify
@@ -83,24 +84,11 @@ class ZMQServer(object):
         self._crashed = threading.Event()
         self.stopping = False
 
-        if 'setup_auth' in self.__class__.__dict__:
-            # Backward compatibility for subclasses implementing their own
-            # authentication:
-            self.context = zmq.Context()
-            self.auth = self.setup_auth(self.context)
-            if self.pull_only:
-                self.sock = self.context.socket(zmq.PULL)
-            else:
-                self.sock = self.context.socket(zmq.REP)
+        self.context = SecureContext.instance(shared_secret=shared_secret)
+        if self.pull_only:
+            self.sock = self.context.socket(zmq.PULL, allow_insecure=allow_insecure)
         else:
-            # Our shared secret authentication:
-            self.context = SecureContext.instance(shared_secret=shared_secret)
-            if self.pull_only:
-                self.sock = self.context.socket(zmq.PULL,
-                                                allow_insecure=allow_insecure)
-            else:
-                self.sock = self.context.socket(zmq.REP,
-                                                allow_insecure=allow_insecure)
+            self.sock = self.context.socket(zmq.REP, allow_insecure=allow_insecure)
         self.poller = zmq.Poller()
         self.sock.setsockopt(zmq.LINGER, 0)
 
@@ -138,12 +126,6 @@ class ZMQServer(object):
         self.mainloop_thread = threading.Thread(target=self.mainloop)
         self.mainloop_thread.daemon = True
         self.mainloop_thread.start()
-
-    def setup_auth(self, context):
-        """Deprecated. To be overridden by subclasses setting up their
-        own authentication. If present in a subclass, this will be called
-        and no shared secret authentication will be used."""
-        pass
 
     def timeout(self):
         """A function to call every self.timeout_interval seconds in the same thread as
@@ -437,22 +419,33 @@ class ZMQClient(object):
         proceed as normal."""
         self.interruptor.clear()
 
-# Backwards compatability follows:
+# Backwards compatability follows. To be removed in zprocess 4:
 
-# Default to on all interfaces and allow insecure connections.
 _ZMQServer = ZMQServer
 class ZMQServer(_ZMQServer):
-    """Wrapper around a zmq.REP or zmq.PULL socket"""
-    def __init__(self, port, dtype=None, pull_only=False, 
+    """Wrapper around a zmq.REP or zmq.PULL socket. Accepts the keyword argument type
+    for dtype, and allows insecure connections if neither shared_secret nor
+    allow_insecure is given. Both raise a FutureWarning."""
+    def __init__(self, port, dtype='pyobj', pull_only=False,
                  bind_address='tcp://*', shared_secret=None,
-                 allow_insecure=True, **kwargs):
-        # Allow old kwarg "type" instead of "dtype":
+                 allow_insecure=None, **kwargs):
         if 'type' in kwargs:
+            msg = (
+                "The keyword argument type of ZMQServer is deprecated and will be "
+                + "removed in zprocess 4. Use dtype instead."
+            )
+            warnings.warn(msg, FutureWarning, stacklevel=2)
             dtype = kwargs.pop('type')
-            if kwargs:
-                raise ValueError('too many keyword arguments')
-        elif dtype is None:
-            dtype = 'pyobj'
+        if allow_insecure is None:
+            if shared_secret is None:
+                msg = (
+                    "ZMQServer allows insecure connections if neither shared_secret nor "
+                    + "allow_insecure is given. In zprocess 4 it will not. Pass "
+                    + "shared_secret for secure connections, or allow_insecure=True to "
+                    + "keep allowing insecure connections."
+                )
+                warnings.warn(msg, FutureWarning, stacklevel=2)
+            allow_insecure = True
         _ZMQServer.__init__(self, port, dtype=dtype, pull_only=pull_only,
                             bind_address=bind_address,
                             shared_secret=shared_secret,
@@ -460,17 +453,42 @@ class ZMQServer(_ZMQServer):
                             **kwargs)
 
 
-# methods for a default insecure client
-_default_client = ZMQClient(allow_insecure=True)
+# Functions that use a default insecure ZMQClient, which is created on first use:
+_default_client = None
+_default_client_lock = threading.Lock()
 
-zmq_get = _default_client.get
-zmq_get_multipart = _default_client.get_multipart
-zmq_get_string = _default_client.get_string
-zmq_get_raw = _default_client.get_raw
-zmq_push = _default_client.push
-zmq_push_multipart = _default_client.push_multipart
-zmq_push_string = _default_client.push_string
-zmq_push_raw = _default_client.push_raw
+
+def _get_default_client():
+    global _default_client
+    with _default_client_lock:
+        if _default_client is None:
+            _default_client = ZMQClient(allow_insecure=True)
+        return _default_client
+
+
+def _default_client_function(method_name):
+    name = 'zmq_' + method_name
+    msg = (
+        "zprocess.%s() uses an insecure ZMQClient and will be removed in zprocess 4. "
+        + "Create a ZMQClient and call its %s() method instead."
+    ) % (name, method_name)
+
+    def function(*args, **kwargs):
+        warnings.warn(msg, FutureWarning, stacklevel=2)
+        return getattr(_get_default_client(), method_name)(*args, **kwargs)
+
+    function.__name__ = function.__qualname__ = name
+    return function
+
+
+zmq_get = _default_client_function('get')
+zmq_get_multipart = _default_client_function('get_multipart')
+zmq_get_string = _default_client_function('get_string')
+zmq_get_raw = _default_client_function('get_raw')
+zmq_push = _default_client_function('push')
+zmq_push_multipart = _default_client_function('push_multipart')
+zmq_push_string = _default_client_function('push_string')
+zmq_push_raw = _default_client_function('push_raw')
 
 
 __all__ = ['ZMQServer', 'ZMQClient',

@@ -1,6 +1,6 @@
 from zprocess.__version__ import __version__
 
-PICKLE_PROTOCOL = 4
+PICKLE_PROTOCOL = 5
 
 # So that test code can suppress some output:
 _silent = False
@@ -10,7 +10,6 @@ from zprocess.utils import (
     Interrupted,
     Interruptor,
     start_daemon,
-    embed,
     raise_exception_in_thread,
     interrupt_main_thread,
     disable_quick_edit,
@@ -34,8 +33,6 @@ from zprocess.process_tree import (
     KillLock,
     Process,
     ProcessTree,
-    setup_connection_with_parent,
-    subprocess_with_queues,
     Event,
     set_default_process_tree,
     get_default_process_tree,
