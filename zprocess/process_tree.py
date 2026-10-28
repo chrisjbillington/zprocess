@@ -231,6 +231,9 @@ class HeartbeatClient(object):
         # heartbeat is sent:
         self.sock = context.socket(zmq.DEALER, allow_insecure=allow_insecure)
         self.sock.setsockopt(zmq.LINGER, 0)
+        # Do not reconnect, since after the parent exits, another process may bind the
+        # same port:
+        self.sock.setsockopt(zmq.RECONNECT_IVL, -1)
         self.sock.connect('tcp://{}:{}'.format(server_ip, server_port))
         self.heartbeat_interval = heartbeat_interval
         self.allowed_missed_heartbeats = allowed_missed_heartbeats
@@ -1499,6 +1502,10 @@ class ProcessTree(object):
             to_parent = context.socket(zmq.PUSH, allow_insecure=self.allow_insecure)
             from_parent = context.socket(zmq.PULL, allow_insecure=self.allow_insecure)
 
+        # Do not reconnect, since after the parent exits, another process may bind the
+        # same ports, and a PAIR socket accepts only the first peer to connect:
+        to_parent.setsockopt(zmq.RECONNECT_IVL, -1)
+        from_parent.setsockopt(zmq.RECONNECT_IVL, -1)
         from_parent.connect(
             'tcp://%s:%d' % (self.parent_host, parentinfo['from_parent_port'])
         )
