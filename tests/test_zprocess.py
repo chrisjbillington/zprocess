@@ -792,6 +792,91 @@ class DefaultProcessTreeTests(unittest.TestCase):
                 child.wait()
 
 
+# A parent that starts a child, writes its ports and the child's pid to a file, and
+# exits without closing its sockets or stopping the child:
+EXITING_PARENT_CODE = """
+import json, os, sys
+sys.path.insert(0, %r)
+import zmq
+import zprocess
+tree = zprocess.ProcessTree(allow_insecure=True)
+to_child, from_child, child = tree.subprocess(%r)
+ports = [
+    int(s.sock.getsockopt_string(zmq.LAST_ENDPOINT).rsplit(':', 1)[1])
+    for s in (to_child, from_child)
+]
+with open(%r, 'w') as f:
+    json.dump({'ports': ports, 'pid': child.pid}, f)
+os._exit(0)
+"""
+
+# A child that connects to its parent and runs until its heartbeat fails:
+SLEEPING_CHILD_CODE = """
+import sys, time
+sys.path.insert(0, %r)
+import zprocess
+process_tree = zprocess.ProcessTree.connect_to_parent()
+while True:
+    time.sleep(1)
+"""
+
+
+class ReusedPortTests(unittest.TestCase):
+    def test_child_of_new_parent_on_ports_of_exited_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child_path = os.path.join(tmp, 'child.py')
+            with open(child_path, 'w') as f:
+                f.write(SLEEPING_CHILD_CODE % str(PROJECT_ROOT))
+            parent_path = os.path.join(tmp, 'parent.py')
+            info_path = os.path.join(tmp, 'info.json')
+            with open(parent_path, 'w') as f:
+                f.write(EXITING_PARENT_CODE % (str(PROJECT_ROOT), child_path, info_path))
+            subprocess.run(
+                [sys.executable, parent_path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+                check=True,
+            )
+            with open(info_path) as f:
+                info = json.load(f)
+            old_child_pid = info['pid']
+            ports = list(info['ports'])
+
+            # The old child is still running. A new parent binds the old parent's
+            # ports and starts a child:
+            original = zprocess.security.SecureSocket.bind_to_random_port
+
+            def bind_to_random_port(sock, addr, *args, **kwargs):
+                if ports:
+                    port = ports.pop(0)
+                    sock.bind('%s:%d' % (addr, port))
+                    return port
+                return original(sock, addr, *args, **kwargs)
+
+            tree = ProcessTree(allow_insecure=True)
+            # Wait for the old child's sockets to detect that the connections are
+            # closed before the ports are bound again:
+            time.sleep(0.5)
+            try:
+                with patch.object(
+                    zprocess.security.SecureSocket,
+                    'bind_to_random_port',
+                    bind_to_random_port,
+                ):
+                    to_child, from_child, child = tree.subprocess(child_path)
+                try:
+                    self.assertEqual(ports, [])
+                finally:
+                    child.terminate()
+                    child.wait()
+            finally:
+                try:
+                    os.kill(old_child_pid, signal.SIGTERM)
+                except OSError:
+                    pass
+
+
 class TaskTests(unittest.TestCase):
     def test_cant_call_task_twice(self):
         task = Task(1, lambda: None)
