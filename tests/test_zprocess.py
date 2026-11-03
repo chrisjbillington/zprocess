@@ -820,6 +820,77 @@ while True:
     time.sleep(1)
 """
 
+# A child like the above, with the IPv6 option off on its sockets, as on a host that has
+# no IPv6. With the option on, a send to a parent that has exited does not block, at
+# least on Linux:
+SLEEPING_IPV4_CHILD_CODE = """
+import sys, time
+sys.path.insert(0, %r)
+import zprocess
+from zprocess.security import SecureSocket
+init = SecureSocket.__init__
+def __init__(self, *args, **kwargs):
+    init(self, *args, **kwargs)
+    self.ipv6 = False
+SecureSocket.__init__ = __init__
+process_tree = zprocess.ProcessTree.connect_to_parent()
+while True:
+    time.sleep(1)
+"""
+
+
+def process_exists(pid):
+    if sys.platform == 'win32':
+        import pywintypes
+        import win32api
+        import win32con
+        import win32event
+
+        try:
+            handle = win32api.OpenProcess(win32con.SYNCHRONIZE, False, pid)
+        except pywintypes.error:
+            return False
+        try:
+            return win32event.WaitForSingleObject(handle, 0) == win32event.WAIT_TIMEOUT
+        finally:
+            win32api.CloseHandle(handle)
+    if sys.platform.startswith('linux'):
+        # An exited process that nothing has reaped is a zombie. In a PID namespace the
+        # orphaned child is reparented to the test runner, which does not reap it:
+        try:
+            with open('/proc/%d/stat' % pid) as f:
+                return f.read().rsplit(')', 1)[1].split()[0] != 'Z'
+        except FileNotFoundError:
+            return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+class ExitedParentTests(unittest.TestCase):
+    def test_child_exits_after_parent_exits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            child_path = os.path.join(tmp, 'child.py')
+            with open(child_path, 'w') as f:
+                f.write(SLEEPING_IPV4_CHILD_CODE % str(PROJECT_ROOT))
+            parent_path = os.path.join(tmp, 'parent.py')
+            info_path = os.path.join(tmp, 'info.json')
+            with open(parent_path, 'w') as f:
+                f.write(EXITING_PARENT_CODE % (str(PROJECT_ROOT), child_path, info_path))
+            subprocess.run([sys.executable, parent_path], timeout=30, check=True)
+            with open(info_path) as f:
+                child_pid = json.load(f)['pid']
+            try:
+                deadline = time.monotonic() + 30
+                while process_exists(child_pid) and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                self.assertFalse(process_exists(child_pid))
+            finally:
+                if process_exists(child_pid):
+                    os.kill(child_pid, signal.SIGTERM)
+
 
 class ReusedPortTests(unittest.TestCase):
     def test_child_of_new_parent_on_ports_of_exited_parent(self):

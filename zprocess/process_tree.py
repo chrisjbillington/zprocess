@@ -251,8 +251,13 @@ class HeartbeatClient(object):
             pid = str(os.getpid()).encode('utf8')
             while self.missed_parent_contacts < self.allowed_missed_heartbeats:
                 time.sleep(self.heartbeat_interval)
-                self.sock.send_multipart([b'', pid])
                 self.missed_parent_contacts += 1
+                try:
+                    # A blocking send would wait forever after the parent exits, since
+                    # the socket then has no peer:
+                    self.sock.send_multipart([b'', pid], zmq.NOBLOCK)
+                except zmq.Again:
+                    continue
                 self.sock.poll(self.timeout * 1000)
                 # Read every reply waiting. A late one still counts, so that a parent
                 # that is merely slow to reply is not taken for dead:
